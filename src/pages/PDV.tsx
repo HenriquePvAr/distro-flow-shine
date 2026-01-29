@@ -1,6 +1,6 @@
 import { useState } from "react";
-import { ShoppingCart, Plus, Minus, Trash2, Search, AlertCircle, CheckCircle } from "lucide-react";
-import { useStore } from "@/store/useStore";
+import { ShoppingCart, Plus, Minus, Trash2, Search, CheckCircle, MessageCircle } from "lucide-react";
+import { useStore, customers, sellers, Sale } from "@/store/useStore";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -13,13 +13,60 @@ import {
 } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 
 const paymentMethods = ["Pix", "Cartão", "Boleto", "Dinheiro"];
+
+const formatCurrency = (value: number) =>
+  value.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+
+const generateWhatsAppReceipt = (sale: Sale): string => {
+  const date = new Date(sale.date);
+  const formattedDate = date.toLocaleDateString("pt-BR");
+  const formattedTime = date.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+
+  let message = `🧾 *COMPROVANTE DE VENDA*\n`;
+  message += `━━━━━━━━━━━━━━━━━━\n`;
+  message += `📅 ${formattedDate} às ${formattedTime}\n`;
+  message += `🆔 Pedido: #${sale.id.slice(-6)}\n`;
+  if (sale.customer && sale.customer.name !== "Cliente Avulso") {
+    message += `👤 Cliente: ${sale.customer.name}\n`;
+  }
+  if (sale.seller) {
+    message += `🧑‍💼 Vendedor: ${sale.seller.name}\n`;
+  }
+  message += `━━━━━━━━━━━━━━━━━━\n\n`;
+  message += `📦 *ITENS*\n`;
+
+  sale.items.forEach((item) => {
+    message += `• ${item.product.name}\n`;
+    message += `  ${item.quantity}x ${formatCurrency(item.product.salePrice)} = ${formatCurrency(item.product.salePrice * item.quantity)}\n`;
+  });
+
+  message += `\n━━━━━━━━━━━━━━━━━━\n`;
+  message += `💳 Pagamento: *${sale.paymentMethod}*\n`;
+  message += `💰 *TOTAL: ${formatCurrency(sale.total)}*\n`;
+  message += `━━━━━━━━━━━━━━━━━━\n\n`;
+  message += `Obrigado pela preferência! 🙏`;
+
+  return encodeURIComponent(message);
+};
 
 export default function PDV() {
   const { products, cart, addToCart, removeFromCart, updateCartQuantity, clearCart, processSale } = useStore();
   const [search, setSearch] = useState("");
   const [paymentMethod, setPaymentMethod] = useState("");
+  const [customerId, setCustomerId] = useState("");
+  const [sellerId, setSellerId] = useState("");
+  const [showSuccessModal, setShowSuccessModal] = useState(false);
+  const [lastSale, setLastSale] = useState<Sale | null>(null);
 
   const filteredProducts = products.filter(
     (p) =>
@@ -28,9 +75,6 @@ export default function PDV() {
   );
 
   const cartTotal = cart.reduce((sum, item) => sum + item.product.salePrice * item.quantity, 0);
-
-  const formatCurrency = (value: number) =>
-    value.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 
   const handleAddToCart = (product: typeof products[0]) => {
     if (product.stock === 0) {
@@ -56,13 +100,24 @@ export default function PDV() {
       return;
     }
 
-    const sale = processSale(paymentMethod);
+    const customer = customers.find((c) => c.id === customerId) || null;
+    const seller = sellers.find((s) => s.id === sellerId) || null;
+
+    const sale = processSale(paymentMethod, customer, seller);
     if (sale) {
-      toast.success("Venda finalizada!", {
-        description: `Total: ${formatCurrency(sale.total)} | ${paymentMethod}`,
-        icon: <CheckCircle className="h-5 w-5 text-emerald-500" />,
-      });
+      setLastSale(sale);
+      setShowSuccessModal(true);
       setPaymentMethod("");
+      setCustomerId("");
+      setSellerId("");
+    }
+  };
+
+  const handleSendWhatsApp = () => {
+    if (lastSale) {
+      const phone = lastSale.customer?.phone || "";
+      const message = generateWhatsAppReceipt(lastSale);
+      window.open(`https://wa.me/${phone}?text=${message}`, "_blank");
     }
   };
 
@@ -186,11 +241,32 @@ export default function PDV() {
               </div>
             )}
 
-            <div className="border-t border-border pt-4 space-y-4">
-              <div className="flex justify-between items-center">
-                <span className="text-muted-foreground">Total</span>
-                <span className="text-2xl font-bold text-primary">{formatCurrency(cartTotal)}</span>
-              </div>
+            <div className="border-t border-border pt-4 space-y-3">
+              <Select value={customerId} onValueChange={setCustomerId}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Selecionar cliente" />
+                </SelectTrigger>
+                <SelectContent>
+                  {customers.map((customer) => (
+                    <SelectItem key={customer.id} value={customer.id}>
+                      {customer.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+
+              <Select value={sellerId} onValueChange={setSellerId}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Selecionar vendedor" />
+                </SelectTrigger>
+                <SelectContent>
+                  {sellers.map((seller) => (
+                    <SelectItem key={seller.id} value={seller.id}>
+                      {seller.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
 
               <Select value={paymentMethod} onValueChange={setPaymentMethod}>
                 <SelectTrigger>
@@ -204,6 +280,11 @@ export default function PDV() {
                   ))}
                 </SelectContent>
               </Select>
+
+              <div className="flex justify-between items-center pt-2">
+                <span className="text-muted-foreground">Total</span>
+                <span className="text-2xl font-bold text-primary">{formatCurrency(cartTotal)}</span>
+              </div>
 
               <Button
                 className="w-full"
@@ -223,6 +304,47 @@ export default function PDV() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Success Modal */}
+      <Dialog open={showSuccessModal} onOpenChange={setShowSuccessModal}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-emerald-600">
+              <CheckCircle className="h-6 w-6" />
+              Venda Finalizada!
+            </DialogTitle>
+            <DialogDescription>
+              {lastSale && (
+                <div className="space-y-2 mt-4 text-left">
+                  <p><strong>Pedido:</strong> #{lastSale.id.slice(-6)}</p>
+                  {lastSale.customer && <p><strong>Cliente:</strong> {lastSale.customer.name}</p>}
+                  {lastSale.seller && <p><strong>Vendedor:</strong> {lastSale.seller.name}</p>}
+                  <p><strong>Pagamento:</strong> {lastSale.paymentMethod}</p>
+                  <p className="text-lg font-bold text-primary">
+                    Total: {formatCurrency(lastSale.total)}
+                  </p>
+                </div>
+              )}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="flex flex-col gap-2 sm:flex-col">
+            <Button
+              className="w-full bg-emerald-600 hover:bg-emerald-700"
+              onClick={handleSendWhatsApp}
+            >
+              <MessageCircle className="h-4 w-4 mr-2" />
+              Enviar Comprovante via WhatsApp
+            </Button>
+            <Button
+              variant="outline"
+              className="w-full"
+              onClick={() => setShowSuccessModal(false)}
+            >
+              Fechar
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
