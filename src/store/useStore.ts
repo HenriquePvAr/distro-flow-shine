@@ -16,14 +16,40 @@ export interface CartItem {
   quantity: number;
 }
 
+export interface Customer {
+  id: string;
+  name: string;
+  phone: string;
+}
+
+export interface Seller {
+  id: string;
+  name: string;
+}
+
 export interface Sale {
   id: string;
   items: CartItem[];
   total: number;
   profit: number;
   paymentMethod: string;
+  customer: Customer | null;
+  seller: Seller | null;
   date: string;
 }
+
+export const customers: Customer[] = [
+  { id: '1', name: 'Cliente Avulso', phone: '' },
+  { id: '2', name: 'João Silva', phone: '11999990001' },
+  { id: '3', name: 'Maria Oliveira', phone: '11999990002' },
+  { id: '4', name: 'Pedro Santos', phone: '11999990003' },
+];
+
+export const sellers: Seller[] = [
+  { id: '1', name: 'Carlos' },
+  { id: '2', name: 'Ana' },
+  { id: '3', name: 'Roberto' },
+];
 
 interface StoreState {
   products: Product[];
@@ -42,7 +68,7 @@ interface StoreState {
   clearCart: () => void;
   
   // Sale actions
-  processSale: (paymentMethod: string) => Sale | null;
+  processSale: (paymentMethod: string, customer: Customer | null, seller: Seller | null) => Sale | null;
 }
 
 const initialProducts: Product[] = [
@@ -111,7 +137,7 @@ export const useStore = create<StoreState>()(
 
       clearCart: () => set({ cart: [] }),
 
-      processSale: (paymentMethod) => {
+      processSale: (paymentMethod, customer, seller) => {
         const state = get();
         if (state.cart.length === 0) return null;
 
@@ -130,6 +156,8 @@ export const useStore = create<StoreState>()(
           total,
           profit,
           paymentMethod,
+          customer,
+          seller,
           date: new Date().toISOString(),
         };
 
