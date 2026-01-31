@@ -1,6 +1,6 @@
 import { useState } from "react";
-import { History, Search, Filter, MessageCircle } from "lucide-react";
-import { useStore, Sale } from "@/store/useStore";
+import { History, Search, Filter, MessageCircle, Calendar } from "lucide-react";
+import { useStore, Sale, sellers } from "@/store/useStore";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -20,6 +20,12 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Calendar as CalendarComponent } from "@/components/ui/calendar";
+import { format, isWithinInterval, startOfDay, endOfDay } from "date-fns";
+import { ptBR } from "date-fns/locale";
+import { cn } from "@/lib/utils";
+import { DateRange } from "react-day-picker";
 
 const formatCurrency = (value: number) =>
   value.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
@@ -70,6 +76,8 @@ export default function Historico() {
   const { sales } = useStore();
   const [search, setSearch] = useState("");
   const [paymentFilter, setPaymentFilter] = useState("all");
+  const [sellerFilter, setSellerFilter] = useState("all");
+  const [dateRange, setDateRange] = useState<DateRange | undefined>(undefined);
 
   const filteredSales = sales
     .filter((sale) => {
@@ -78,7 +86,17 @@ export default function Historico() {
         sale.customer?.name.toLowerCase().includes(search.toLowerCase()) ||
         sale.seller?.name.toLowerCase().includes(search.toLowerCase());
       const matchesPayment = paymentFilter === "all" || sale.paymentMethod === paymentFilter;
-      return matchesSearch && matchesPayment;
+      const matchesSeller = sellerFilter === "all" || sale.seller?.id === sellerFilter;
+      
+      let matchesDate = true;
+      if (dateRange?.from) {
+        const saleDate = new Date(sale.date);
+        const from = startOfDay(dateRange.from);
+        const to = dateRange.to ? endOfDay(dateRange.to) : endOfDay(dateRange.from);
+        matchesDate = isWithinInterval(saleDate, { start: from, end: to });
+      }
+
+      return matchesSearch && matchesPayment && matchesSeller && matchesDate;
     })
     .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
@@ -86,11 +104,26 @@ export default function Historico() {
   const totalProfit = filteredSales.reduce((sum, sale) => sum + sale.profit, 0);
   const totalSales = filteredSales.length;
 
+  // Payment method breakdown for day closing
+  const paymentBreakdown = filteredSales.reduce((acc, sale) => {
+    acc[sale.paymentMethod] = (acc[sale.paymentMethod] || 0) + sale.total;
+    return acc;
+  }, {} as Record<string, number>);
+
   const handleSendWhatsApp = (sale: Sale) => {
     const phone = sale.customer?.phone || "";
     const message = generateWhatsAppReceipt(sale);
     window.open(`https://wa.me/${phone}?text=${message}`, "_blank");
   };
+
+  const clearFilters = () => {
+    setSearch("");
+    setPaymentFilter("all");
+    setSellerFilter("all");
+    setDateRange(undefined);
+  };
+
+  const hasActiveFilters = search || paymentFilter !== "all" || sellerFilter !== "all" || dateRange;
 
   return (
     <div className="space-y-6">
@@ -142,6 +175,25 @@ export default function Historico() {
         </Card>
       </div>
 
+      {/* Payment Breakdown - Day Closing Report */}
+      {Object.keys(paymentBreakdown).length > 0 && (
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium">Fechamento por Forma de Pagamento</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="flex flex-wrap gap-4">
+              {Object.entries(paymentBreakdown).map(([method, amount]) => (
+                <div key={method} className="flex items-center gap-2 px-3 py-2 rounded-lg bg-muted/50">
+                  <Badge variant="outline">{method}</Badge>
+                  <span className="font-mono font-medium">{formatCurrency(amount)}</span>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       {/* Filters */}
       <div className="rounded-xl border border-border bg-card shadow-sm">
         <div className="p-4 border-b border-border">
@@ -155,8 +207,62 @@ export default function Historico() {
                 className="pl-10"
               />
             </div>
+
+            {/* Date Range Filter */}
+            <Popover>
+              <PopoverTrigger asChild>
+                <Button
+                  variant="outline"
+                  className={cn(
+                    "w-[240px] justify-start text-left font-normal",
+                    !dateRange && "text-muted-foreground"
+                  )}
+                >
+                  <Calendar className="mr-2 h-4 w-4" />
+                  {dateRange?.from ? (
+                    dateRange.to ? (
+                      <>
+                        {format(dateRange.from, "dd/MM", { locale: ptBR })} -{" "}
+                        {format(dateRange.to, "dd/MM", { locale: ptBR })}
+                      </>
+                    ) : (
+                      format(dateRange.from, "dd/MM/yyyy", { locale: ptBR })
+                    )
+                  ) : (
+                    "Filtrar por data"
+                  )}
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent className="w-auto p-0" align="start">
+                <CalendarComponent
+                  mode="range"
+                  selected={dateRange}
+                  onSelect={setDateRange}
+                  numberOfMonths={2}
+                  initialFocus
+                  className="p-3 pointer-events-auto"
+                />
+              </PopoverContent>
+            </Popover>
+
+            {/* Seller Filter */}
+            <Select value={sellerFilter} onValueChange={setSellerFilter}>
+              <SelectTrigger className="w-[160px]">
+                <SelectValue placeholder="Vendedor" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">Todos vendedores</SelectItem>
+                {sellers.map((seller) => (
+                  <SelectItem key={seller.id} value={seller.id}>
+                    {seller.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+
+            {/* Payment Filter */}
             <Select value={paymentFilter} onValueChange={setPaymentFilter}>
-              <SelectTrigger className="w-[180px]">
+              <SelectTrigger className="w-[160px]">
                 <Filter className="h-4 w-4 mr-2" />
                 <SelectValue placeholder="Pagamento" />
               </SelectTrigger>
@@ -168,6 +274,12 @@ export default function Historico() {
                 <SelectItem value="Dinheiro">Dinheiro</SelectItem>
               </SelectContent>
             </Select>
+
+            {hasActiveFilters && (
+              <Button variant="ghost" onClick={clearFilters} className="text-muted-foreground">
+                Limpar filtros
+              </Button>
+            )}
           </div>
         </div>
 
