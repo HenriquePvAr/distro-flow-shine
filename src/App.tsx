@@ -8,6 +8,7 @@ import Dashboard from "./pages/Dashboard";
 import PDV from "./pages/PDV";
 import Estoque from "./pages/Estoque";
 import Historico from "./pages/Historico";
+import Despesas from "./pages/Despesas";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -24,6 +25,7 @@ const App = () => (
             <Route path="/pdv" element={<PDV />} />
             <Route path="/estoque" element={<Estoque />} />
             <Route path="/historico" element={<Historico />} />
+            <Route path="/despesas" element={<Despesas />} />
             <Route path="*" element={<NotFound />} />
           </Routes>
         </AppLayout>
