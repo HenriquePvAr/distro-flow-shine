@@ -38,6 +38,24 @@ export interface Sale {
   date: string;
 }
 
+export type ExpenseCategory = 'Salários' | 'Combustível' | 'Aluguel' | 'Mercadoria' | 'Outros';
+
+export interface Expense {
+  id: string;
+  description: string;
+  category: ExpenseCategory;
+  value: number;
+  date: string;
+}
+
+export const expenseCategories: ExpenseCategory[] = [
+  'Salários',
+  'Combustível',
+  'Aluguel',
+  'Mercadoria',
+  'Outros',
+];
+
 export const customers: Customer[] = [
   { id: '1', name: 'Cliente Avulso', phone: '' },
   { id: '2', name: 'João Silva', phone: '11999990001' },
@@ -55,6 +73,7 @@ interface StoreState {
   products: Product[];
   cart: CartItem[];
   sales: Sale[];
+  expenses: Expense[];
   
   // Product actions
   addProduct: (product: Product) => void;
@@ -69,6 +88,11 @@ interface StoreState {
   
   // Sale actions
   processSale: (paymentMethod: string, customer: Customer | null, seller: Seller | null) => Sale | null;
+  
+  // Expense actions
+  addExpense: (expense: Omit<Expense, 'id'>) => void;
+  updateExpense: (id: string, updates: Partial<Expense>) => void;
+  deleteExpense: (id: string) => void;
 }
 
 const initialProducts: Product[] = [
@@ -90,6 +114,7 @@ export const useStore = create<StoreState>()(
       products: initialProducts,
       cart: [],
       sales: [],
+      expenses: [],
 
       addProduct: (product) =>
         set((state) => ({ products: [...state.products, product] })),
@@ -161,7 +186,6 @@ export const useStore = create<StoreState>()(
           date: new Date().toISOString(),
         };
 
-        // Subtract stock
         const updatedProducts = state.products.map((product) => {
           const cartItem = state.cart.find((item) => item.product.id === product.id);
           if (cartItem) {
@@ -178,6 +202,23 @@ export const useStore = create<StoreState>()(
 
         return sale;
       },
+
+      addExpense: (expense) =>
+        set((state) => ({
+          expenses: [...state.expenses, { ...expense, id: Date.now().toString() }],
+        })),
+
+      updateExpense: (id, updates) =>
+        set((state) => ({
+          expenses: state.expenses.map((e) =>
+            e.id === id ? { ...e, ...updates } : e
+          ),
+        })),
+
+      deleteExpense: (id) =>
+        set((state) => ({
+          expenses: state.expenses.filter((e) => e.id !== id),
+        })),
     }),
     { name: 'distribuidora-store' }
   )

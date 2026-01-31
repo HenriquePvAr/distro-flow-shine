@@ -1,4 +1,4 @@
-import { LayoutDashboard, ShoppingCart, Package, History } from "lucide-react";
+import { LayoutDashboard, ShoppingCart, Package, History, Receipt } from "lucide-react";
 import { NavLink } from "@/components/NavLink";
 import {
   Sidebar,
@@ -19,6 +19,7 @@ const menuItems = [
   { title: "Vendas (PDV)", url: "/pdv", icon: ShoppingCart },
   { title: "Estoque", url: "/estoque", icon: Package },
   { title: "Histórico", url: "/historico", icon: History },
+  { title: "Despesas", url: "/despesas", icon: Receipt },
 ];
 
 export function AppSidebar() {
