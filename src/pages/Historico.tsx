@@ -26,6 +26,7 @@ import { format, isWithinInterval, startOfDay, endOfDay } from "date-fns";
 import { ptBR } from "date-fns/locale";
 import { cn } from "@/lib/utils";
 import { DateRange } from "react-day-picker";
+import { generateWhatsAppReceipt, openWhatsApp } from "@/lib/whatsappReceipt";
 
 const formatCurrency = (value: number) =>
   value.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
@@ -38,38 +39,6 @@ const formatDate = (dateString: string) => {
 const formatTime = (dateString: string) => {
   const date = new Date(dateString);
   return date.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
-};
-
-const generateWhatsAppReceipt = (sale: Sale): string => {
-  const date = new Date(sale.date);
-  const formattedDate = date.toLocaleDateString("pt-BR");
-  const formattedTime = date.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
-
-  let message = `🧾 *COMPROVANTE DE VENDA*\n`;
-  message += `━━━━━━━━━━━━━━━━━━\n`;
-  message += `📅 ${formattedDate} às ${formattedTime}\n`;
-  message += `🆔 Pedido: #${sale.id.slice(-6)}\n`;
-  if (sale.customer && sale.customer.name !== "Cliente Avulso") {
-    message += `👤 Cliente: ${sale.customer.name}\n`;
-  }
-  if (sale.seller) {
-    message += `🧑‍💼 Vendedor: ${sale.seller.name}\n`;
-  }
-  message += `━━━━━━━━━━━━━━━━━━\n\n`;
-  message += `📦 *ITENS*\n`;
-
-  sale.items.forEach((item) => {
-    message += `• ${item.product.name}\n`;
-    message += `  ${item.quantity}x ${formatCurrency(item.product.salePrice)} = ${formatCurrency(item.product.salePrice * item.quantity)}\n`;
-  });
-
-  message += `\n━━━━━━━━━━━━━━━━━━\n`;
-  message += `💳 Pagamento: *${sale.paymentMethod}*\n`;
-  message += `💰 *TOTAL: ${formatCurrency(sale.total)}*\n`;
-  message += `━━━━━━━━━━━━━━━━━━\n\n`;
-  message += `Obrigado pela preferência! 🙏`;
-
-  return encodeURIComponent(message);
 };
 
 export default function Historico() {
@@ -113,7 +82,7 @@ export default function Historico() {
   const handleSendWhatsApp = (sale: Sale) => {
     const phone = sale.customer?.phone || "";
     const message = generateWhatsAppReceipt(sale);
-    window.open(`https://wa.me/${phone}?text=${message}`, "_blank");
+    openWhatsApp(phone, message);
   };
 
   const clearFilters = () => {
