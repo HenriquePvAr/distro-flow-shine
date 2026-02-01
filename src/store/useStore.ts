@@ -11,6 +11,22 @@ export interface Product {
   category: string;
 }
 
+export type MovementType = 'entrada' | 'saida' | 'ajuste' | 'venda';
+export type AdjustmentReason = 'erro_contagem' | 'avaria' | 'bonificacao' | 'perda' | 'entrada_fornecedor' | 'outros';
+
+export interface StockMovement {
+  id: string;
+  productId: string;
+  type: MovementType;
+  quantity: number;
+  previousStock: number;
+  newStock: number;
+  reason: AdjustmentReason | null;
+  notes: string;
+  operator: string;
+  date: string;
+}
+
 export interface CartItem {
   product: Product;
   quantity: number;
@@ -74,11 +90,13 @@ interface StoreState {
   cart: CartItem[];
   sales: Sale[];
   expenses: Expense[];
+  stockMovements: StockMovement[];
   
   // Product actions
   addProduct: (product: Product) => void;
   updateProduct: (id: string, updates: Partial<Product>) => void;
-  adjustStock: (id: string, quantity: number, reason: string) => void;
+  adjustStock: (id: string, quantity: number, reason: AdjustmentReason, notes: string, operator: string, type?: MovementType) => void;
+  addStockEntry: (id: string, quantity: number, notes: string, operator: string) => void;
   
   // Cart actions
   addToCart: (product: Product, quantity: number) => void;
@@ -115,6 +133,7 @@ export const useStore = create<StoreState>()(
       cart: [],
       sales: [],
       expenses: [],
+      stockMovements: [],
 
       addProduct: (product) =>
         set((state) => ({ products: [...state.products, product] })),
@@ -126,12 +145,59 @@ export const useStore = create<StoreState>()(
           ),
         })),
 
-      adjustStock: (id, quantity, reason) =>
-        set((state) => ({
+      adjustStock: (id, quantity, reason, notes, operator, type = 'ajuste') => {
+        const state = get();
+        const product = state.products.find((p) => p.id === id);
+        if (!product) return;
+
+        const newStock = Math.max(0, product.stock + quantity);
+        const movement: StockMovement = {
+          id: Date.now().toString(),
+          productId: id,
+          type,
+          quantity,
+          previousStock: product.stock,
+          newStock,
+          reason,
+          notes,
+          operator,
+          date: new Date().toISOString(),
+        };
+
+        set({
           products: state.products.map((p) =>
-            p.id === id ? { ...p, stock: Math.max(0, p.stock + quantity) } : p
+            p.id === id ? { ...p, stock: newStock } : p
           ),
-        })),
+          stockMovements: [...state.stockMovements, movement],
+        });
+      },
+
+      addStockEntry: (id, quantity, notes, operator) => {
+        const state = get();
+        const product = state.products.find((p) => p.id === id);
+        if (!product) return;
+
+        const newStock = product.stock + quantity;
+        const movement: StockMovement = {
+          id: Date.now().toString(),
+          productId: id,
+          type: 'entrada',
+          quantity,
+          previousStock: product.stock,
+          newStock,
+          reason: 'entrada_fornecedor',
+          notes,
+          operator,
+          date: new Date().toISOString(),
+        };
+
+        set({
+          products: state.products.map((p) =>
+            p.id === id ? { ...p, stock: newStock } : p
+          ),
+          stockMovements: [...state.stockMovements, movement],
+        });
+      },
 
       addToCart: (product, quantity) =>
         set((state) => {
@@ -186,6 +252,23 @@ export const useStore = create<StoreState>()(
           date: new Date().toISOString(),
         };
 
+        // Create stock movements for each sold item
+        const saleMovements: StockMovement[] = state.cart.map((item) => {
+          const product = state.products.find((p) => p.id === item.product.id)!;
+          return {
+            id: `${Date.now()}-${item.product.id}`,
+            productId: item.product.id,
+            type: 'venda' as MovementType,
+            quantity: -item.quantity,
+            previousStock: product.stock,
+            newStock: Math.max(0, product.stock - item.quantity),
+            reason: null,
+            notes: `Venda #${sale.id}`,
+            operator: seller?.name || 'Sistema',
+            date: new Date().toISOString(),
+          };
+        });
+
         const updatedProducts = state.products.map((product) => {
           const cartItem = state.cart.find((item) => item.product.id === product.id);
           if (cartItem) {
@@ -198,6 +281,7 @@ export const useStore = create<StoreState>()(
           products: updatedProducts,
           cart: [],
           sales: [...state.sales, sale],
+          stockMovements: [...state.stockMovements, ...saleMovements],
         });
 
         return sale;
