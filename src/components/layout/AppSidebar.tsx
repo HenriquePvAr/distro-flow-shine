@@ -1,4 +1,4 @@
-import { LayoutDashboard, ShoppingCart, Package, History, Receipt, Trophy, Calculator } from "lucide-react";
+import { LayoutDashboard, ShoppingCart, Package, BookOpen, History, Receipt, Trophy, Calculator } from "lucide-react";
 import { NavLink } from "@/components/NavLink";
 import {
   Sidebar,
@@ -17,6 +17,7 @@ import {
 const menuItems = [
   { title: "Dashboard", url: "/", icon: LayoutDashboard },
   { title: "Vendas (PDV)", url: "/pdv", icon: ShoppingCart },
+  { title: "Catálogo", url: "/catalogo", icon: BookOpen },
   { title: "Estoque", url: "/estoque", icon: Package },
   { title: "Histórico", url: "/historico", icon: History },
   { title: "Despesas", url: "/despesas", icon: Receipt },
