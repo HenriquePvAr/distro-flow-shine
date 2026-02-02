@@ -47,6 +47,8 @@ export interface Seller {
   name: string;
 }
 
+export type SaleStatus = 'active' | 'cancelled';
+
 export interface Sale {
   id: string;
   items: CartItem[];
@@ -56,6 +58,10 @@ export interface Sale {
   customer: Customer | null;
   seller: Seller | null;
   date: string;
+  status: SaleStatus;
+  cancelledAt?: string;
+  cancelledBy?: string;
+  cancelReason?: string;
 }
 
 export type ExpenseCategory = 'Salários' | 'Combustível' | 'Aluguel' | 'Mercadoria' | 'Outros';
@@ -110,6 +116,7 @@ interface StoreState {
   
   // Sale actions
   processSale: (paymentMethod: string, customer: Customer | null, seller: Seller | null) => Sale | null;
+  cancelSale: (saleId: string, reason: string, operator: string) => void;
   
   // Expense actions
   addExpense: (expense: Omit<Expense, 'id'>) => void;
@@ -257,6 +264,7 @@ export const useStore = create<StoreState>()(
           customer,
           seller,
           date: new Date().toISOString(),
+          status: 'active',
         };
 
         // Create stock movements for each sold item
@@ -292,6 +300,57 @@ export const useStore = create<StoreState>()(
         });
 
         return sale;
+      },
+
+      cancelSale: (saleId, reason, operator) => {
+        const state = get();
+        const sale = state.sales.find((s) => s.id === saleId);
+        if (!sale || sale.status === 'cancelled') return;
+
+        // Create stock movements to return items
+        const returnMovements: StockMovement[] = sale.items.map((item) => {
+          const product = state.products.find((p) => p.id === item.product.id)!;
+          return {
+            id: `${Date.now()}-return-${item.product.id}`,
+            productId: item.product.id,
+            type: 'entrada' as MovementType,
+            quantity: item.quantity,
+            previousStock: product.stock,
+            newStock: product.stock + item.quantity,
+            reason: 'outros' as AdjustmentReason,
+            notes: `Estorno da venda #${sale.id} - ${reason}`,
+            operator,
+            date: new Date().toISOString(),
+          };
+        });
+
+        // Return items to stock
+        const updatedProducts = state.products.map((product) => {
+          const saleItem = sale.items.find((item) => item.product.id === product.id);
+          if (saleItem) {
+            return { ...product, stock: product.stock + saleItem.quantity };
+          }
+          return product;
+        });
+
+        // Update sale status
+        const updatedSales = state.sales.map((s) =>
+          s.id === saleId
+            ? {
+                ...s,
+                status: 'cancelled' as SaleStatus,
+                cancelledAt: new Date().toISOString(),
+                cancelledBy: operator,
+                cancelReason: reason,
+              }
+            : s
+        );
+
+        set({
+          products: updatedProducts,
+          sales: updatedSales,
+          stockMovements: [...state.stockMovements, ...returnMovements],
+        });
       },
 
       addExpense: (expense) =>
