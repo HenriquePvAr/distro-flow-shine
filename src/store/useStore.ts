@@ -5,10 +5,14 @@ export interface Product {
   id: string;
   name: string;
   sku: string;
+  description: string;
   costPrice: number;
   salePrice: number;
   stock: number;
+  minStock: number;
   category: string;
+  supplier: string;
+  imageUrl?: string;
 }
 
 export type MovementType = 'entrada' | 'saida' | 'ajuste' | 'venda';
@@ -113,17 +117,20 @@ interface StoreState {
   deleteExpense: (id: string) => void;
 }
 
+export const productCategories = ['Bebidas', 'Alimentos', 'Limpeza', 'Higiene', 'Outros'] as const;
+export const productSuppliers = ['Distribuidora Central', 'Atacado Brasil', 'Fornecedor Direto', 'Outros'] as const;
+
 const initialProducts: Product[] = [
-  { id: '1', name: 'Coca-Cola 2L', sku: 'BEB001', costPrice: 5.50, salePrice: 8.99, stock: 48, category: 'Bebidas' },
-  { id: '2', name: 'Água Mineral 500ml', sku: 'BEB002', costPrice: 0.80, salePrice: 2.50, stock: 120, category: 'Bebidas' },
-  { id: '3', name: 'Cerveja Lata 350ml', sku: 'BEB003', costPrice: 2.20, salePrice: 4.99, stock: 72, category: 'Bebidas' },
-  { id: '4', name: 'Arroz 5kg', sku: 'ALM001', costPrice: 18.00, salePrice: 27.90, stock: 25, category: 'Alimentos' },
-  { id: '5', name: 'Feijão 1kg', sku: 'ALM002', costPrice: 6.50, salePrice: 9.99, stock: 40, category: 'Alimentos' },
-  { id: '6', name: 'Óleo de Soja 900ml', sku: 'ALM003', costPrice: 5.80, salePrice: 8.49, stock: 35, category: 'Alimentos' },
-  { id: '7', name: 'Sabão em Pó 1kg', sku: 'LIM001', costPrice: 8.00, salePrice: 14.90, stock: 3, category: 'Limpeza' },
-  { id: '8', name: 'Detergente 500ml', sku: 'LIM002', costPrice: 1.50, salePrice: 3.49, stock: 60, category: 'Limpeza' },
-  { id: '9', name: 'Papel Higiênico 12un', sku: 'HIG001', costPrice: 12.00, salePrice: 19.90, stock: 2, category: 'Higiene' },
-  { id: '10', name: 'Sabonete 90g', sku: 'HIG002', costPrice: 1.20, salePrice: 2.99, stock: 80, category: 'Higiene' },
+  { id: '1', name: 'Coca-Cola 2L', sku: 'BEB001', description: 'Refrigerante Coca-Cola 2 litros', costPrice: 5.50, salePrice: 8.99, stock: 48, minStock: 10, category: 'Bebidas', supplier: 'Distribuidora Central' },
+  { id: '2', name: 'Água Mineral 500ml', sku: 'BEB002', description: 'Água mineral sem gás', costPrice: 0.80, salePrice: 2.50, stock: 120, minStock: 20, category: 'Bebidas', supplier: 'Distribuidora Central' },
+  { id: '3', name: 'Cerveja Lata 350ml', sku: 'BEB003', description: 'Cerveja pilsen lata', costPrice: 2.20, salePrice: 4.99, stock: 72, minStock: 24, category: 'Bebidas', supplier: 'Atacado Brasil' },
+  { id: '4', name: 'Arroz 5kg', sku: 'ALM001', description: 'Arroz tipo 1 pacote 5kg', costPrice: 18.00, salePrice: 27.90, stock: 25, minStock: 10, category: 'Alimentos', supplier: 'Atacado Brasil' },
+  { id: '5', name: 'Feijão 1kg', sku: 'ALM002', description: 'Feijão carioca tipo 1', costPrice: 6.50, salePrice: 9.99, stock: 40, minStock: 15, category: 'Alimentos', supplier: 'Atacado Brasil' },
+  { id: '6', name: 'Óleo de Soja 900ml', sku: 'ALM003', description: 'Óleo de soja refinado', costPrice: 5.80, salePrice: 8.49, stock: 35, minStock: 10, category: 'Alimentos', supplier: 'Fornecedor Direto' },
+  { id: '7', name: 'Sabão em Pó 1kg', sku: 'LIM001', description: 'Sabão em pó multiuso', costPrice: 8.00, salePrice: 14.90, stock: 3, minStock: 5, category: 'Limpeza', supplier: 'Distribuidora Central' },
+  { id: '8', name: 'Detergente 500ml', sku: 'LIM002', description: 'Detergente líquido neutro', costPrice: 1.50, salePrice: 3.49, stock: 60, minStock: 20, category: 'Limpeza', supplier: 'Distribuidora Central' },
+  { id: '9', name: 'Papel Higiênico 12un', sku: 'HIG001', description: 'Papel higiênico folha dupla 12 rolos', costPrice: 12.00, salePrice: 19.90, stock: 2, minStock: 5, category: 'Higiene', supplier: 'Fornecedor Direto' },
+  { id: '10', name: 'Sabonete 90g', sku: 'HIG002', description: 'Sabonete em barra perfumado', costPrice: 1.20, salePrice: 2.99, stock: 80, minStock: 30, category: 'Higiene', supplier: 'Fornecedor Direto' },
 ];
 
 export const useStore = create<StoreState>()(
