@@ -49,11 +49,18 @@ export interface Seller {
 
 export type SaleStatus = 'active' | 'cancelled';
 
+export interface PaymentEntry {
+  method: string;
+  amount: number;
+}
+
 export interface Sale {
   id: string;
   items: CartItem[];
   total: number;
   profit: number;
+  payments: PaymentEntry[];
+  /** @deprecated Use payments array instead */
   paymentMethod: string;
   customer: Customer | null;
   seller: Seller | null;
@@ -115,7 +122,7 @@ interface StoreState {
   clearCart: () => void;
   
   // Sale actions
-  processSale: (paymentMethod: string, customer: Customer | null, seller: Seller | null) => Sale | null;
+  processSale: (payments: PaymentEntry[], customer: Customer | null, seller: Seller | null) => Sale | null;
   cancelSale: (saleId: string, reason: string, operator: string) => void;
   
   // Expense actions
@@ -242,7 +249,7 @@ export const useStore = create<StoreState>()(
 
       clearCart: () => set({ cart: [] }),
 
-      processSale: (paymentMethod, customer, seller) => {
+      processSale: (payments, customer, seller) => {
         const state = get();
         if (state.cart.length === 0) return null;
 
@@ -255,12 +262,16 @@ export const useStore = create<StoreState>()(
           0
         );
 
+        // Legacy: keep paymentMethod for backwards compatibility
+        const primaryMethod = payments.length > 0 ? payments[0].method : 'Dinheiro';
+
         const sale: Sale = {
           id: Date.now().toString(),
           items: [...state.cart],
           total,
           profit,
-          paymentMethod,
+          payments,
+          paymentMethod: primaryMethod,
           customer,
           seller,
           date: new Date().toISOString(),

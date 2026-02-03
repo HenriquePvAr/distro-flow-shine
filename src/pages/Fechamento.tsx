@@ -29,12 +29,22 @@ export default function Fechamento() {
     return expenses.filter((expense) => isToday(new Date(expense.date)));
   }, [expenses]);
 
-  // Calculate totals by payment method
+  // Calculate totals by payment method (supports split payments)
   const paymentTotals = useMemo(() => {
     return todaySales.reduce(
       (acc, sale) => {
-        const method = sale.paymentMethod;
-        acc[method] = (acc[method] || 0) + sale.total;
+        // Only count active sales
+        if (sale.status === 'cancelled') return acc;
+        
+        // Use payments array if available, fallback to paymentMethod for old data
+        if (sale.payments && sale.payments.length > 0) {
+          sale.payments.forEach((payment) => {
+            acc[payment.method] = (acc[payment.method] || 0) + payment.amount;
+          });
+        } else {
+          // Legacy support: single paymentMethod
+          acc[sale.paymentMethod] = (acc[sale.paymentMethod] || 0) + sale.total;
+        }
         return acc;
       },
       {} as Record<string, number>
@@ -46,8 +56,10 @@ export default function Fechamento() {
   const totalCartao = paymentTotals["Cartão"] || 0;
   const totalBoleto = paymentTotals["Boleto"] || 0;
 
-  const totalSales = todaySales.reduce((sum, sale) => sum + sale.total, 0);
-  const totalProfit = todaySales.reduce((sum, sale) => sum + sale.profit, 0);
+  // Only count active sales
+  const activeSales = todaySales.filter((s) => s.status !== 'cancelled');
+  const totalSales = activeSales.reduce((sum, sale) => sum + sale.total, 0);
+  const totalProfit = activeSales.reduce((sum, sale) => sum + sale.profit, 0);
   const totalExpensesValue = todayExpenses.reduce((sum, exp) => sum + exp.value, 0);
   const netProfit = totalProfit - totalExpensesValue;
 
@@ -85,9 +97,6 @@ export default function Fechamento() {
           </CardHeader>
           <CardContent>
             <p className="text-2xl font-bold text-emerald-600">{formatCurrency(totalPix)}</p>
-            <p className="text-xs text-muted-foreground mt-1">
-              {todaySales.filter((s) => s.paymentMethod === "Pix").length} transações
-            </p>
           </CardContent>
         </Card>
 
@@ -100,9 +109,6 @@ export default function Fechamento() {
           </CardHeader>
           <CardContent>
             <p className="text-2xl font-bold text-green-600">{formatCurrency(totalDinheiro)}</p>
-            <p className="text-xs text-muted-foreground mt-1">
-              {todaySales.filter((s) => s.paymentMethod === "Dinheiro").length} transações
-            </p>
           </CardContent>
         </Card>
 
@@ -115,9 +121,6 @@ export default function Fechamento() {
           </CardHeader>
           <CardContent>
             <p className="text-2xl font-bold text-blue-600">{formatCurrency(totalCartao)}</p>
-            <p className="text-xs text-muted-foreground mt-1">
-              {todaySales.filter((s) => s.paymentMethod === "Cartão").length} transações
-            </p>
           </CardContent>
         </Card>
 
@@ -130,9 +133,6 @@ export default function Fechamento() {
           </CardHeader>
           <CardContent>
             <p className="text-2xl font-bold text-orange-600">{formatCurrency(totalBoleto)}</p>
-            <p className="text-xs text-muted-foreground mt-1">
-              {todaySales.filter((s) => s.paymentMethod === "Boleto").length} transações
-            </p>
           </CardContent>
         </Card>
       </div>

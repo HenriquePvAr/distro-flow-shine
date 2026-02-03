@@ -34,7 +34,18 @@ export const generateWhatsAppReceipt = (sale: Sale): string => {
   });
 
   message += `━━━━━━━━━━━━━━━━━━━━\n`;
-  message += `💳 *Forma de Pagamento:* ${sale.paymentMethod}\n`;
+  if (sale.payments && sale.payments.length > 0) {
+    if (sale.payments.length === 1) {
+      message += `💳 *Forma de Pagamento:* ${sale.payments[0].method}\n`;
+    } else {
+      message += `💳 *Formas de Pagamento:*\n`;
+      sale.payments.forEach((payment) => {
+        message += `   • ${payment.method}: ${formatCurrency(payment.amount)}\n`;
+      });
+    }
+  } else {
+    message += `💳 *Forma de Pagamento:* ${sale.paymentMethod}\n`;
+  }
   message += `━━━━━━━━━━━━━━━━━━━━\n\n`;
   message += `💰 *TOTAL: ${formatCurrency(sale.total)}*\n\n`;
   message += `━━━━━━━━━━━━━━━━━━━━\n\n`;

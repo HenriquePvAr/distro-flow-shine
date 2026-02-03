@@ -89,7 +89,17 @@ export default function Historico() {
         sale.id.includes(search) ||
         sale.customer?.name.toLowerCase().includes(search.toLowerCase()) ||
         sale.seller?.name.toLowerCase().includes(search.toLowerCase());
-      const matchesPayment = paymentFilter === "all" || sale.paymentMethod === paymentFilter;
+      
+      // Payment filter: check payments array or legacy paymentMethod
+      let matchesPayment = paymentFilter === "all";
+      if (!matchesPayment) {
+        if (sale.payments && sale.payments.length > 0) {
+          matchesPayment = sale.payments.some((p) => p.method === paymentFilter);
+        } else {
+          matchesPayment = sale.paymentMethod === paymentFilter;
+        }
+      }
+      
       const matchesSeller = sellerFilter === "all" || sale.seller?.id === sellerFilter;
       
       let matchesDate = true;
@@ -115,9 +125,15 @@ export default function Historico() {
   const totalSales = activeSales.length;
   const cancelledCount = filteredSales.filter((s) => s.status === 'cancelled').length;
 
-  // Payment method breakdown for day closing (only active sales)
+  // Payment method breakdown for day closing (only active sales, supports split payments)
   const paymentBreakdown = activeSales.reduce((acc, sale) => {
-    acc[sale.paymentMethod] = (acc[sale.paymentMethod] || 0) + sale.total;
+    if (sale.payments && sale.payments.length > 0) {
+      sale.payments.forEach((payment) => {
+        acc[payment.method] = (acc[payment.method] || 0) + payment.amount;
+      });
+    } else {
+      acc[sale.paymentMethod] = (acc[sale.paymentMethod] || 0) + sale.total;
+    }
     return acc;
   }, {} as Record<string, number>);
 
@@ -387,7 +403,17 @@ export default function Historico() {
                         </Badge>
                       </TableCell>
                       <TableCell>
-                        <Badge variant="outline">{sale.paymentMethod}</Badge>
+                        <div className="flex flex-wrap gap-1">
+                          {sale.payments && sale.payments.length > 0 ? (
+                            sale.payments.length > 1 ? (
+                              <Badge variant="outline" className="text-xs">Dividido ({sale.payments.length})</Badge>
+                            ) : (
+                              <Badge variant="outline">{sale.payments[0].method}</Badge>
+                            )
+                          ) : (
+                            <Badge variant="outline">{sale.paymentMethod}</Badge>
+                          )}
+                        </div>
                       </TableCell>
                       <TableCell className={cn("text-right font-medium", isCancelled && "line-through text-muted-foreground")}>
                         {formatCurrency(sale.total)}
@@ -488,7 +514,18 @@ export default function Historico() {
                     <CreditCard className="h-4 w-4" />
                     Forma de Pagamento
                   </div>
-                  <Badge variant="outline" className="text-base">{selectedSale.paymentMethod}</Badge>
+                  {selectedSale.payments && selectedSale.payments.length > 0 ? (
+                    <div className="space-y-2">
+                      {selectedSale.payments.map((payment, index) => (
+                        <div key={index} className="flex items-center justify-between p-2 rounded-lg bg-muted/50">
+                          <Badge variant="outline">{payment.method}</Badge>
+                          <span className="font-mono font-medium">{formatCurrency(payment.amount)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <Badge variant="outline" className="text-base">{selectedSale.paymentMethod}</Badge>
+                  )}
                 </div>
 
                 <Separator />

@@ -1,6 +1,6 @@
 import { useState } from "react";
-import { ShoppingCart, Plus, Minus, Trash2, Search, CheckCircle, MessageCircle } from "lucide-react";
-import { useStore, customers, sellers, Sale } from "@/store/useStore";
+import { ShoppingCart, Plus, Minus, Trash2, Search, CheckCircle, MessageCircle, X } from "lucide-react";
+import { useStore, customers, sellers, Sale, PaymentEntry } from "@/store/useStore";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -22,6 +22,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { generateWhatsAppReceipt, openWhatsApp } from "@/lib/whatsappReceipt";
+import { Separator } from "@/components/ui/separator";
 
 const paymentMethods = ["Pix", "Cartão", "Boleto", "Dinheiro"];
 
@@ -31,11 +32,15 @@ const formatCurrency = (value: number) =>
 export default function PDV() {
   const { products, cart, addToCart, removeFromCart, updateCartQuantity, clearCart, processSale } = useStore();
   const [search, setSearch] = useState("");
-  const [paymentMethod, setPaymentMethod] = useState("");
   const [customerId, setCustomerId] = useState("");
   const [sellerId, setSellerId] = useState("");
   const [showSuccessModal, setShowSuccessModal] = useState(false);
   const [lastSale, setLastSale] = useState<Sale | null>(null);
+
+  // Split payment state
+  const [payments, setPayments] = useState<PaymentEntry[]>([]);
+  const [currentMethod, setCurrentMethod] = useState("");
+  const [currentAmount, setCurrentAmount] = useState("");
 
   const filteredProducts = products.filter(
     (p) =>
@@ -44,6 +49,8 @@ export default function PDV() {
   );
 
   const cartTotal = cart.reduce((sum, item) => sum + item.product.salePrice * item.quantity, 0);
+  const paymentsTotal = payments.reduce((sum, p) => sum + p.amount, 0);
+  const remainingAmount = cartTotal - paymentsTotal;
 
   const handleAddToCart = (product: typeof products[0]) => {
     if (product.stock === 0) {
@@ -59,24 +66,60 @@ export default function PDV() {
     toast.success("Adicionado ao carrinho", { description: product.name });
   };
 
+  const handleAddPayment = () => {
+    if (!currentMethod) {
+      toast.error("Selecione uma forma de pagamento");
+      return;
+    }
+    const amount = parseFloat(currentAmount);
+    if (isNaN(amount) || amount <= 0) {
+      toast.error("Digite um valor válido");
+      return;
+    }
+    if (amount > remainingAmount + 0.01) {
+      toast.error("Valor excede o restante da venda");
+      return;
+    }
+
+    setPayments([...payments, { method: currentMethod, amount }]);
+    setCurrentMethod("");
+    setCurrentAmount("");
+  };
+
+  const handleRemovePayment = (index: number) => {
+    setPayments(payments.filter((_, i) => i !== index));
+  };
+
+  const handleFillRemaining = () => {
+    if (remainingAmount > 0 && currentMethod) {
+      setCurrentAmount(remainingAmount.toFixed(2));
+    }
+  };
+
   const handleFinalizeSale = () => {
     if (cart.length === 0) {
       toast.error("Carrinho vazio!");
       return;
     }
-    if (!paymentMethod) {
-      toast.error("Selecione a forma de pagamento!");
+    if (payments.length === 0) {
+      toast.error("Adicione pelo menos uma forma de pagamento!");
+      return;
+    }
+    if (Math.abs(remainingAmount) > 0.01) {
+      toast.error("A soma dos pagamentos deve ser igual ao total da venda!");
       return;
     }
 
     const customer = customers.find((c) => c.id === customerId) || null;
     const seller = sellers.find((s) => s.id === sellerId) || null;
 
-    const sale = processSale(paymentMethod, customer, seller);
+    const sale = processSale(payments, customer, seller);
     if (sale) {
       setLastSale(sale);
       setShowSuccessModal(true);
-      setPaymentMethod("");
+      setPayments([]);
+      setCurrentMethod("");
+      setCurrentAmount("");
       setCustomerId("");
       setSellerId("");
     }
@@ -88,6 +131,12 @@ export default function PDV() {
       const message = generateWhatsAppReceipt(lastSale);
       openWhatsApp(phone, message);
     }
+  };
+
+  const resetPayments = () => {
+    setPayments([]);
+    setCurrentMethod("");
+    setCurrentAmount("");
   };
 
   return (
@@ -160,7 +209,7 @@ export default function PDV() {
             {cart.length === 0 ? (
               <p className="text-center text-muted-foreground py-8">Carrinho vazio</p>
             ) : (
-              <div className="space-y-3 max-h-[300px] overflow-auto">
+              <div className="space-y-3 max-h-[200px] overflow-auto">
                 {cart.map((item) => (
                   <div key={item.product.id} className="flex items-center gap-2 p-2 rounded-lg bg-muted/50">
                     <div className="flex-1 min-w-0">
@@ -237,35 +286,128 @@ export default function PDV() {
                 </SelectContent>
               </Select>
 
-              <Select value={paymentMethod} onValueChange={setPaymentMethod}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Forma de pagamento" />
-                </SelectTrigger>
-                <SelectContent>
-                  {paymentMethods.map((method) => (
-                    <SelectItem key={method} value={method}>
-                      {method}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <Separator />
 
-              <div className="flex justify-between items-center pt-2">
-                <span className="text-muted-foreground">Total</span>
-                <span className="text-2xl font-bold text-primary">{formatCurrency(cartTotal)}</span>
+              {/* Split Payment Section */}
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-medium">Formas de Pagamento</span>
+                  {payments.length > 0 && (
+                    <Button variant="ghost" size="sm" onClick={resetPayments} className="h-7 text-xs">
+                      Limpar
+                    </Button>
+                  )}
+                </div>
+
+                {/* Added Payments List */}
+                {payments.length > 0 && (
+                  <div className="space-y-2 max-h-[120px] overflow-auto">
+                    {payments.map((payment, index) => (
+                      <div key={index} className="flex items-center justify-between p-2 rounded-lg bg-emerald-50 dark:bg-emerald-950/20 border border-emerald-200 dark:border-emerald-800">
+                        <div className="flex items-center gap-2">
+                          <Badge variant="outline">{payment.method}</Badge>
+                          <span className="font-mono text-sm font-medium text-emerald-700 dark:text-emerald-400">
+                            {formatCurrency(payment.amount)}
+                          </span>
+                        </div>
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          className="h-6 w-6 text-destructive hover:text-destructive"
+                          onClick={() => handleRemovePayment(index)}
+                        >
+                          <X className="h-3 w-3" />
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Add Payment Form */}
+                {cart.length > 0 && remainingAmount > 0.01 && (
+                  <div className="space-y-2">
+                    <div className="flex gap-2">
+                      <Select value={currentMethod} onValueChange={setCurrentMethod}>
+                        <SelectTrigger className="flex-1">
+                          <SelectValue placeholder="Pagamento" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {paymentMethods.map((method) => (
+                            <SelectItem key={method} value={method}>
+                              {method}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <div className="relative flex-1">
+                        <span className="absolute left-2 top-1/2 -translate-y-1/2 text-xs text-muted-foreground">
+                          R$
+                        </span>
+                        <Input
+                          type="number"
+                          step="0.01"
+                          placeholder="0,00"
+                          value={currentAmount}
+                          onChange={(e) => setCurrentAmount(e.target.value)}
+                          className="pl-7 text-sm"
+                        />
+                      </div>
+                    </div>
+                    <div className="flex gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="flex-1 text-xs"
+                        onClick={handleFillRemaining}
+                        disabled={!currentMethod}
+                      >
+                        Preencher Restante ({formatCurrency(remainingAmount)})
+                      </Button>
+                      <Button
+                        size="sm"
+                        className="flex-1"
+                        onClick={handleAddPayment}
+                        disabled={!currentMethod || !currentAmount}
+                      >
+                        <Plus className="h-3 w-3 mr-1" />
+                        Adicionar
+                      </Button>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <Separator />
+
+              {/* Totals */}
+              <div className="space-y-2">
+                <div className="flex justify-between items-center text-sm">
+                  <span className="text-muted-foreground">Subtotal</span>
+                  <span className="font-mono">{formatCurrency(cartTotal)}</span>
+                </div>
+                <div className="flex justify-between items-center text-sm">
+                  <span className="text-muted-foreground">Pago</span>
+                  <span className="font-mono text-emerald-600">{formatCurrency(paymentsTotal)}</span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-muted-foreground">Restante</span>
+                  <span className={`text-xl font-bold ${remainingAmount > 0.01 ? "text-destructive" : "text-emerald-600"}`}>
+                    {formatCurrency(Math.max(0, remainingAmount))}
+                  </span>
+                </div>
               </div>
 
               <Button
                 className="w-full"
                 size="lg"
                 onClick={handleFinalizeSale}
-                disabled={cart.length === 0 || !paymentMethod}
+                disabled={cart.length === 0 || payments.length === 0 || Math.abs(remainingAmount) > 0.01}
               >
                 Finalizar Venda
               </Button>
 
               {cart.length > 0 && (
-                <Button variant="outline" className="w-full" onClick={clearCart}>
+                <Button variant="outline" className="w-full" onClick={() => { clearCart(); resetPayments(); }}>
                   Limpar Carrinho
                 </Button>
               )}
@@ -288,7 +430,17 @@ export default function PDV() {
                   <p><strong>Pedido:</strong> #{lastSale.id.slice(-6)}</p>
                   {lastSale.customer && <p><strong>Cliente:</strong> {lastSale.customer.name}</p>}
                   {lastSale.seller && <p><strong>Vendedor:</strong> {lastSale.seller.name}</p>}
-                  <p><strong>Pagamento:</strong> {lastSale.paymentMethod}</p>
+                  <div>
+                    <strong>Pagamento:</strong>
+                    <div className="mt-1 space-y-1">
+                      {lastSale.payments.map((p, i) => (
+                        <div key={i} className="flex items-center gap-2 text-sm">
+                          <Badge variant="outline" className="text-xs">{p.method}</Badge>
+                          <span className="font-mono">{formatCurrency(p.amount)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
                   <p className="text-lg font-bold text-primary">
                     Total: {formatCurrency(lastSale.total)}
                   </p>
