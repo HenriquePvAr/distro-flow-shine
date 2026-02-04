@@ -1,6 +1,7 @@
 import { useState, useMemo } from "react";
-import { History, Search, Filter, MessageCircle, Calendar, Eye, XCircle, Package, User, CreditCard, AlertTriangle } from "lucide-react";
+import { History, Search, Filter, MessageCircle, Calendar, Eye, XCircle, Package, User, CreditCard, AlertTriangle, Lock } from "lucide-react";
 import { useStore, Sale, sellers } from "@/store/useStore";
+import { useAuth } from "@/hooks/useAuth";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -69,6 +70,7 @@ const formatTime = (dateString: string) => {
 
 export default function Historico() {
   const { sales, cancelSale } = useStore();
+  const { isAdmin, profile } = useAuth();
   const [search, setSearch] = useState("");
   const [paymentFilter, setPaymentFilter] = useState("all");
   const [sellerFilter, setSellerFilter] = useState("all");
@@ -81,7 +83,7 @@ export default function Historico() {
   // Cancel dialog state
   const [isCancelDialogOpen, setIsCancelDialogOpen] = useState(false);
   const [cancelReason, setCancelReason] = useState("");
-  const [cancelOperator, setCancelOperator] = useState("");
+  const [cancelOperator, setCancelOperator] = useState(profile?.name || "");
 
   const filteredSales = sales
     .filter((sale) => {
@@ -601,13 +603,20 @@ export default function Historico() {
                         <MessageCircle className="h-4 w-4 mr-2" />
                         Enviar WhatsApp
                       </Button>
-                      <Button
-                        variant="destructive"
-                        onClick={openCancelDialog}
-                      >
-                        <XCircle className="h-4 w-4 mr-2" />
-                        Cancelar Venda
-                      </Button>
+                      {isAdmin ? (
+                        <Button
+                          variant="destructive"
+                          onClick={openCancelDialog}
+                        >
+                          <XCircle className="h-4 w-4 mr-2" />
+                          Cancelar Venda
+                        </Button>
+                      ) : (
+                        <Button variant="outline" disabled className="text-muted-foreground">
+                          <Lock className="h-4 w-4 mr-2" />
+                          Cancelamento restrito
+                        </Button>
+                      )}
                     </div>
                   </>
                 )}
