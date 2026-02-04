@@ -1,8 +1,12 @@
-import { LayoutDashboard, ShoppingCart, Package, BookOpen, History, Receipt, Trophy, Calculator } from "lucide-react";
+import { LayoutDashboard, ShoppingCart, Package, BookOpen, History, Receipt, Trophy, Calculator, Users, LogOut } from "lucide-react";
 import { NavLink } from "@/components/NavLink";
+import { useAuth } from "@/hooks/useAuth";
+import { Button } from "@/components/ui/button";
+import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import {
   Sidebar,
   SidebarContent,
+  SidebarFooter,
   SidebarGroup,
   SidebarGroupContent,
   SidebarGroupLabel,
@@ -10,24 +14,44 @@ import {
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
-  SidebarTrigger,
   useSidebar,
 } from "@/components/ui/sidebar";
+import { Badge } from "@/components/ui/badge";
 
-const menuItems = [
+interface MenuItem {
+  title: string;
+  url: string;
+  icon: typeof LayoutDashboard;
+  adminOnly?: boolean;
+}
+
+const menuItems: MenuItem[] = [
   { title: "Dashboard", url: "/", icon: LayoutDashboard },
   { title: "Vendas (PDV)", url: "/pdv", icon: ShoppingCart },
   { title: "Catálogo", url: "/catalogo", icon: BookOpen },
   { title: "Estoque", url: "/estoque", icon: Package },
   { title: "Histórico", url: "/historico", icon: History },
-  { title: "Despesas", url: "/despesas", icon: Receipt },
-  { title: "Performance", url: "/performance", icon: Trophy },
-  { title: "Fechamento", url: "/fechamento", icon: Calculator },
+  { title: "Despesas", url: "/despesas", icon: Receipt, adminOnly: true },
+  { title: "Performance", url: "/performance", icon: Trophy, adminOnly: true },
+  { title: "Fechamento", url: "/fechamento", icon: Calculator, adminOnly: true },
+  { title: "Funcionários", url: "/funcionarios", icon: Users, adminOnly: true },
 ];
 
 export function AppSidebar() {
   const { state } = useSidebar();
+  const { profile, role, isAdmin, signOut } = useAuth();
   const isCollapsed = state === "collapsed";
+
+  const visibleMenuItems = menuItems.filter(
+    (item) => !item.adminOnly || isAdmin
+  );
+
+  const initials = profile?.name
+    ?.split(" ")
+    .map((n) => n[0])
+    .slice(0, 2)
+    .join("")
+    .toUpperCase() || "?";
 
   return (
     <Sidebar collapsible="icon">
@@ -52,7 +76,7 @@ export function AppSidebar() {
           </SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
-              {menuItems.map((item) => (
+              {visibleMenuItems.map((item) => (
                 <SidebarMenuItem key={item.title}>
                   <SidebarMenuButton asChild tooltip={item.title}>
                     <NavLink
@@ -71,6 +95,46 @@ export function AppSidebar() {
           </SidebarGroupContent>
         </SidebarGroup>
       </SidebarContent>
+
+      <SidebarFooter className="border-t border-sidebar-border p-4">
+        {!isCollapsed ? (
+          <div className="space-y-3">
+            <div className="flex items-center gap-3">
+              <Avatar className="h-9 w-9">
+                <AvatarFallback className="bg-sidebar-primary text-sidebar-primary-foreground text-sm">
+                  {initials}
+                </AvatarFallback>
+              </Avatar>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium text-sidebar-foreground truncate">
+                  {profile?.name || "Carregando..."}
+                </p>
+                <Badge variant={isAdmin ? "default" : "secondary"} className="text-xs">
+                  {role === "admin" ? "Admin" : "Vendedor"}
+                </Badge>
+              </div>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              className="w-full"
+              onClick={signOut}
+            >
+              <LogOut className="h-4 w-4 mr-2" />
+              Sair
+            </Button>
+          </div>
+        ) : (
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={signOut}
+            title="Sair"
+          >
+            <LogOut className="h-5 w-5" />
+          </Button>
+        )}
+      </SidebarFooter>
     </Sidebar>
   );
 }

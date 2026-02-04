@@ -6,8 +6,10 @@ import {
   DollarSign,
   Package,
   AlertTriangle,
+  Lock,
 } from "lucide-react";
 import { useStore } from "@/store/useStore";
+import { useAuth } from "@/hooks/useAuth";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   ChartContainer,
@@ -41,6 +43,7 @@ type Period = "7d" | "30d" | "month";
 
 export default function Dashboard() {
   const { sales, expenses, products } = useStore();
+  const { isAdmin } = useAuth();
   const [period, setPeriod] = useState<Period>("7d");
 
   const dateRange = useMemo(() => {
@@ -177,30 +180,47 @@ export default function Dashboard() {
           </CardContent>
         </Card>
 
-        <Card className={realProfit >= 0 ? "border-emerald-500/50" : "border-destructive/50"}>
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">
-              Lucro Real
-            </CardTitle>
-            {realProfit >= 0 ? (
-              <TrendingUp className="h-4 w-4 text-emerald-500" />
-            ) : (
-              <TrendingDown className="h-4 w-4 text-destructive" />
-            )}
-          </CardHeader>
-          <CardContent>
-            <p
-              className={`text-2xl font-bold ${
-                realProfit >= 0 ? "text-emerald-600" : "text-destructive"
-              }`}
-            >
-              {realProfit.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })}
-            </p>
-            <p className="text-xs text-muted-foreground">
-              Lucro Bruto - Despesas
-            </p>
-          </CardContent>
-        </Card>
+        {isAdmin ? (
+          <Card className={realProfit >= 0 ? "border-emerald-500/50" : "border-destructive/50"}>
+            <CardHeader className="flex flex-row items-center justify-between pb-2">
+              <CardTitle className="text-sm font-medium text-muted-foreground">
+                Lucro Real
+              </CardTitle>
+              {realProfit >= 0 ? (
+                <TrendingUp className="h-4 w-4 text-emerald-500" />
+              ) : (
+                <TrendingDown className="h-4 w-4 text-destructive" />
+              )}
+            </CardHeader>
+            <CardContent>
+              <p
+                className={`text-2xl font-bold ${
+                  realProfit >= 0 ? "text-emerald-600" : "text-destructive"
+                }`}
+              >
+                {realProfit.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })}
+              </p>
+              <p className="text-xs text-muted-foreground">
+                Lucro Bruto - Despesas
+              </p>
+            </CardContent>
+          </Card>
+        ) : (
+          <Card className="border-muted">
+            <CardHeader className="flex flex-row items-center justify-between pb-2">
+              <CardTitle className="text-sm font-medium text-muted-foreground">
+                Lucro Real
+              </CardTitle>
+              <Lock className="h-4 w-4 text-muted-foreground" />
+            </CardHeader>
+            <CardContent>
+              <p className="text-2xl font-bold text-muted-foreground">••••••</p>
+              <p className="text-xs text-muted-foreground">
+                Restrito a administradores
+              </p>
+            </CardContent>
+          </Card>
+        )}
       </div>
 
       {/* Secondary Cards */}
