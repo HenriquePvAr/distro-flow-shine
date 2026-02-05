@@ -10,6 +10,7 @@ import Dashboard from "./pages/Dashboard";
 import PDV from "./pages/PDV";
 import Estoque from "./pages/Estoque";
 import Catalogo from "./pages/Catalogo";
+import Clientes from "./pages/Clientes";
 import Historico from "./pages/Historico";
 import Despesas from "./pages/Despesas";
 import Performance from "./pages/Performance";
@@ -70,6 +71,16 @@ const App = () => (
                 <ProtectedRoute>
                   <AppLayout>
                     <Catalogo />
+                  </AppLayout>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/clientes"
+              element={
+                <ProtectedRoute>
+                  <AppLayout>
+                    <Clientes />
                   </AppLayout>
                 </ProtectedRoute>
               }

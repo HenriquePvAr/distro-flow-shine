@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Users, Plus, Search, Shield, ShieldCheck, Phone, Percent, Edit2, Save, X } from "lucide-react";
+import { Users, Plus, Search, Shield, ShieldCheck, Phone, Percent, Edit2, Save, X, Trash2 } from "lucide-react";
 import { useAuth, AppRole, Profile } from "@/hooks/useAuth";
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
@@ -30,6 +30,16 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
 
@@ -45,8 +55,8 @@ export default function Funcionarios() {
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editData, setEditData] = useState<{ commission: string; role: AppRole } | null>(null);
+  const [deleteEmployee, setDeleteEmployee] = useState<Employee | null>(null);
 
-  // New employee form
   const [newEmployee, setNewEmployee] = useState({
     name: "",
     email: "",
@@ -141,7 +151,6 @@ export default function Funcionarios() {
     if (!editData) return;
 
     try {
-      // Update profile commission
       const { error: profileError } = await supabase
         .from("profiles")
         .update({ commission: parseFloat(editData.commission) || 0 })
@@ -149,7 +158,6 @@ export default function Funcionarios() {
 
       if (profileError) throw profileError;
 
-      // Update role if changed
       if (editData.role !== employee.role) {
         const { error: roleError } = await supabase
           .from("user_roles")
@@ -165,6 +173,35 @@ export default function Funcionarios() {
     } catch (error) {
       console.error("Error updating employee:", error);
       toast.error("Erro ao atualizar funcionário");
+    }
+  };
+
+  const handleDeleteEmployee = async () => {
+    if (!deleteEmployee) return;
+
+    try {
+      const { error: roleError } = await supabase
+        .from("user_roles")
+        .delete()
+        .eq("user_id", deleteEmployee.user_id);
+
+      if (roleError) throw roleError;
+
+      const { error: profileError } = await supabase
+        .from("profiles")
+        .delete()
+        .eq("id", deleteEmployee.id);
+
+      if (profileError) throw profileError;
+
+      toast.success("Funcionário removido!", {
+        description: "O acesso ao sistema foi revogado.",
+      });
+      setDeleteEmployee(null);
+      fetchEmployees();
+    } catch (error) {
+      console.error("Error deleting employee:", error);
+      toast.error("Erro ao remover funcionário");
     }
   };
 
@@ -198,8 +235,8 @@ export default function Funcionarios() {
             <Users className="h-6 w-6 text-primary" />
           </div>
           <div>
-            <h1 className="text-2xl font-semibold text-foreground">Funcionários</h1>
-            <p className="text-sm text-muted-foreground">Gestão de equipe e acessos</p>
+            <h1 className="text-2xl font-semibold text-foreground">Equipe</h1>
+            <p className="text-sm text-muted-foreground">Gestão de funcionários e acessos</p>
           </div>
         </div>
 
@@ -236,7 +273,7 @@ export default function Funcionarios() {
                 />
               </div>
               <div className="space-y-2">
-                <Label>Senha *</Label>
+                <Label>Senha de Acesso *</Label>
                 <Input
                   type="password"
                   value={newEmployee.password}
@@ -254,7 +291,7 @@ export default function Funcionarios() {
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2">
-                  <Label>Cargo</Label>
+                  <Label>Cargo *</Label>
                   <Select
                     value={newEmployee.role}
                     onValueChange={(v) => setNewEmployee({ ...newEmployee, role: v as AppRole })}
@@ -294,7 +331,6 @@ export default function Funcionarios() {
         </Dialog>
       </div>
 
-      {/* Summary Cards */}
       <div className="grid gap-4 md:grid-cols-3">
         <Card>
           <CardHeader className="pb-2">
@@ -325,14 +361,13 @@ export default function Funcionarios() {
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <p className="text-2xl font-bold text-emerald-600">
+            <p className="text-2xl font-bold text-green-600">
               {employees.filter((e) => e.role === "vendedor").length}
             </p>
           </CardContent>
         </Card>
       </div>
 
-      {/* Employees Table */}
       <Card>
         <CardHeader className="pb-4">
           <div className="flex items-center gap-4">
@@ -449,13 +484,23 @@ export default function Funcionarios() {
                           </Button>
                         </div>
                       ) : (
-                        <Button
-                          size="icon"
-                          variant="ghost"
-                          onClick={() => startEditing(employee)}
-                        >
-                          <Edit2 className="h-4 w-4" />
-                        </Button>
+                        <div className="flex justify-end gap-1">
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            onClick={() => startEditing(employee)}
+                          >
+                            <Edit2 className="h-4 w-4" />
+                          </Button>
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            className="text-destructive hover:text-destructive"
+                            onClick={() => setDeleteEmployee(employee)}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </div>
                       )}
                     </TableCell>
                   </TableRow>
@@ -465,6 +510,24 @@ export default function Funcionarios() {
           )}
         </CardContent>
       </Card>
+
+      <AlertDialog open={!!deleteEmployee} onOpenChange={() => setDeleteEmployee(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Tem certeza?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Você está prestes a remover <strong>{deleteEmployee?.name}</strong> da equipe.
+              Esta ação removerá o acesso ao sistema.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+            <AlertDialogAction onClick={handleDeleteEmployee} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
+              Remover
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

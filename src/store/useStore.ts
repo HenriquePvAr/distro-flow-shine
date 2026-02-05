@@ -112,6 +112,7 @@ interface StoreState {
   // Product actions
   addProduct: (product: Product) => void;
   updateProduct: (id: string, updates: Partial<Product>) => void;
+  deleteProduct: (id: string) => void;
   adjustStock: (id: string, quantity: number, reason: AdjustmentReason, notes: string, operator: string, type?: MovementType) => void;
   addStockEntry: (id: string, quantity: number, notes: string, operator: string) => void;
   
@@ -164,6 +165,11 @@ export const useStore = create<StoreState>()(
           products: state.products.map((p) =>
             p.id === id ? { ...p, ...updates } : p
           ),
+        })),
+
+      deleteProduct: (id) =>
+        set((state) => ({
+          products: state.products.filter((p) => p.id !== id),
         })),
 
       adjustStock: (id, quantity, reason, notes, operator, type = 'ajuste') => {
