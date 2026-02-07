@@ -2,7 +2,7 @@ import { useState, useMemo } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import { Package, Plus, Search, Image, Percent, AlertTriangle, Edit, Trash2 } from "lucide-react";
+import { Package, Plus, Search, Image, Percent, AlertTriangle, Edit, Trash2, BoxIcon, Weight } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   AlertDialog,
@@ -65,6 +65,9 @@ const productSchema = z.object({
   minStock: z.coerce.number().min(0, "Estoque mínimo não pode ser negativo"),
   stock: z.coerce.number().min(0, "Estoque inicial não pode ser negativo"),
   imageUrl: z.string().url().optional().or(z.literal("")),
+  sellsByBox: z.boolean().optional(),
+  qtyPerBox: z.coerce.number().min(1).optional(),
+  sellsByKg: z.boolean().optional(),
 });
 
 type ProductFormData = z.infer<typeof productSchema>;
@@ -91,6 +94,9 @@ export default function Catalogo() {
       minStock: 5,
       stock: 0,
       imageUrl: "",
+      sellsByBox: false,
+      qtyPerBox: 1,
+      sellsByKg: false,
     },
   });
 
@@ -127,6 +133,9 @@ export default function Catalogo() {
       minStock: product.minStock || 5,
       stock: product.stock,
       imageUrl: product.imageUrl || "",
+      sellsByBox: product.sellsByBox || false,
+      qtyPerBox: product.qtyPerBox || 1,
+      sellsByKg: product.sellsByKg || false,
     });
     setIsDialogOpen(true);
   };
@@ -144,6 +153,9 @@ export default function Catalogo() {
       minStock: 5,
       stock: 0,
       imageUrl: "",
+      sellsByBox: false,
+      qtyPerBox: 1,
+      sellsByKg: false,
     });
     setIsDialogOpen(true);
   };
@@ -154,6 +166,9 @@ export default function Catalogo() {
         ...data,
         description: data.description || "",
         imageUrl: data.imageUrl || undefined,
+        sellsByBox: data.sellsByBox || false,
+        qtyPerBox: data.qtyPerBox || 1,
+        sellsByKg: data.sellsByKg || false,
       });
       toast({
         title: "Produto atualizado!",
@@ -172,6 +187,9 @@ export default function Catalogo() {
         minStock: data.minStock,
         stock: data.stock,
         imageUrl: data.imageUrl || undefined,
+        sellsByBox: data.sellsByBox || false,
+        qtyPerBox: data.qtyPerBox || 1,
+        sellsByKg: data.sellsByKg || false,
       };
       addProduct(newProduct);
       toast({
@@ -416,6 +434,76 @@ export default function Catalogo() {
                         </FormItem>
                       )}
                     />
+                  </div>
+                </div>
+
+                {/* Unidade de Medida */}
+                <div className="space-y-4">
+                  <h3 className="font-semibold text-foreground flex items-center gap-2">
+                    <BoxIcon className="h-4 w-4" />
+                    Unidade de Venda
+                  </h3>
+                  <div className="space-y-4">
+                    <div className="flex items-center gap-6">
+                      <FormField
+                        control={form.control}
+                        name="sellsByBox"
+                        render={({ field }) => (
+                          <FormItem className="flex items-center gap-2 space-y-0">
+                            <FormControl>
+                              <input
+                                type="checkbox"
+                                checked={field.value || false}
+                                onChange={(e) => {
+                                  field.onChange(e.target.checked);
+                                  if (e.target.checked) form.setValue("sellsByKg", false);
+                                }}
+                                className="h-4 w-4 rounded border-input"
+                              />
+                            </FormControl>
+                            <FormLabel className="!mt-0">Vende por Caixa?</FormLabel>
+                          </FormItem>
+                        )}
+                      />
+                      <FormField
+                        control={form.control}
+                        name="sellsByKg"
+                        render={({ field }) => (
+                          <FormItem className="flex items-center gap-2 space-y-0">
+                            <FormControl>
+                              <input
+                                type="checkbox"
+                                checked={field.value || false}
+                                onChange={(e) => {
+                                  field.onChange(e.target.checked);
+                                  if (e.target.checked) form.setValue("sellsByBox", false);
+                                }}
+                                className="h-4 w-4 rounded border-input"
+                              />
+                            </FormControl>
+                            <FormLabel className="!mt-0">Vende por KG?</FormLabel>
+                          </FormItem>
+                        )}
+                      />
+                    </div>
+                    {form.watch("sellsByBox") && (
+                      <FormField
+                        control={form.control}
+                        name="qtyPerBox"
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>Quantidade por Caixa</FormLabel>
+                            <FormControl>
+                              <Input type="number" min="1" placeholder="12" {...field} />
+                            </FormControl>
+                            <FormDescription>
+                              Quantas unidades vêm em cada caixa.
+                            </FormDescription>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+                    )}
                   </div>
                 </div>
 

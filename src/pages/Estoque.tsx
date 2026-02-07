@@ -1,5 +1,5 @@
-import { useState, useMemo } from "react";
-import { Package, AlertTriangle, Plus, Edit, History, ArrowDownCircle, ArrowUpCircle, RefreshCw, ShoppingCart } from "lucide-react";
+import { useState, useMemo, useEffect } from "react";
+import { Package, AlertTriangle, Plus, Edit, History, ArrowDownCircle, ArrowUpCircle, RefreshCw, ShoppingCart, Search } from "lucide-react";
 import { useStore, AdjustmentReason, StockMovement, Product } from "@/store/useStore";
 import { format } from "date-fns";
 import { ptBR } from "date-fns/locale";
@@ -33,7 +33,7 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { toast } from "sonner";
-
+import { logStockMovement, fetchStockLogs, type StockLogRow } from "@/lib/stockLogger";
 const adjustmentReasons: { value: AdjustmentReason; label: string }[] = [
   { value: "erro_contagem", label: "Erro de Contagem" },
   { value: "avaria", label: "Avaria" },
@@ -70,6 +70,7 @@ export default function Estoque() {
   const [entryQuantity, setEntryQuantity] = useState("");
   const [entryNotes, setEntryNotes] = useState("");
   const [entryOperator, setEntryOperator] = useState("");
+  const [entryCostPrice, setEntryCostPrice] = useState("");
 
   // Adjustment form state
   const [adjustProductId, setAdjustProductId] = useState("");
@@ -77,6 +78,14 @@ export default function Estoque() {
   const [adjustReason, setAdjustReason] = useState<AdjustmentReason | "">("");
   const [adjustNotes, setAdjustNotes] = useState("");
   const [adjustOperator, setAdjustOperator] = useState("");
+
+  // Supabase logs state
+  const [supabaseLogs, setSupabaseLogs] = useState<StockLogRow[]>([]);
+  const [logsSearch, setLogsSearch] = useState("");
+
+  useEffect(() => {
+    fetchStockLogs(200).then(setSupabaseLogs);
+  }, []);
 
   const formatCurrency = (value: number) =>
     value.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
@@ -94,13 +103,33 @@ export default function Estoque() {
       toast.error("Quantidade inválida");
       return;
     }
-    addStockEntry(entryProductId, qty, entryNotes, entryOperator);
+    const costPrice = entryCostPrice ? parseFloat(entryCostPrice) : undefined;
+    const product = products.find((p) => p.id === entryProductId);
+    if (!product) return;
+
+    addStockEntry(entryProductId, qty, entryNotes, entryOperator, costPrice);
+    
+    // Log to Supabase
+    logStockMovement({
+      product_id: entryProductId,
+      product_name: product.name,
+      movement_type: "entrada",
+      quantity: qty,
+      previous_stock: product.stock,
+      new_stock: product.stock + qty,
+      reason: "Entrada Fornecedor",
+      notes: entryNotes,
+      operator: entryOperator,
+      cost_price: costPrice,
+    }).then(() => fetchStockLogs(200).then(setSupabaseLogs));
+
     toast.success("Entrada registrada com sucesso!");
     setEntryDialogOpen(false);
     setEntryProductId("");
     setEntryQuantity("");
     setEntryNotes("");
     setEntryOperator("");
+    setEntryCostPrice("");
   };
 
   const handleAdjustment = () => {
@@ -113,7 +142,24 @@ export default function Estoque() {
       toast.error("Quantidade inválida");
       return;
     }
+    const product = products.find((p) => p.id === adjustProductId);
+    if (!product) return;
+
     adjustStock(adjustProductId, qty, adjustReason as AdjustmentReason, adjustNotes, adjustOperator);
+    
+    // Log to Supabase
+    logStockMovement({
+      product_id: adjustProductId,
+      product_name: product.name,
+      movement_type: "ajuste",
+      quantity: qty,
+      previous_stock: product.stock,
+      new_stock: Math.max(0, product.stock + qty),
+      reason: adjustReason,
+      notes: adjustNotes,
+      operator: adjustOperator,
+    }).then(() => fetchStockLogs(200).then(setSupabaseLogs));
+
     toast.success("Ajuste registrado com sucesso!");
     setAdjustDialogOpen(false);
     setAdjustProductId("");
@@ -196,6 +242,20 @@ export default function Estoque() {
                     onChange={(e) => setEntryOperator(e.target.value)}
                     placeholder="Nome do responsável"
                   />
+                </div>
+                <div className="space-y-2">
+                  <Label>Preço de Custo Unitário (R$)</Label>
+                  <Input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    value={entryCostPrice}
+                    onChange={(e) => setEntryCostPrice(e.target.value)}
+                    placeholder="Custo unitário desta entrada"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Preencha para recalcular o custo médio ponderado do produto.
+                  </p>
                 </div>
                 <div className="space-y-2">
                   <Label>Observações</Label>
@@ -311,7 +371,7 @@ export default function Estoque() {
       <Tabs defaultValue="produtos" className="space-y-4">
         <TabsList>
           <TabsTrigger value="produtos">Produtos</TabsTrigger>
-          <TabsTrigger value="movimentacoes">Movimentações Recentes</TabsTrigger>
+          <TabsTrigger value="movimentacoes">Movimentações (Kardex)</TabsTrigger>
         </TabsList>
 
         <TabsContent value="produtos">
@@ -379,65 +439,88 @@ export default function Estoque() {
         </TabsContent>
 
         <TabsContent value="movimentacoes">
-          <div className="rounded-xl border border-border bg-card shadow-sm overflow-hidden">
-            <Table>
-              <TableHeader>
-                <TableRow className="bg-muted/50">
-                  <TableHead className="font-semibold">Data/Hora</TableHead>
-                  <TableHead className="font-semibold">Produto</TableHead>
-                  <TableHead className="font-semibold">Tipo</TableHead>
-                  <TableHead className="font-semibold text-center">Qtd</TableHead>
-                  <TableHead className="font-semibold">Motivo</TableHead>
-                  <TableHead className="font-semibold">Operador</TableHead>
-                  <TableHead className="font-semibold">Observações</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {stockMovements.length === 0 ? (
-                  <TableRow>
-                    <TableCell colSpan={7} className="text-center text-muted-foreground py-8">
-                      Nenhuma movimentação registrada
-                    </TableCell>
+          <div className="space-y-4">
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+              <Input
+                placeholder="Buscar por produto, operador ou motivo..."
+                value={logsSearch}
+                onChange={(e) => setLogsSearch(e.target.value)}
+                className="pl-10"
+              />
+            </div>
+            <div className="rounded-xl border border-border bg-card shadow-sm overflow-hidden">
+              <Table>
+                <TableHeader>
+                  <TableRow className="bg-muted/50">
+                    <TableHead className="font-semibold">Data/Hora</TableHead>
+                    <TableHead className="font-semibold">Produto</TableHead>
+                    <TableHead className="font-semibold">Tipo</TableHead>
+                    <TableHead className="font-semibold text-center">Qtd</TableHead>
+                    <TableHead className="font-semibold text-center">Saldo</TableHead>
+                    <TableHead className="font-semibold">Motivo</TableHead>
+                    <TableHead className="font-semibold">Operador</TableHead>
+                    <TableHead className="font-semibold text-right">Custo</TableHead>
+                    <TableHead className="font-semibold">Obs</TableHead>
                   </TableRow>
-                ) : (
-                  [...stockMovements]
-                    .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
-                    .slice(0, 50)
-                    .map((movement) => {
-                      const product = products.find((p) => p.id === movement.productId);
-                      const typeInfo = movementTypeLabels[movement.type];
-                      return (
-                        <TableRow key={movement.id} className="hover:bg-muted/30 transition-colors">
-                          <TableCell className="text-muted-foreground text-sm">
-                            {format(new Date(movement.date), "dd/MM/yyyy HH:mm", { locale: ptBR })}
-                          </TableCell>
-                          <TableCell className="font-medium">{product?.name || "—"}</TableCell>
-                          <TableCell>
-                            <Badge className={`${typeInfo.color} text-white`}>
-                              {typeInfo.label}
-                            </Badge>
-                          </TableCell>
-                          <TableCell className="text-center">
-                            <span className={movement.quantity > 0 ? "text-emerald-600 font-bold" : "text-red-600 font-bold"}>
-                              {movement.quantity > 0 ? `+${movement.quantity}` : movement.quantity}
-                            </span>
-                            <span className="text-muted-foreground text-xs ml-1">
-                              ({movement.previousStock} → {movement.newStock})
-                            </span>
-                          </TableCell>
-                          <TableCell>
-                            {movement.reason ? reasonLabels[movement.reason] : "—"}
-                          </TableCell>
-                          <TableCell>{movement.operator}</TableCell>
-                          <TableCell className="text-muted-foreground text-sm max-w-[200px] truncate">
-                            {movement.notes || "—"}
-                          </TableCell>
-                        </TableRow>
-                      );
-                    })
-                )}
-              </TableBody>
-            </Table>
+                </TableHeader>
+                <TableBody>
+                  {supabaseLogs.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={9} className="text-center text-muted-foreground py-8">
+                        Nenhuma movimentação registrada no Kardex
+                      </TableCell>
+                    </TableRow>
+                  ) : (
+                    supabaseLogs
+                      .filter((log) => {
+                        if (!logsSearch) return true;
+                        const s = logsSearch.toLowerCase();
+                        return (
+                          log.product_name.toLowerCase().includes(s) ||
+                          log.operator.toLowerCase().includes(s) ||
+                          (log.reason || "").toLowerCase().includes(s) ||
+                          (log.notes || "").toLowerCase().includes(s)
+                        );
+                      })
+                      .map((log) => {
+                        const typeInfo = movementTypeLabels[log.movement_type] || { label: log.movement_type, color: "bg-muted" };
+                        return (
+                          <TableRow key={log.id} className="hover:bg-muted/30 transition-colors">
+                            <TableCell className="text-muted-foreground text-sm">
+                              {format(new Date(log.created_at), "dd/MM/yyyy HH:mm", { locale: ptBR })}
+                            </TableCell>
+                            <TableCell className="font-medium">{log.product_name}</TableCell>
+                            <TableCell>
+                              <Badge className={`${typeInfo.color} text-white`}>
+                                {typeInfo.label}
+                              </Badge>
+                            </TableCell>
+                            <TableCell className="text-center">
+                              <span className={log.quantity > 0 ? "text-emerald-600 font-bold" : "text-red-600 font-bold"}>
+                                {log.quantity > 0 ? `+${log.quantity}` : log.quantity}
+                              </span>
+                            </TableCell>
+                            <TableCell className="text-center font-medium">
+                              <span className="text-muted-foreground text-xs">
+                                {log.previous_stock} → {log.new_stock}
+                              </span>
+                            </TableCell>
+                            <TableCell>{log.reason || "—"}</TableCell>
+                            <TableCell>{log.operator}</TableCell>
+                            <TableCell className="text-right text-muted-foreground">
+                              {log.cost_price ? formatCurrency(log.cost_price) : "—"}
+                            </TableCell>
+                            <TableCell className="text-muted-foreground text-sm max-w-[150px] truncate">
+                              {log.notes || "—"}
+                            </TableCell>
+                          </TableRow>
+                        );
+                      })
+                  )}
+                </TableBody>
+              </Table>
+            </div>
           </div>
         </TabsContent>
       </Tabs>
