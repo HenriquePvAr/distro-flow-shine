@@ -1,6 +1,6 @@
 import { useState } from "react";
-import { ShoppingCart, Plus, Minus, Trash2, Search, CheckCircle, MessageCircle, X } from "lucide-react";
-import { useStore, customers, sellers, Sale, PaymentEntry } from "@/store/useStore";
+import { ShoppingCart, Plus, Minus, Trash2, Search, CheckCircle, MessageCircle, X, Box, Weight } from "lucide-react";
+import { useStore, customers, sellers, Sale, PaymentEntry, UnitType } from "@/store/useStore";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -30,7 +30,7 @@ const formatCurrency = (value: number) =>
   value.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 
 export default function PDV() {
-  const { products, cart, addToCart, removeFromCart, updateCartQuantity, clearCart, processSale } = useStore();
+  const { products, cart, addToCart, removeFromCart, updateCartQuantity, updateCartSaleMode, clearCart, processSale } = useStore();
   const [search, setSearch] = useState("");
   const [customerId, setCustomerId] = useState("");
   const [sellerId, setSellerId] = useState("");
@@ -48,7 +48,14 @@ export default function PDV() {
       p.sku.toLowerCase().includes(search.toLowerCase())
   );
 
-  const cartTotal = cart.reduce((sum, item) => sum + item.product.salePrice * item.quantity, 0);
+  const getItemEffectivePrice = (item: typeof cart[0]) => {
+    if (item.saleMode === 'caixa' && item.product.sellsByBox && item.product.qtyPerBox) {
+      return item.product.salePrice * item.product.qtyPerBox;
+    }
+    return item.product.salePrice;
+  };
+
+  const cartTotal = cart.reduce((sum, item) => sum + getItemEffectivePrice(item) * item.quantity, 0);
   const paymentsTotal = payments.reduce((sum, p) => sum + p.amount, 0);
   const remainingAmount = cartTotal - paymentsTotal;
 
@@ -179,13 +186,35 @@ export default function PDV() {
                       <h3 className="font-medium truncate">{product.name}</h3>
                       <p className="text-xs text-muted-foreground font-mono">{product.sku}</p>
                     </div>
-                    <Badge variant={product.stock < 5 ? "destructive" : "secondary"}>
-                      {product.stock} un
-                    </Badge>
+                    <div className="flex flex-col items-end gap-1">
+                      <Badge variant={product.stock < 5 ? "destructive" : "secondary"}>
+                        {product.stock} un
+                      </Badge>
+                      {product.sellsByBox && (
+                        <Badge variant="outline" className="text-xs gap-1">
+                          <Box className="h-3 w-3" />
+                          {product.qtyPerBox} un/cx
+                        </Badge>
+                      )}
+                      {product.sellsByKg && (
+                        <Badge variant="outline" className="text-xs gap-1">
+                          <Weight className="h-3 w-3" />
+                          KG
+                        </Badge>
+                      )}
+                    </div>
                   </div>
                   <p className="text-lg font-bold text-primary mt-2">
                     {formatCurrency(product.salePrice)}
+                    <span className="text-xs font-normal text-muted-foreground ml-1">
+                      /un
+                    </span>
                   </p>
+                  {product.sellsByBox && product.qtyPerBox && (
+                    <p className="text-sm text-muted-foreground">
+                      Caixa: {formatCurrency(product.salePrice * product.qtyPerBox)}
+                    </p>
+                  )}
                 </CardContent>
               </Card>
             ))}
@@ -209,53 +238,97 @@ export default function PDV() {
             {cart.length === 0 ? (
               <p className="text-center text-muted-foreground py-8">Carrinho vazio</p>
             ) : (
-              <div className="space-y-3 max-h-[200px] overflow-auto">
-                {cart.map((item) => (
-                  <div key={item.product.id} className="flex items-center gap-2 p-2 rounded-lg bg-muted/50">
-                    <div className="flex-1 min-w-0">
-                      <p className="font-medium text-sm truncate">{item.product.name}</p>
-                      <p className="text-xs text-muted-foreground">
-                        {formatCurrency(item.product.salePrice)} × {item.quantity}
-                      </p>
+              <div className="space-y-3 max-h-[250px] overflow-auto">
+                {cart.map((item) => {
+                  const effectivePrice = getItemEffectivePrice(item);
+                  const canSellByBox = item.product.sellsByBox && item.product.qtyPerBox;
+                  const canSellByKg = item.product.sellsByKg;
+                  const showModeSwitch = canSellByBox || canSellByKg;
+
+                  return (
+                    <div key={`${item.product.id}-${item.saleMode}`} className="p-2 rounded-lg bg-muted/50 space-y-2">
+                      <div className="flex items-center gap-2">
+                        <div className="flex-1 min-w-0">
+                          <p className="font-medium text-sm truncate">{item.product.name}</p>
+                          <p className="text-xs text-muted-foreground">
+                            {formatCurrency(effectivePrice)} × {item.saleMode === 'kg' ? `${item.quantity} kg` : item.quantity}
+                            {item.saleMode === 'caixa' ? ' cx' : ''}
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-1">
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            className="h-7 w-7"
+                            onClick={() =>
+                              item.quantity > 1
+                                ? updateCartQuantity(item.product.id, item.quantity - 1)
+                                : removeFromCart(item.product.id)
+                            }
+                          >
+                            <Minus className="h-3 w-3" />
+                          </Button>
+                          <span className="w-8 text-center text-sm font-medium">
+                            {item.saleMode === 'kg' ? item.quantity.toFixed(1) : item.quantity}
+                          </span>
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            className="h-7 w-7"
+                            onClick={() => {
+                              if (item.saleMode === 'kg' || item.quantity < item.product.stock) {
+                                updateCartQuantity(item.product.id, item.quantity + 1);
+                              }
+                            }}
+                            disabled={item.saleMode !== 'kg' && item.quantity >= item.product.stock}
+                          >
+                            <Plus className="h-3 w-3" />
+                          </Button>
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            className="h-7 w-7 text-destructive hover:text-destructive"
+                            onClick={() => removeFromCart(item.product.id)}
+                          >
+                            <Trash2 className="h-3 w-3" />
+                          </Button>
+                        </div>
+                      </div>
+                      {showModeSwitch && (
+                        <div className="flex gap-1">
+                          <Button
+                            size="sm"
+                            variant={item.saleMode === 'unidade' ? 'default' : 'outline'}
+                            className="h-6 text-xs flex-1"
+                            onClick={() => updateCartSaleMode(item.product.id, 'unidade')}
+                          >
+                            Unidade
+                          </Button>
+                          {canSellByBox && (
+                            <Button
+                              size="sm"
+                              variant={item.saleMode === 'caixa' ? 'default' : 'outline'}
+                              className="h-6 text-xs flex-1"
+                              onClick={() => updateCartSaleMode(item.product.id, 'caixa')}
+                            >
+                              Caixa ({item.product.qtyPerBox}un)
+                            </Button>
+                          )}
+                          {canSellByKg && (
+                            <Button
+                              size="sm"
+                              variant={item.saleMode === 'kg' ? 'default' : 'outline'}
+                              className="h-6 text-xs flex-1"
+                              onClick={() => updateCartSaleMode(item.product.id, 'kg')}
+                            >
+                              KG
+                            </Button>
+                          )}
+                        </div>
+                      )}
                     </div>
-                    <div className="flex items-center gap-1">
-                      <Button
-                        size="icon"
-                        variant="ghost"
-                        className="h-7 w-7"
-                        onClick={() =>
-                          item.quantity > 1
-                            ? updateCartQuantity(item.product.id, item.quantity - 1)
-                            : removeFromCart(item.product.id)
-                        }
-                      >
-                        <Minus className="h-3 w-3" />
-                      </Button>
-                      <span className="w-6 text-center text-sm font-medium">{item.quantity}</span>
-                      <Button
-                        size="icon"
-                        variant="ghost"
-                        className="h-7 w-7"
-                        onClick={() => {
-                          if (item.quantity < item.product.stock) {
-                            updateCartQuantity(item.product.id, item.quantity + 1);
-                          }
-                        }}
-                        disabled={item.quantity >= item.product.stock}
-                      >
-                        <Plus className="h-3 w-3" />
-                      </Button>
-                      <Button
-                        size="icon"
-                        variant="ghost"
-                        className="h-7 w-7 text-destructive hover:text-destructive"
-                        onClick={() => removeFromCart(item.product.id)}
-                      >
-                        <Trash2 className="h-3 w-3" />
-                      </Button>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
 

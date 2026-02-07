@@ -83,6 +83,51 @@ export type Database = {
         }
         Relationships: []
       }
+      stock_logs: {
+        Row: {
+          cost_price: number | null
+          created_at: string
+          id: string
+          movement_type: string
+          new_stock: number
+          notes: string | null
+          operator: string
+          previous_stock: number
+          product_id: string
+          product_name: string
+          quantity: number
+          reason: string | null
+        }
+        Insert: {
+          cost_price?: number | null
+          created_at?: string
+          id?: string
+          movement_type: string
+          new_stock: number
+          notes?: string | null
+          operator: string
+          previous_stock: number
+          product_id: string
+          product_name: string
+          quantity: number
+          reason?: string | null
+        }
+        Update: {
+          cost_price?: number | null
+          created_at?: string
+          id?: string
+          movement_type?: string
+          new_stock?: number
+          notes?: string | null
+          operator?: string
+          previous_stock?: number
+          product_id?: string
+          product_name?: string
+          quantity?: number
+          reason?: string | null
+        }
+        Relationships: []
+      }
       user_roles: {
         Row: {
           id: string

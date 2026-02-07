@@ -1,6 +1,8 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 
+export type UnitType = 'unidade' | 'caixa' | 'kg';
+
 export interface Product {
   id: string;
   name: string;
@@ -13,6 +15,9 @@ export interface Product {
   category: string;
   supplier: string;
   imageUrl?: string;
+  sellsByBox?: boolean;
+  qtyPerBox?: number;
+  sellsByKg?: boolean;
 }
 
 export type MovementType = 'entrada' | 'saida' | 'ajuste' | 'venda';
@@ -34,6 +39,7 @@ export interface StockMovement {
 export interface CartItem {
   product: Product;
   quantity: number;
+  saleMode: UnitType;
 }
 
 export interface Customer {
@@ -114,12 +120,13 @@ interface StoreState {
   updateProduct: (id: string, updates: Partial<Product>) => void;
   deleteProduct: (id: string) => void;
   adjustStock: (id: string, quantity: number, reason: AdjustmentReason, notes: string, operator: string, type?: MovementType) => void;
-  addStockEntry: (id: string, quantity: number, notes: string, operator: string) => void;
+  addStockEntry: (id: string, quantity: number, notes: string, operator: string, entryCostPrice?: number) => void;
   
   // Cart actions
-  addToCart: (product: Product, quantity: number) => void;
+  addToCart: (product: Product, quantity: number, saleMode?: UnitType) => void;
   removeFromCart: (productId: string) => void;
   updateCartQuantity: (productId: string, quantity: number) => void;
+  updateCartSaleMode: (productId: string, saleMode: UnitType) => void;
   clearCart: () => void;
   
   // Sale actions
@@ -199,12 +206,20 @@ export const useStore = create<StoreState>()(
         });
       },
 
-      addStockEntry: (id, quantity, notes, operator) => {
+      addStockEntry: (id, quantity, notes, operator, entryCostPrice) => {
         const state = get();
         const product = state.products.find((p) => p.id === id);
         if (!product) return;
 
         const newStock = product.stock + quantity;
+        
+        // Weighted average cost calculation
+        let newCostPrice = product.costPrice;
+        if (entryCostPrice && entryCostPrice > 0 && product.stock + quantity > 0) {
+          newCostPrice = ((product.stock * product.costPrice) + (quantity * entryCostPrice)) / (product.stock + quantity);
+          newCostPrice = Math.round(newCostPrice * 100) / 100;
+        }
+
         const movement: StockMovement = {
           id: Date.now().toString(),
           productId: id,
@@ -220,25 +235,26 @@ export const useStore = create<StoreState>()(
 
         set({
           products: state.products.map((p) =>
-            p.id === id ? { ...p, stock: newStock } : p
+            p.id === id ? { ...p, stock: newStock, costPrice: newCostPrice } : p
           ),
           stockMovements: [...state.stockMovements, movement],
         });
       },
 
-      addToCart: (product, quantity) =>
+      addToCart: (product, quantity, saleMode) =>
         set((state) => {
-          const existing = state.cart.find((item) => item.product.id === product.id);
+          const mode = saleMode || 'unidade';
+          const existing = state.cart.find((item) => item.product.id === product.id && item.saleMode === mode);
           if (existing) {
             return {
               cart: state.cart.map((item) =>
-                item.product.id === product.id
+                item.product.id === product.id && item.saleMode === mode
                   ? { ...item, quantity: item.quantity + quantity }
                   : item
               ),
             };
           }
-          return { cart: [...state.cart, { product, quantity }] };
+          return { cart: [...state.cart, { product, quantity, saleMode: mode }] };
         }),
 
       removeFromCart: (productId) =>
@@ -253,18 +269,46 @@ export const useStore = create<StoreState>()(
           ),
         })),
 
+      updateCartSaleMode: (productId, saleMode) =>
+        set((state) => ({
+          cart: state.cart.map((item) =>
+            item.product.id === productId ? { ...item, saleMode } : item
+          ),
+        })),
+
       clearCart: () => set({ cart: [] }),
 
       processSale: (payments, customer, seller) => {
         const state = get();
         if (state.cart.length === 0) return null;
 
+        const getItemPrice = (item: CartItem) => {
+          if (item.saleMode === 'caixa' && item.product.sellsByBox && item.product.qtyPerBox) {
+            return item.product.salePrice * item.product.qtyPerBox;
+          }
+          return item.product.salePrice;
+        };
+
+        const getItemCost = (item: CartItem) => {
+          if (item.saleMode === 'caixa' && item.product.sellsByBox && item.product.qtyPerBox) {
+            return item.product.costPrice * item.product.qtyPerBox;
+          }
+          return item.product.costPrice;
+        };
+
+        const getStockDeduction = (item: CartItem) => {
+          if (item.saleMode === 'caixa' && item.product.sellsByBox && item.product.qtyPerBox) {
+            return item.quantity * item.product.qtyPerBox;
+          }
+          return item.quantity;
+        };
+
         const total = state.cart.reduce(
-          (sum, item) => sum + item.product.salePrice * item.quantity,
+          (sum, item) => sum + getItemPrice(item) * item.quantity,
           0
         );
         const profit = state.cart.reduce(
-          (sum, item) => sum + (item.product.salePrice - item.product.costPrice) * item.quantity,
+          (sum, item) => sum + (getItemPrice(item) - getItemCost(item)) * item.quantity,
           0
         );
 
@@ -287,15 +331,16 @@ export const useStore = create<StoreState>()(
         // Create stock movements for each sold item
         const saleMovements: StockMovement[] = state.cart.map((item) => {
           const product = state.products.find((p) => p.id === item.product.id)!;
+          const deduction = getStockDeduction(item);
           return {
             id: `${Date.now()}-${item.product.id}`,
             productId: item.product.id,
             type: 'venda' as MovementType,
-            quantity: -item.quantity,
+            quantity: -deduction,
             previousStock: product.stock,
-            newStock: Math.max(0, product.stock - item.quantity),
+            newStock: Math.max(0, product.stock - deduction),
             reason: null,
-            notes: `Venda #${sale.id}`,
+            notes: `Venda #${sale.id}${item.saleMode === 'caixa' ? ` (${item.quantity} cx)` : item.saleMode === 'kg' ? ` (${item.quantity} kg)` : ''}`,
             operator: seller?.name || 'Sistema',
             date: new Date().toISOString(),
           };
@@ -304,7 +349,8 @@ export const useStore = create<StoreState>()(
         const updatedProducts = state.products.map((product) => {
           const cartItem = state.cart.find((item) => item.product.id === product.id);
           if (cartItem) {
-            return { ...product, stock: Math.max(0, product.stock - cartItem.quantity) };
+            const deduction = getStockDeduction(cartItem);
+            return { ...product, stock: Math.max(0, product.stock - deduction) };
           }
           return product;
         });
