@@ -85,6 +85,7 @@ export interface Expense {
   category: ExpenseCategory;
   value: number;
   date: string;
+  isFixed?: boolean;
 }
 
 export const expenseCategories: ExpenseCategory[] = [

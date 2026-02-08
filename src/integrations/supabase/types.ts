@@ -53,6 +53,51 @@ export type Database = {
         }
         Relationships: []
       }
+      financial_entries: {
+        Row: {
+          created_at: string
+          description: string
+          due_date: string
+          entity_name: string | null
+          id: string
+          notes: string | null
+          paid_amount: number
+          reference: string | null
+          status: string
+          total_amount: number
+          type: string
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          description: string
+          due_date: string
+          entity_name?: string | null
+          id?: string
+          notes?: string | null
+          paid_amount?: number
+          reference?: string | null
+          status?: string
+          total_amount: number
+          type: string
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          description?: string
+          due_date?: string
+          entity_name?: string | null
+          id?: string
+          notes?: string | null
+          paid_amount?: number
+          reference?: string | null
+          status?: string
+          total_amount?: number
+          type?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
       profiles: {
         Row: {
           commission: number | null

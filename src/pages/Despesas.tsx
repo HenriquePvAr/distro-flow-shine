@@ -1,9 +1,10 @@
 import { useState } from "react";
-import { Receipt, Plus, Trash2, Calendar } from "lucide-react";
+import { Receipt, Plus, Trash2, Calendar, Pin } from "lucide-react";
 import { useStore, expenseCategories, type ExpenseCategory } from "@/store/useStore";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Badge } from "@/components/ui/badge";
 import {
   Select,
   SelectContent,
@@ -43,6 +44,8 @@ export default function Despesas() {
   const [date, setDate] = useState<Date>(new Date());
   const [filterCategory, setFilterCategory] = useState<string>("all");
 
+  const [isFixed, setIsFixed] = useState(false);
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!description || !value || parseFloat(value) <= 0) {
@@ -55,6 +58,7 @@ export default function Despesas() {
       category,
       value: parseFloat(value),
       date: date.toISOString(),
+      isFixed,
     });
 
     toast.success("Despesa cadastrada com sucesso!");
@@ -62,6 +66,7 @@ export default function Despesas() {
     setCategory("Outros");
     setValue("");
     setDate(new Date());
+    setIsFixed(false);
     setDialogOpen(false);
   };
 
@@ -167,6 +172,24 @@ export default function Despesas() {
                 </Popover>
               </div>
 
+              <div className="flex items-center gap-3 p-3 rounded-lg border border-border">
+                <input
+                  type="checkbox"
+                  id="isFixed"
+                  checked={isFixed}
+                  onChange={(e) => setIsFixed(e.target.checked)}
+                  className="h-4 w-4 rounded border-input accent-primary"
+                />
+                <div>
+                  <Label htmlFor="isFixed" className="cursor-pointer font-medium">
+                    Despesa Fixa
+                  </Label>
+                  <p className="text-xs text-muted-foreground">
+                    Marque para custos recorrentes (aluguel, salários, etc.)
+                  </p>
+                </div>
+              </div>
+
               <Button type="submit" className="w-full">
                 Cadastrar Despesa
               </Button>
@@ -243,7 +266,15 @@ export default function Despesas() {
                       <TableCell>
                         {format(new Date(expense.date), "dd/MM/yyyy")}
                       </TableCell>
-                      <TableCell className="font-medium">{expense.description}</TableCell>
+                      <TableCell className="font-medium">
+                        {expense.description}
+                        {expense.isFixed && (
+                          <Badge variant="outline" className="ml-2 text-xs gap-1">
+                            <Pin className="h-3 w-3" />
+                            Fixa
+                          </Badge>
+                        )}
+                      </TableCell>
                       <TableCell>
                         <span className="px-2 py-1 rounded-full text-xs bg-muted">
                           {expense.category}

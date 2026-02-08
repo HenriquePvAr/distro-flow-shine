@@ -1,4 +1,4 @@
-import { LayoutDashboard, ShoppingCart, Package, BookOpen, History, Receipt, Trophy, Calculator, Users, LogOut, UserCircle } from "lucide-react";
+import { LayoutDashboard, ShoppingCart, Package, BookOpen, History, Receipt, Trophy, Calculator, Users, LogOut, UserCircle, Landmark } from "lucide-react";
 import { NavLink } from "@/components/NavLink";
 import { useAuth } from "@/hooks/useAuth";
 import { Button } from "@/components/ui/button";
@@ -33,6 +33,7 @@ const menuItems: MenuItem[] = [
   { title: "Clientes", url: "/clientes", icon: UserCircle },
   { title: "Histórico", url: "/historico", icon: History },
   { title: "Despesas", url: "/despesas", icon: Receipt, adminOnly: true },
+  { title: "Financeiro", url: "/financeiro", icon: Landmark, adminOnly: true },
   { title: "Performance", url: "/performance", icon: Trophy, adminOnly: true },
   { title: "Fechamento", url: "/fechamento", icon: Calculator, adminOnly: true },
   { title: "Equipe", url: "/funcionarios", icon: Users, adminOnly: true },

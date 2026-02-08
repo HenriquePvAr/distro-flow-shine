@@ -16,6 +16,7 @@ import Despesas from "./pages/Despesas";
 import Performance from "./pages/Performance";
 import Fechamento from "./pages/Fechamento";
 import Funcionarios from "./pages/Funcionarios";
+import Financeiro from "./pages/Financeiro";
 import Login from "./pages/Login";
 import Cadastro from "./pages/Cadastro";
 import NotFound from "./pages/NotFound";
@@ -131,6 +132,16 @@ const App = () => (
                 <ProtectedRoute requiredRole="admin">
                   <AppLayout>
                     <Funcionarios />
+                  </AppLayout>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/financeiro"
+              element={
+                <ProtectedRoute requiredRole="admin">
+                  <AppLayout>
+                    <Financeiro />
                   </AppLayout>
                 </ProtectedRoute>
               }
