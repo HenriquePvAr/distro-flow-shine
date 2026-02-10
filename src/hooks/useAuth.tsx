@@ -2,131 +2,135 @@ import { createContext, useContext, useEffect, useState, ReactNode } from "react
 import { User, Session } from "@supabase/supabase-js";
 import { supabase } from "@/integrations/supabase/client";
 
+// Define os papéis possíveis
 export type AppRole = "admin" | "vendedor";
 
-export interface Profile {
+// Interface dos dados do usuário (flexível para evitar erros se faltar campo no banco)
+export interface UserData {
   id: string;
-  user_id: string;
   name: string;
-  phone: string | null;
-  commission: number;
-  created_at: string;
-  updated_at: string;
+  role: AppRole;
+  commission?: number; // Opcional
+  phone?: string | null; // Opcional
 }
 
 interface AuthContextType {
-  user: User | null;
   session: Session | null;
-  profile: Profile | null;
-  role: AppRole | null;
+  user: User | null;
+  userData: UserData | null;
+  loading: boolean;
   isAdmin: boolean;
-  isLoading: boolean;
-  signIn: (email: string, password: string) => Promise<{ error: Error | null }>;
-  signUp: (email: string, password: string, metadata: { name: string; phone?: string; commission?: number; role?: AppRole }) => Promise<{ error: Error | null }>;
+  signIn: (email: string, password: string, rememberMe?: boolean) => Promise<{ error: any }>;
+  signUp: (email: string, password: string, data: { name: string; phone?: string; commission?: number; role?: AppRole }) => Promise<{ error: any }>;
   signOut: () => Promise<void>;
-  refreshProfile: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [user, setUser] = useState<User | null>(null);
   const [session, setSession] = useState<Session | null>(null);
-  const [profile, setProfile] = useState<Profile | null>(null);
-  const [role, setRole] = useState<AppRole | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
+  const [user, setUser] = useState<User | null>(null);
+  const [userData, setUserData] = useState<UserData | null>(null);
+  const [loading, setLoading] = useState(true);
 
-  const fetchProfile = async (userId: string) => {
+  // Função para buscar dados do perfil no banco
+  const fetchUserData = async (userId: string) => {
     try {
-      const { data: profileData, error: profileError } = await supabase
+      // Busca perfil na tabela 'profiles'
+      const { data, error } = await supabase
         .from("profiles")
-        .select("*")
-        .eq("user_id", userId)
+        .select("*") // Seleciona tudo o que tiver lá
+        .eq("id", userId)
         .single();
 
-      if (profileError) {
-        console.error("Error fetching profile:", profileError);
+      if (error) {
+        console.error("Erro ao buscar perfil:", error);
+        // Mesmo com erro, paramos o loading
+        setLoading(false); 
         return;
       }
 
-      setProfile(profileData);
-
-      const { data: roleData, error: roleError } = await supabase
-        .from("user_roles")
-        .select("role")
-        .eq("user_id", userId)
-        .single();
-
-      if (roleError) {
-        console.error("Error fetching role:", roleError);
-        return;
+      if (data) {
+        // Mapeia os dados do banco para nosso objeto UserData
+        // Usamos 'any' no data para evitar que o TypeScript reclame se o campo não existir nos types gerados
+        const safeData = data as any;
+        
+        setUserData({
+          id: safeData.id,
+          name: safeData.name || "Usuário",
+          role: (safeData.role as AppRole) || "vendedor",
+          // Só tenta ler se existir, senão usa padrão
+          commission: safeData.commission || 0, 
+          phone: safeData.phone || null
+        });
       }
-
-      setRole(roleData.role as AppRole);
     } catch (error) {
-      console.error("Error in fetchProfile:", error);
-    }
-  };
-
-  const refreshProfile = async () => {
-    if (user) {
-      await fetchProfile(user.id);
+      console.error("Erro inesperado ao buscar perfil:", error);
+    } finally {
+      setLoading(false);
     }
   };
 
   useEffect(() => {
-    // Set up auth state listener FIRST
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      async (event, session) => {
-        setSession(session);
-        setUser(session?.user ?? null);
-
-        if (session?.user) {
-          // Use setTimeout to prevent deadlock
-          setTimeout(() => fetchProfile(session.user.id), 0);
-        } else {
-          setProfile(null);
-          setRole(null);
-        }
-        setIsLoading(false);
-      }
-    );
-
-    // THEN get initial session
+    // 1. Verifica sessão atual ao carregar
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
       setUser(session?.user ?? null);
       if (session?.user) {
-        fetchProfile(session.user.id);
+        fetchUserData(session.user.id);
+      } else {
+        setLoading(false);
       }
-      setIsLoading(false);
     });
 
-    return () => {
-      subscription.unsubscribe();
-    };
+    // 2. Escuta mudanças na autenticação
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(
+      async (_event, session) => {
+        setSession(session);
+        setUser(session?.user ?? null);
+        
+        if (session?.user) {
+          // Se acabou de logar, busca os dados do perfil
+          await fetchUserData(session.user.id);
+        } else {
+          setUserData(null);
+          setLoading(false);
+        }
+      }
+    );
+
+    return () => subscription.unsubscribe();
   }, []);
 
-  const signIn = async (email: string, password: string) => {
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
-    return { error };
+  const signIn = async (email: string, password: string, rememberMe: boolean = true) => {
+    try {
+      // Opcional: Configuração de persistência poderia ser feita aqui
+      // Mas o cliente padrão já lida bem com isso.
+      
+      const { error } = await supabase.auth.signInWithPassword({
+        email,
+        password,
+      });
+
+      return { error };
+    } catch (error: any) {
+      return { error };
+    }
   };
 
   const signUp = async (
     email: string,
     password: string,
-    metadata: { name: string; phone?: string; commission?: number; role?: AppRole }
+    data: { name: string; phone?: string; commission?: number; role?: AppRole }
   ) => {
     const { error } = await supabase.auth.signUp({
       email,
       password,
       options: {
-        emailRedirectTo: window.location.origin,
         data: {
-          name: metadata.name,
-          phone: metadata.phone || null,
-          commission: metadata.commission || 0,
-          role: metadata.role || "vendedor",
+          name: data.name,
+          phone: data.phone, // Envia para os metadados
+          // O trigger handle_new_user no banco deve ser capaz de ler isso
         },
       },
     });
@@ -135,25 +139,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const signOut = async () => {
     await supabase.auth.signOut();
-    setUser(null);
     setSession(null);
-    setProfile(null);
-    setRole(null);
+    setUser(null);
+    setUserData(null);
+    window.location.href = "/login"; // Redirecionamento forçado para limpar estado
   };
 
   return (
     <AuthContext.Provider
       value={{
-        user,
         session,
-        profile,
-        role,
-        isAdmin: role === "admin",
-        isLoading,
+        user,
+        userData,
+        loading,
+        isAdmin: userData?.role === "admin",
         signIn,
         signUp,
         signOut,
-        refreshProfile,
       }}
     >
       {children}

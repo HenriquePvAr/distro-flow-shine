@@ -6,6 +6,8 @@ import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { AuthProvider } from "@/hooks/useAuth";
 import { AppLayout } from "@/components/layout/AppLayout";
 import ProtectedRoute from "@/components/ProtectedRoute";
+
+// Páginas
 import Dashboard from "./pages/Dashboard";
 import PDV from "./pages/PDV";
 import Estoque from "./pages/Estoque";
@@ -19,6 +21,7 @@ import Funcionarios from "./pages/Funcionarios";
 import Financeiro from "./pages/Financeiro";
 import Login from "./pages/Login";
 import Cadastro from "./pages/Cadastro";
+import RedefinirSenha from "./pages/RedefinirSenha"; // <--- Importado aqui
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -31,11 +34,12 @@ const App = () => (
         <Sonner />
         <BrowserRouter>
           <Routes>
-            {/* Public routes */}
+            {/* --- Rotas Públicas --- */}
             <Route path="/login" element={<Login />} />
             <Route path="/cadastro" element={<Cadastro />} />
+            <Route path="/redefinir-senha" element={<RedefinirSenha />} /> {/* Rota Nova */}
             
-            {/* Protected routes */}
+            {/* --- Rotas Protegidas (Exige Login) --- */}
             <Route
               path="/"
               element={
@@ -126,6 +130,8 @@ const App = () => (
                 </ProtectedRoute>
               }
             />
+
+            {/* --- Rotas de Administrador --- */}
             <Route
               path="/funcionarios"
               element={
@@ -146,6 +152,8 @@ const App = () => (
                 </ProtectedRoute>
               }
             />
+
+            {/* Rota de Erro 404 */}
             <Route path="*" element={<NotFound />} />
           </Routes>
         </BrowserRouter>
