@@ -1,7 +1,9 @@
-"use client";
 import { useState, useEffect } from "react";
 import {
+  Users,
   Search,
+  ShieldCheck,
+  Phone,
   Edit2,
   Save,
   X,
@@ -12,7 +14,7 @@ import {
   UserCog,
   AlertTriangle,
 } from "lucide-react";
-import { useAuth, AppRole } from "@/hooks/useAuth";
+import { useAuth, AppRole } from "@/hooks/useAuth"; // Removido Profile que causava erro
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -96,49 +98,47 @@ export default function Funcionarios() {
   const fetchEmployees = async () => {
     setIsLoading(true);
     try {
-      const { data: profiles, error: profilesError } = await (supabase
-        .from("profiles") as any)
+      // 1. Busca perfis (removemos o filtro .eq('active') do banco para evitar crash se a coluna não existir)
+      const { data: profiles, error: profilesError } = await (
+        supabase.from("profiles") as any
+      )
         .select(`*`)
-        .eq("active", true)
         .order("name");
 
       if (profilesError) throw profilesError;
 
-      const { data: roles, error: rolesError } = await supabase
-        .from("user_roles")
-        .select("*");
+      // 2. Busca cargos (com tratamento de erro silencioso para não travar a tela)
+      const { data: roles } = await supabase.from("user_roles").select("*");
 
-      if (rolesError) throw rolesError;
+      // 3. Formata e filtra no Javascript (mais seguro)
+      const formatted: Employee[] = (profiles || [])
+        .map((p: any) => {
+          // Tenta achar role na tabela de roles OU usa a do perfil
+          const roleEntry = roles?.find((r: any) => r.user_id === p.id);
+          const finalRole =
+            (roleEntry?.role as AppRole) || (p.role as AppRole) || "vendedor";
 
-      const formatted: Employee[] = (profiles || []).map((p: any) => {
-        const roleEntry = roles?.find((r: any) => r.user_id === p.id);
-        const finalRole =
-          (roleEntry?.role as AppRole) || (p.role as AppRole) || "vendedor";
-
-        return {
-          id: p.id,
-          name: p.name || "Sem Nome",
-          phone: p.phone,
-          role: finalRole,
-          active: p.active,
-        };
-      });
+          return {
+            id: p.id,
+            name: p.name || "Sem Nome",
+            phone: p.phone,
+            role: finalRole,
+            active: p.active,
+          };
+        })
+        // Filtra aqui: mostra se active for true ou se active for nulo/undefined (para compatibilidade)
+        .filter((p) => p.active !== false);
 
       setEmployees(formatted);
     } catch (error: any) {
       console.error("Erro ao buscar:", error);
-      toast.error("Erro ao carregar lista.");
+      toast.error("Erro ao carregar lista de funcionários.");
     } finally {
       setIsLoading(false);
     }
   };
 
   const handleCreateEmployee = async () => {
-    if (!isAdmin) {
-      toast.error("Apenas administradores podem cadastrar.");
-      return;
-    }
-
     if (!newEmployee.name || !newEmployee.email) {
       toast.error("Preencha Nome e E-mail.");
       return;
@@ -157,7 +157,7 @@ export default function Funcionarios() {
       });
 
       if (authError) {
-        if (authError.message?.includes("already registered")) {
+        if (authError.message.includes("already registered")) {
           toast.error("E-mail em uso. O usuário pode estar arquivado.");
           return;
         }
@@ -167,9 +167,9 @@ export default function Funcionarios() {
       const userId = authData.user?.id;
 
       if (userId) {
-        // dá um tempinho pro trigger/criação do profile acontecer
         await new Promise((resolve) => setTimeout(resolve, 1500));
 
+        // Cria perfil
         await (supabase.from("profiles") as any).upsert({
           id: userId,
           name: newEmployee.name,
@@ -178,24 +178,24 @@ export default function Funcionarios() {
           active: true,
         });
 
+        // Cria role
         await supabase
-          .from("user_roles")
-          .upsert(
+            .from("user_roles")
+            .upsert(
             { user_id: userId, role: newEmployee.role },
             { onConflict: "user_id" }
-          );
+            );
 
-        // ✅ CORRIGIDO: cast no supabase ANTES do .from()
         if (newEmployee.role === "vendedor") {
-          await (supabase as any)
-            .from("sellers")
-            .upsert({ name: newEmployee.name }, { onConflict: "name" });
+          await (supabase.from("sellers") as any).upsert(
+            { name: newEmployee.name },
+            { onConflict: "name" }
+          );
         }
 
         toast.success("Funcionário criado!", {
           description: `Senha: ${finalPassword}`,
         });
-
         setIsDialogOpen(false);
         setNewEmployee({
           name: "",
@@ -207,17 +207,11 @@ export default function Funcionarios() {
         fetchEmployees();
       }
     } catch (error: any) {
-      console.error(error);
-      toast.error("Erro ao cadastrar: " + (error?.message || "desconhecido"));
+      toast.error("Erro ao cadastrar: " + error.message);
     }
   };
 
   const startEditing = (employee: Employee) => {
-    if (!isAdmin) {
-      toast.error("Apenas administradores podem editar.");
-      return;
-    }
-
     setEditingId(employee.id);
     setEditData({
       role: employee.role,
@@ -234,7 +228,9 @@ export default function Funcionarios() {
     if (!editData) return;
 
     try {
-      await (supabase.from("profiles") as any)
+      // 1. Atualiza a tabela PROFILES
+      // Usamos 'as any' porque seu types.ts local pode não ter 'role' ainda
+      const { error: profileError } = await (supabase.from("profiles") as any)
         .update({
           name: editData.name,
           phone: editData.phone,
@@ -242,29 +238,32 @@ export default function Funcionarios() {
         })
         .eq("id", employee.id);
 
-      await supabase
+      if (profileError) throw profileError;
+
+      // 2. Atualiza a tabela USER_ROLES (AQUI QUE ESTAVA FALHANDO SILENCIOSAMENTE)
+      const { error: roleError } = await supabase
         .from("user_roles")
         .upsert(
           { user_id: employee.id, role: editData.role },
           { onConflict: "user_id" }
         );
 
-      toast.success("Dados atualizados!");
+      if (roleError) throw roleError; // Agora pegamos o erro se não tiver permissão!
+
+      toast.success("Cargo atualizado com sucesso!");
       setEditingId(null);
       setEditData(null);
-      fetchEmployees();
+      
+      // Recarrega a lista para confirmar visualmente
+      await fetchEmployees(); 
+      
     } catch (error: any) {
-      console.error(error);
-      toast.error("Erro ao atualizar.");
+      console.error("Erro na atualização:", error);
+      toast.error("Erro ao atualizar: " + (error.message || "Verifique as permissões"));
     }
   };
 
   const handleDeleteEmployee = async () => {
-    if (!isAdmin) {
-      toast.error("Apenas administradores podem arquivar.");
-      return;
-    }
-
     const employeeToDelete = deleteEmployee;
     if (!employeeToDelete) return;
 
@@ -275,15 +274,15 @@ export default function Funcionarios() {
 
       if (rpcError) throw rpcError;
 
-      // ✅ CORRIGIDO: cast no supabase ANTES do .from()
-      await (supabase as any)
-        .from("sellers")
+      await (supabase.from("sellers") as any)
         .delete()
         .eq("name", employeeToDelete.name);
 
       toast.success("Funcionário arquivado!");
 
-      setEmployees((prev) => prev.filter((e) => e.id !== employeeToDelete.id));
+      setEmployees((prev) =>
+        prev.filter((e) => e.id !== employeeToDelete.id)
+      );
       setDeleteEmployee(null);
     } catch (error: any) {
       console.error(error);
@@ -316,11 +315,10 @@ export default function Funcionarios() {
 
         <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
           <DialogTrigger asChild>
-            <Button className="w-full sm:w-auto gap-2" disabled={!isAdmin}>
+            <Button className="w-full sm:w-auto gap-2">
               <UserPlus className="h-4 w-4" /> Novo Funcionário
             </Button>
           </DialogTrigger>
-
           <DialogContent className="max-w-lg">
             <DialogHeader>
               <DialogTitle>Cadastrar Funcionário</DialogTitle>
@@ -328,7 +326,6 @@ export default function Funcionarios() {
                 Crie um acesso. Senha padrão: 123456
               </DialogDescription>
             </DialogHeader>
-
             <div className="grid gap-4 py-4">
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2">
@@ -352,7 +349,6 @@ export default function Funcionarios() {
                   />
                 </div>
               </div>
-
               <div className="space-y-2">
                 <Label>E-mail (Login) *</Label>
                 <Input
@@ -364,7 +360,6 @@ export default function Funcionarios() {
                   placeholder="joao@empresa.com"
                 />
               </div>
-
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2">
                   <Label>Senha (Opcional)</Label>
@@ -384,7 +379,6 @@ export default function Funcionarios() {
                     />
                   </div>
                 </div>
-
                 <div className="space-y-2">
                   <Label>Cargo *</Label>
                   <Select
@@ -404,14 +398,14 @@ export default function Funcionarios() {
                 </div>
               </div>
             </div>
-
             <DialogFooter>
-              <Button variant="outline" onClick={() => setIsDialogOpen(false)}>
+              <Button
+                variant="outline"
+                onClick={() => setIsDialogOpen(false)}
+              >
                 Cancelar
               </Button>
-              <Button onClick={handleCreateEmployee} disabled={!isAdmin}>
-                Cadastrar
-              </Button>
+              <Button onClick={handleCreateEmployee}>Cadastrar</Button>
             </DialogFooter>
           </DialogContent>
         </Dialog>
@@ -429,7 +423,6 @@ export default function Funcionarios() {
             />
           </div>
         </CardHeader>
-
         <CardContent>
           {isLoading ? (
             <div className="flex justify-center py-8">
@@ -449,14 +442,13 @@ export default function Funcionarios() {
                   <TableHead className="text-right">Ações</TableHead>
                 </TableRow>
               </TableHeader>
-
               <TableBody>
                 {filteredEmployees.map((employee) => (
                   <TableRow key={employee.id}>
                     <TableCell className="font-medium">
                       {editingId === employee.id ? (
                         <Input
-                          value={editData?.name ?? ""}
+                          value={editData?.name}
                           onChange={(e) =>
                             setEditData({ ...editData!, name: e.target.value })
                           }
@@ -466,7 +458,6 @@ export default function Funcionarios() {
                         employee.name
                       )}
                     </TableCell>
-
                     <TableCell>
                       {editingId === employee.id ? (
                         <Select
@@ -485,17 +476,18 @@ export default function Funcionarios() {
                         </Select>
                       ) : (
                         <Badge
-                          variant={employee.role === "admin" ? "default" : "secondary"}
+                          variant={
+                            employee.role === "admin" ? "default" : "secondary"
+                          }
                         >
                           {employee.role === "admin" ? "Admin" : "Vendedor"}
                         </Badge>
                       )}
                     </TableCell>
-
                     <TableCell>
                       {editingId === employee.id ? (
                         <Input
-                          value={editData?.phone ?? ""}
+                          value={editData?.phone}
                           onChange={(e) =>
                             setEditData({ ...editData!, phone: e.target.value })
                           }
@@ -505,7 +497,6 @@ export default function Funcionarios() {
                         employee.phone || "-"
                       )}
                     </TableCell>
-
                     <TableCell className="text-right">
                       <div className="flex justify-end gap-1">
                         {editingId === employee.id ? (
@@ -515,7 +506,6 @@ export default function Funcionarios() {
                               variant="ghost"
                               className="text-green-600 h-8 w-8"
                               onClick={() => saveEditing(employee)}
-                              disabled={!isAdmin}
                             >
                               <Save className="h-4 w-4" />
                             </Button>
@@ -523,10 +513,7 @@ export default function Funcionarios() {
                               size="icon"
                               variant="ghost"
                               className="h-8 w-8"
-                              onClick={() => {
-                                setEditingId(null);
-                                setEditData(null);
-                              }}
+                              onClick={() => setEditingId(null)}
                             >
                               <X className="h-4 w-4" />
                             </Button>
@@ -538,7 +525,6 @@ export default function Funcionarios() {
                               variant="ghost"
                               className="h-8 w-8"
                               onClick={() => startEditing(employee)}
-                              disabled={!isAdmin}
                             >
                               <Edit2 className="h-4 w-4" />
                             </Button>
@@ -547,7 +533,6 @@ export default function Funcionarios() {
                               variant="ghost"
                               className="text-destructive h-8 w-8"
                               onClick={() => setDeleteEmployee(employee)}
-                              disabled={!isAdmin}
                             >
                               <Trash2 className="h-4 w-4" />
                             </Button>
@@ -565,9 +550,7 @@ export default function Funcionarios() {
 
       <AlertDialog
         open={!!deleteEmployee}
-        onOpenChange={(open) => {
-          if (!open) setDeleteEmployee(null);
-        }}
+        onOpenChange={() => setDeleteEmployee(null)}
       >
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -584,7 +567,6 @@ export default function Funcionarios() {
             <AlertDialogAction
               onClick={handleDeleteEmployee}
               className="bg-destructive hover:bg-destructive/90"
-              disabled={!isAdmin}
             >
               Confirmar
             </AlertDialogAction>
