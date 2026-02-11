@@ -2,11 +2,11 @@ import { useState, useEffect } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import { Users, Plus, Search, Edit, Trash2, Phone, MapPin } from "lucide-react";
+import { Users, Plus, Search, Edit, Trash2, Phone, MapPin, Loader2, FileText } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import {
   Table,
@@ -52,6 +52,7 @@ import {
 } from "@/components/ui/select";
 import { toast } from "sonner";
 
+// --- TIPAGEM ---
 interface Customer {
   id: string;
   name: string;
@@ -59,41 +60,45 @@ interface Customer {
   phone: string | null;
   address: string | null;
   city: string | null;
-  credit_limit: number;
   status: string;
   created_at: string;
 }
 
+// --- SCHEMA DE VALIDAÇÃO ---
 const customerSchema = z.object({
-  name: z.string().min(2, "Nome deve ter pelo menos 2 caracteres").max(100),
-  document: z.string().max(18).optional(),
-  phone: z.string().max(20).optional(),
-  address: z.string().max(200).optional(),
-  city: z.string().max(100).optional(),
-  credit_limit: z.coerce.number().min(0).default(0),
+  name: z.string().min(2, "Nome é obrigatório (min 2 letras)").max(100),
+  // Campos opcionais: aceitam string vazia ou undefined
+  document: z.string().optional(),
+  phone: z.string().optional(),
+  address: z.string().optional(),
+  city: z.string().optional(),
   status: z.enum(["ativo", "inativo"]).default("ativo"),
 });
 
 type CustomerFormData = z.infer<typeof customerSchema>;
 
-// Máscara para telefone
+// --- MÁSCARAS ---
 const formatPhone = (value: string) => {
+  if (!value) return "";
   const numbers = value.replace(/\D/g, "");
+  if (numbers.length > 11) return value.slice(0, 15); 
   if (numbers.length <= 10) {
-    return numbers.replace(/(\d{2})(\d{4})(\d{0,4})/, "($1) $2-$3").trim();
+    return numbers.replace(/(\d{2})(\d{4})(\d{0,4})/, "($1) $2-$3");
   }
-  return numbers.replace(/(\d{2})(\d{5})(\d{0,4})/, "($1) $2-$3").trim();
+  return numbers.replace(/(\d{2})(\d{5})(\d{0,4})/, "($1) $2-$3");
 };
 
-// Máscara para CPF/CNPJ
 const formatDocument = (value: string) => {
+  if (!value) return "";
   const numbers = value.replace(/\D/g, "");
+  if (numbers.length > 14) return value.slice(0, 18);
   if (numbers.length <= 11) {
-    return numbers.replace(/(\d{3})(\d{3})(\d{3})(\d{0,2})/, "$1.$2.$3-$4").trim();
+    return numbers.replace(/(\d{3})(\d{3})(\d{3})(\d{0,2})/, "$1.$2.$3-$4");
   }
-  return numbers.replace(/(\d{2})(\d{3})(\d{3})(\d{4})(\d{0,2})/, "$1.$2.$3/$4-$5").trim();
+  return numbers.replace(/(\d{2})(\d{3})(\d{3})(\d{4})(\d{0,2})/, "$1.$2.$3/$4-$5");
 };
 
+// --- COMPONENTE PRINCIPAL ---
 export default function Clientes() {
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -110,11 +115,11 @@ export default function Clientes() {
       phone: "",
       address: "",
       city: "",
-      credit_limit: 0,
       status: "ativo",
     },
   });
 
+  // Carregar clientes ao iniciar
   useEffect(() => {
     fetchCustomers();
   }, []);
@@ -130,10 +135,11 @@ export default function Clientes() {
       if (error) throw error;
       setCustomers(data || []);
     } catch (error) {
-      console.error("Error fetching customers:", error);
-      toast.error("Erro ao carregar clientes");
+      console.error("Erro ao buscar clientes:", error);
+      toast.error("Erro ao carregar lista de clientes");
+    } finally {
+      setIsLoading(false);
     }
-    setIsLoading(false);
   };
 
   const openNewDialog = () => {
@@ -144,7 +150,6 @@ export default function Clientes() {
       phone: "",
       address: "",
       city: "",
-      credit_limit: 0,
       status: "ativo",
     });
     setIsDialogOpen(true);
@@ -158,50 +163,46 @@ export default function Clientes() {
       phone: customer.phone || "",
       address: customer.address || "",
       city: customer.city || "",
-      credit_limit: customer.credit_limit,
-      status: customer.status as "ativo" | "inativo",
+      status: (customer.status as "ativo" | "inativo") || "ativo",
     });
     setIsDialogOpen(true);
   };
 
   const onSubmit = async (data: CustomerFormData) => {
     try {
+      // Prepara os dados, convertendo string vazia para null
+      const payload = {
+        name: data.name,
+        document: data.document ? data.document : null,
+        phone: data.phone ? data.phone : null,
+        address: data.address ? data.address : null,
+        city: data.city ? data.city : null,
+        status: data.status,
+        // Limite de crédito removido
+      };
+
       if (editingCustomer) {
         const { error } = await supabase
           .from("customers")
-          .update({
-            name: data.name,
-            document: data.document || null,
-            phone: data.phone || null,
-            address: data.address || null,
-            city: data.city || null,
-            credit_limit: data.credit_limit,
-            status: data.status,
-          })
+          .update(payload)
           .eq("id", editingCustomer.id);
 
         if (error) throw error;
-        toast.success("Cliente atualizado!");
+        toast.success("Cliente atualizado com sucesso!");
       } else {
-        const { error } = await supabase.from("customers").insert({
-          name: data.name,
-          document: data.document || null,
-          phone: data.phone || null,
-          address: data.address || null,
-          city: data.city || null,
-          credit_limit: data.credit_limit,
-          status: data.status,
-        });
+        const { error } = await supabase
+          .from("customers")
+          .insert(payload);
 
         if (error) throw error;
-        toast.success("Cliente cadastrado!");
+        toast.success("Cliente cadastrado com sucesso!");
       }
 
       setIsDialogOpen(false);
       fetchCustomers();
-    } catch (error) {
-      console.error("Error saving customer:", error);
-      toast.error("Erro ao salvar cliente");
+    } catch (error: any) {
+      console.error("Erro ao salvar cliente:", error);
+      toast.error("Erro ao salvar: " + (error.message || "Verifique os dados"));
     }
   };
 
@@ -219,20 +220,21 @@ export default function Clientes() {
       setDeleteCustomer(null);
       fetchCustomers();
     } catch (error) {
-      console.error("Error deleting customer:", error);
-      toast.error("Erro ao excluir cliente");
+      console.error("Erro ao excluir cliente:", error);
+      toast.error("Não foi possível excluir o cliente.");
     }
   };
 
   const filteredCustomers = customers.filter(
     (c) =>
       c.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      c.phone?.includes(searchTerm) ||
-      c.city?.toLowerCase().includes(searchTerm.toLowerCase())
+      (c.phone && c.phone.includes(searchTerm)) ||
+      (c.city && c.city.toLowerCase().includes(searchTerm.toLowerCase()))
   );
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 animate-in fade-in duration-500">
+      {/* HEADER */}
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-3">
           <div className="p-2 rounded-lg bg-primary/10">
@@ -246,16 +248,16 @@ export default function Clientes() {
 
         <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
           <DialogTrigger asChild>
-            <Button onClick={openNewDialog}>
+            <Button onClick={openNewDialog} className="w-full sm:w-auto">
               <Plus className="h-4 w-4 mr-2" />
               Novo Cliente
             </Button>
           </DialogTrigger>
-          <DialogContent className="max-w-lg">
+          <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
             <DialogHeader>
               <DialogTitle>{editingCustomer ? "Editar Cliente" : "Novo Cliente"}</DialogTitle>
               <DialogDescription>
-                Preencha os dados do cliente.
+                Preencha os dados do cliente. Apenas o nome é obrigatório.
               </DialogDescription>
             </DialogHeader>
             <Form {...form}>
@@ -267,20 +269,20 @@ export default function Clientes() {
                     <FormItem>
                       <FormLabel>Nome Completo *</FormLabel>
                       <FormControl>
-                        <Input placeholder="João da Silva" {...field} />
+                        <Input placeholder="Ex: João da Silva" {...field} />
                       </FormControl>
                       <FormMessage />
                     </FormItem>
                   )}
                 />
 
-                <div className="grid grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <FormField
                     control={form.control}
                     name="document"
                     render={({ field }) => (
                       <FormItem>
-                        <FormLabel>CPF/CNPJ</FormLabel>
+                        <FormLabel>CPF/CNPJ (Opcional)</FormLabel>
                         <FormControl>
                           <Input
                             placeholder="000.000.000-00"
@@ -299,7 +301,7 @@ export default function Clientes() {
                     name="phone"
                     render={({ field }) => (
                       <FormItem>
-                        <FormLabel>WhatsApp</FormLabel>
+                        <FormLabel>WhatsApp (Opcional)</FormLabel>
                         <FormControl>
                           <Input
                             placeholder="(00) 00000-0000"
@@ -319,7 +321,7 @@ export default function Clientes() {
                   name="address"
                   render={({ field }) => (
                     <FormItem>
-                      <FormLabel>Endereço</FormLabel>
+                      <FormLabel>Endereço (Opcional)</FormLabel>
                       <FormControl>
                         <Input placeholder="Rua, número, bairro" {...field} />
                       </FormControl>
@@ -328,15 +330,15 @@ export default function Clientes() {
                   )}
                 />
 
-                <div className="grid grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <FormField
                     control={form.control}
                     name="city"
                     render={({ field }) => (
                       <FormItem>
-                        <FormLabel>Cidade</FormLabel>
+                        <FormLabel>Cidade (Opcional)</FormLabel>
                         <FormControl>
-                          <Input placeholder="São Paulo" {...field} />
+                          <Input placeholder="Ex: São Paulo" {...field} />
                         </FormControl>
                         <FormMessage />
                       </FormItem>
@@ -345,47 +347,33 @@ export default function Clientes() {
 
                   <FormField
                     control={form.control}
-                    name="credit_limit"
+                    name="status"
                     render={({ field }) => (
                       <FormItem>
-                        <FormLabel>Limite de Crédito (R$)</FormLabel>
-                        <FormControl>
-                          <Input type="number" step="0.01" min="0" {...field} />
-                        </FormControl>
+                        <FormLabel>Status</FormLabel>
+                        <Select onValueChange={field.onChange} value={field.value}>
+                          <FormControl>
+                            <SelectTrigger>
+                              <SelectValue />
+                            </SelectTrigger>
+                          </FormControl>
+                          <SelectContent>
+                            <SelectItem value="ativo">Ativo</SelectItem>
+                            <SelectItem value="inativo">Inativo</SelectItem>
+                          </SelectContent>
+                        </Select>
                         <FormMessage />
                       </FormItem>
                     )}
                   />
                 </div>
 
-                <FormField
-                  control={form.control}
-                  name="status"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Status</FormLabel>
-                      <Select onValueChange={field.onChange} value={field.value}>
-                        <FormControl>
-                          <SelectTrigger>
-                            <SelectValue />
-                          </SelectTrigger>
-                        </FormControl>
-                        <SelectContent>
-                          <SelectItem value="ativo">Ativo</SelectItem>
-                          <SelectItem value="inativo">Inativo</SelectItem>
-                        </SelectContent>
-                      </Select>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-
                 <DialogFooter>
                   <Button type="button" variant="outline" onClick={() => setIsDialogOpen(false)}>
                     Cancelar
                   </Button>
                   <Button type="submit">
-                    {editingCustomer ? "Salvar" : "Cadastrar"}
+                    {editingCustomer ? "Salvar Alterações" : "Cadastrar Cliente"}
                   </Button>
                 </DialogFooter>
               </form>
@@ -394,7 +382,7 @@ export default function Clientes() {
         </Dialog>
       </div>
 
-      {/* Summary Cards */}
+      {/* SUMMARY CARDS */}
       <div className="grid gap-4 md:grid-cols-3">
         <Card>
           <CardHeader className="pb-2">
@@ -409,14 +397,14 @@ export default function Clientes() {
             <CardTitle className="text-sm font-medium text-muted-foreground">Clientes Ativos</CardTitle>
           </CardHeader>
           <CardContent>
-            <p className="text-2xl font-bold text-green-600">
+            <p className="text-2xl font-bold text-emerald-600">
               {customers.filter((c) => c.status === "ativo").length}
             </p>
           </CardContent>
         </Card>
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">Clientes Inativos</CardTitle>
+            <CardTitle className="text-sm font-medium text-muted-foreground">Inativos</CardTitle>
           </CardHeader>
           <CardContent>
             <p className="text-2xl font-bold text-muted-foreground">
@@ -426,14 +414,14 @@ export default function Clientes() {
         </Card>
       </div>
 
-      {/* Customers Table */}
+      {/* TABLE SECTION */}
       <Card>
         <CardHeader className="pb-4">
           <div className="flex items-center gap-4">
             <div className="relative flex-1 max-w-sm">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
               <Input
-                placeholder="Buscar cliente..."
+                placeholder="Buscar por nome, telefone ou cidade..."
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
                 className="pl-10"
@@ -443,19 +431,23 @@ export default function Clientes() {
         </CardHeader>
         <CardContent>
           {isLoading ? (
-            <div className="text-center py-8 text-muted-foreground">Carregando...</div>
+            <div className="flex flex-col items-center justify-center py-10 text-muted-foreground">
+              <Loader2 className="h-8 w-8 animate-spin mb-2" />
+              <p>Carregando clientes...</p>
+            </div>
           ) : filteredCustomers.length === 0 ? (
-            <div className="text-center py-8 text-muted-foreground">
-              Nenhum cliente encontrado
+            <div className="text-center py-10 text-muted-foreground">
+              Nenhum cliente encontrado.
             </div>
           ) : (
-            <div className="rounded-md border">
+            <div className="rounded-md border overflow-x-auto">
               <Table>
                 <TableHeader>
                   <TableRow>
                     <TableHead>Nome</TableHead>
-                    <TableHead>WhatsApp</TableHead>
-                    <TableHead>Cidade</TableHead>
+                    <TableHead>Documento</TableHead>
+                    <TableHead>Contato</TableHead>
+                    <TableHead>Localização</TableHead>
                     <TableHead>Status</TableHead>
                     <TableHead className="text-right">Ações</TableHead>
                   </TableRow>
@@ -465,27 +457,34 @@ export default function Clientes() {
                     <TableRow key={customer.id}>
                       <TableCell className="font-medium">{customer.name}</TableCell>
                       <TableCell>
+                        {customer.document ? (
+                            <span className="flex items-center gap-1 text-sm text-muted-foreground">
+                                <FileText className="h-3 w-3" /> {customer.document}
+                            </span>
+                        ) : "-"}
+                      </TableCell>
+                      <TableCell>
                         {customer.phone ? (
                           <span className="flex items-center gap-1 text-sm">
-                            <Phone className="h-3 w-3" />
+                            <Phone className="h-3 w-3 text-emerald-600" />
                             {customer.phone}
                           </span>
                         ) : (
-                          <span className="text-muted-foreground">—</span>
+                          <span className="text-muted-foreground text-xs">-</span>
                         )}
                       </TableCell>
                       <TableCell>
                         {customer.city ? (
                           <span className="flex items-center gap-1 text-sm">
-                            <MapPin className="h-3 w-3" />
+                            <MapPin className="h-3 w-3 text-blue-500" />
                             {customer.city}
                           </span>
                         ) : (
-                          <span className="text-muted-foreground">—</span>
+                          <span className="text-muted-foreground text-xs">-</span>
                         )}
                       </TableCell>
                       <TableCell>
-                        <Badge variant={customer.status === "ativo" ? "default" : "secondary"}>
+                        <Badge variant={customer.status === "ativo" ? "default" : "secondary"} className={customer.status === "ativo" ? "bg-emerald-600 hover:bg-emerald-700" : ""}>
                           {customer.status === "ativo" ? "Ativo" : "Inativo"}
                         </Badge>
                       </TableCell>
@@ -495,14 +494,16 @@ export default function Clientes() {
                             size="icon"
                             variant="ghost"
                             onClick={() => openEditDialog(customer)}
+                            title="Editar"
                           >
-                            <Edit className="h-4 w-4" />
+                            <Edit className="h-4 w-4 text-muted-foreground" />
                           </Button>
                           <Button
                             size="icon"
                             variant="ghost"
-                            className="text-destructive hover:text-destructive"
+                            className="text-destructive hover:text-destructive hover:bg-destructive/10"
                             onClick={() => setDeleteCustomer(customer)}
+                            title="Excluir"
                           >
                             <Trash2 className="h-4 w-4" />
                           </Button>
@@ -517,20 +518,20 @@ export default function Clientes() {
         </CardContent>
       </Card>
 
-      {/* Delete Confirmation Dialog */}
+      {/* DELETE CONFIRMATION DIALOG */}
       <AlertDialog open={!!deleteCustomer} onOpenChange={() => setDeleteCustomer(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Tem certeza?</AlertDialogTitle>
             <AlertDialogDescription>
               Você está prestes a excluir o cliente <strong>{deleteCustomer?.name}</strong>.
-              Esta ação não pode ser desfeita.
+              Esta ação não pode ser desfeita e removerá o histórico deste cliente.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancelar</AlertDialogCancel>
             <AlertDialogAction onClick={handleDelete} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
-              Excluir
+              Sim, Excluir
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

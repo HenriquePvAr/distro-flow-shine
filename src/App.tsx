@@ -18,10 +18,10 @@ import Despesas from "./pages/Despesas";
 import Performance from "./pages/Performance";
 import Fechamento from "./pages/Fechamento";
 import Funcionarios from "./pages/Funcionarios";
-import Financeiro from "./pages/Financeiro";
+// import Financeiro from "./pages/Financeiro";  <-- REMOVIDO
 import Login from "./pages/Login";
 import Cadastro from "./pages/Cadastro";
-import RedefinirSenha from "./pages/RedefinirSenha"; // <--- Importado aqui
+import RedefinirSenha from "./pages/RedefinirSenha";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -37,7 +37,7 @@ const App = () => (
             {/* --- Rotas Públicas --- */}
             <Route path="/login" element={<Login />} />
             <Route path="/cadastro" element={<Cadastro />} />
-            <Route path="/redefinir-senha" element={<RedefinirSenha />} /> {/* Rota Nova */}
+            <Route path="/redefinir-senha" element={<RedefinirSenha />} />
             
             {/* --- Rotas Protegidas (Exige Login) --- */}
             <Route
@@ -142,16 +142,8 @@ const App = () => (
                 </ProtectedRoute>
               }
             />
-            <Route
-              path="/financeiro"
-              element={
-                <ProtectedRoute requiredRole="admin">
-                  <AppLayout>
-                    <Financeiro />
-                  </AppLayout>
-                </ProtectedRoute>
-              }
-            />
+            
+            {/* ROTA FINANCEIRO REMOVIDA DAQUI POIS O ARQUIVO FOI APAGADO */}
 
             {/* Rota de Erro 404 */}
             <Route path="*" element={<NotFound />} />

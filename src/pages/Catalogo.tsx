@@ -1,8 +1,8 @@
-import { useState, useMemo } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import { Package, Plus, Search, Image, Percent, AlertTriangle, Edit, Trash2, BoxIcon, Weight } from "lucide-react";
+import { Package, Plus, Search, Percent, AlertTriangle, Edit, Trash2, BoxIcon, Loader2, Info, X } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   AlertDialog,
@@ -51,70 +51,130 @@ import {
   FormLabel,
   FormMessage,
 } from "@/components/ui/form";
-import { useStore, productCategories, productSuppliers, Product } from "@/store/useStore";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { useToast } from "@/hooks/use-toast";
+import { supabase } from "@/integrations/supabase/client";
 
+const formatCurrency = (val: number) => val.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+
+// Schema de Validação
 const productSchema = z.object({
   name: z.string().min(2, "Nome deve ter pelo menos 2 caracteres").max(100),
   description: z.string().max(500).optional(),
   sku: z.string().min(1, "SKU é obrigatório").max(20),
-  category: z.string().min(1, "Categoria é obrigatória"),
-  supplier: z.string().min(1, "Fornecedor é obrigatório"),
-  costPrice: z.coerce.number().min(0.01, "Preço de custo deve ser maior que zero"),
-  salePrice: z.coerce.number().min(0.01, "Preço de venda deve ser maior que zero"),
-  minStock: z.coerce.number().min(0, "Estoque mínimo não pode ser negativo"),
-  stock: z.coerce.number().min(0, "Estoque inicial não pode ser negativo"),
-  imageUrl: z.string().url().optional().or(z.literal("")),
+  category: z.string().min(1, "Categoria é obrigatória"), 
+  supplier: z.string().optional(),
+  costPrice: z.coerce.number().min(0.01, "Inválido"),
+  salePrice: z.coerce.number().min(0.01, "Inválido"),
+  minStock: z.coerce.number().min(0, "Inválido"),
+  stock: z.coerce.number().min(0, "Inválido"),
+  
   sellsByBox: z.boolean().optional(),
-  qtyPerBox: z.coerce.number().min(1).optional(),
+  qtyPerBox: z.coerce.number().optional(),
+  boxPrice: z.coerce.number().optional(),
   sellsByKg: z.boolean().optional(),
 });
 
 type ProductFormData = z.infer<typeof productSchema>;
 
+interface Product extends ProductFormData {
+  id: string;
+}
+
 export default function Catalogo() {
-  const { products, addProduct, updateProduct, deleteProduct } = useStore();
   const { toast } = useToast();
+  
+  // Estados
+  const [products, setProducts] = useState<Product[]>([]);
+  const [loading, setLoading] = useState(true);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [deleteProductId, setDeleteProductId] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
   const [categoryFilter, setCategoryFilter] = useState<string>("all");
+  const [showInfo, setShowInfo] = useState(true);
+
+  const [existingCategories, setExistingCategories] = useState<string[]>([]);
+  const [existingSuppliers, setExistingSuppliers] = useState<string[]>([]);
 
   const form = useForm<ProductFormData>({
     resolver: zodResolver(productSchema),
     defaultValues: {
-      name: "",
-      description: "",
-      sku: "",
-      category: "",
-      supplier: "",
-      costPrice: 0,
-      salePrice: 0,
-      minStock: 5,
-      stock: 0,
-      imageUrl: "",
-      sellsByBox: false,
-      qtyPerBox: 1,
-      sellsByKg: false,
+      name: "", description: "", sku: "", category: "", supplier: "",
+      costPrice: 0, salePrice: 0, minStock: 5, stock: 0,
+      sellsByBox: false, qtyPerBox: 1, boxPrice: 0, sellsByKg: false
     },
   });
 
+  // Controle da Dica (Alert)
+  useEffect(() => {
+    const isHidden = localStorage.getItem("hide_catalogo_info");
+    if (isHidden === "true") setShowInfo(false);
+    fetchProducts();
+  }, []);
+
+  const handleCloseInfo = () => {
+    setShowInfo(false);
+    localStorage.setItem("hide_catalogo_info", "true");
+  };
+
+  const handleShowInfo = () => {
+    setShowInfo(true);
+    localStorage.removeItem("hide_catalogo_info");
+  };
+
+  const fetchProducts = async () => {
+    setLoading(true);
+    try {
+      const { data, error } = await supabase.from("products").select("*").order('name');
+      
+      if (error) throw error;
+
+      if (data) {
+        const mappedProducts: Product[] = data.map((item: any) => ({
+          id: item.id,
+          name: item.name,
+          description: item.description || "",
+          sku: item.sku || "", 
+          category: item.category || "Geral",
+          supplier: item.supplier || "",
+          
+          costPrice: Number(item.cost_price ?? 0),
+          salePrice: Number(item.sale_price ?? 0),
+          minStock: Number(item.min_stock ?? 0),
+          stock: Number(item.stock ?? 0),
+          
+          sellsByBox: item.sells_by_box ?? false,
+          qtyPerBox: item.qty_per_box ?? 1,
+          boxPrice: Number(item.box_price ?? 0),
+          sellsByKg: item.sells_by_kg ?? false,
+        }));
+        
+        setProducts(mappedProducts);
+
+        const cats = Array.from(new Set(mappedProducts.map(p => p.category).filter(Boolean)));
+        const sups = Array.from(new Set(mappedProducts.map(p => p.supplier).filter(Boolean) as string[]));
+        setExistingCategories(cats);
+        setExistingSuppliers(sups);
+      }
+    } catch (error: any) {
+      toast({ variant: "destructive", title: "Erro", description: "Falha ao carregar catálogo." });
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const costPrice = form.watch("costPrice");
   const salePrice = form.watch("salePrice");
-
   const profitMargin = useMemo(() => {
-    if (costPrice > 0 && salePrice > 0) {
-      return ((salePrice - costPrice) / costPrice) * 100;
-    }
+    if (costPrice > 0 && salePrice > 0) return ((salePrice - costPrice) / costPrice) * 100;
     return 0;
   }, [costPrice, salePrice]);
 
   const filteredProducts = useMemo(() => {
     return products.filter((product) => {
-      const matchesSearch =
-        product.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        product.sku.toLowerCase().includes(searchTerm.toLowerCase());
+      const matchesSearch = (product.name || "").toLowerCase().includes(searchTerm.toLowerCase()) ||
+                            (product.sku || "").toLowerCase().includes(searchTerm.toLowerCase());
       const matchesCategory = categoryFilter === "all" || product.category === categoryFilter;
       return matchesSearch && matchesCategory;
     });
@@ -122,83 +182,67 @@ export default function Catalogo() {
 
   const openEditDialog = (product: Product) => {
     setEditingProduct(product);
-    form.reset({
-      name: product.name,
-      description: product.description || "",
-      sku: product.sku,
-      category: product.category,
-      supplier: product.supplier || "",
-      costPrice: product.costPrice,
-      salePrice: product.salePrice,
-      minStock: product.minStock || 5,
-      stock: product.stock,
-      imageUrl: product.imageUrl || "",
-      sellsByBox: product.sellsByBox || false,
-      qtyPerBox: product.qtyPerBox || 1,
-      sellsByKg: product.sellsByKg || false,
-    });
+    form.reset(product);
     setIsDialogOpen(true);
   };
 
   const openNewDialog = () => {
     setEditingProduct(null);
     form.reset({
-      name: "",
-      description: "",
-      sku: "",
-      category: "",
-      supplier: "",
-      costPrice: 0,
-      salePrice: 0,
-      minStock: 5,
-      stock: 0,
-      imageUrl: "",
-      sellsByBox: false,
-      qtyPerBox: 1,
-      sellsByKg: false,
+      name: "", description: "", sku: "", category: "", supplier: "",
+      costPrice: 0, salePrice: 0, minStock: 5, stock: 0,
+      sellsByBox: false, qtyPerBox: 1, boxPrice: 0, sellsByKg: false
     });
     setIsDialogOpen(true);
   };
 
-  const onSubmit = (data: ProductFormData) => {
-    if (editingProduct) {
-      updateProduct(editingProduct.id, {
-        ...data,
-        description: data.description || "",
-        imageUrl: data.imageUrl || undefined,
-        sellsByBox: data.sellsByBox || false,
-        qtyPerBox: data.qtyPerBox || 1,
-        sellsByKg: data.sellsByKg || false,
-      });
-      toast({
-        title: "Produto atualizado!",
-        description: `${data.name} foi atualizado com sucesso.`,
-      });
-    } else {
-      const newProduct: Product = {
-        id: Date.now().toString(),
+  const onSubmit = async (data: ProductFormData) => {
+    try {
+      const productData = {
         name: data.name,
-        description: data.description || "",
+        description: data.description,
         sku: data.sku,
         category: data.category,
         supplier: data.supplier,
-        costPrice: data.costPrice,
-        salePrice: data.salePrice,
-        minStock: data.minStock,
+        cost_price: data.costPrice,   
+        sale_price: data.salePrice,   
+        min_stock: data.minStock,     
         stock: data.stock,
-        imageUrl: data.imageUrl || undefined,
-        sellsByBox: data.sellsByBox || false,
-        qtyPerBox: data.qtyPerBox || 1,
-        sellsByKg: data.sellsByKg || false,
+        sells_by_box: data.sellsByBox,
+        qty_per_box: data.qtyPerBox,  
+        box_price: data.boxPrice,     
+        sells_by_kg: data.sellsByKg,  
       };
-      addProduct(newProduct);
-      toast({
-        title: "Produto cadastrado!",
-        description: `${data.name} foi adicionado ao catálogo.`,
-      });
+
+      if (editingProduct) {
+        const { error } = await supabase.from("products").update(productData).eq("id", editingProduct.id);
+        if (error) throw error;
+        toast({ title: "Sucesso!", description: "Produto atualizado." });
+      } else {
+        const { error } = await supabase.from("products").insert([productData]);
+        if (error) throw error;
+        toast({ title: "Sucesso!", description: "Produto cadastrado." });
+      }
+
+      setIsDialogOpen(false);
+      fetchProducts();
+    } catch (error: any) {
+      console.error(error); 
+      toast({ variant: "destructive", title: "Erro ao salvar", description: error.message });
     }
-    setIsDialogOpen(false);
-    form.reset();
+  };
+
+  const handleDelete = async () => {
+    if (!deleteProductId) return;
+    try {
+      const { error } = await supabase.from("products").delete().eq("id", deleteProductId);
+      if (error) throw error;
+      toast({ title: "Excluído", description: "Produto removido." });
+      setDeleteProductId(null);
+      fetchProducts();
+    } catch (error) {
+      toast({ variant: "destructive", title: "Erro", description: "Erro ao excluir." });
+    }
   };
 
   const getMarginColor = (margin: number) => {
@@ -208,350 +252,202 @@ export default function Catalogo() {
   };
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 animate-in fade-in duration-500">
+      {/* Header */}
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-3xl font-bold text-foreground">Catálogo de Produtos</h1>
-          <p className="text-muted-foreground">Gerencie seu catálogo completo de produtos</p>
+          <h1 className="text-3xl font-bold text-foreground flex items-center gap-2">
+            Catálogo
+            {!showInfo && (
+              <Button variant="ghost" size="icon" className="h-6 w-6 ml-2 text-muted-foreground" onClick={handleShowInfo} title="Ajuda">
+                <Info className="h-4 w-4" />
+              </Button>
+            )}
+          </h1>
+          <p className="text-muted-foreground">Gerencie seus produtos</p>
         </div>
         <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
           <DialogTrigger asChild>
             <Button onClick={openNewDialog} className="gap-2">
-              <Plus className="h-4 w-4" />
-              Novo Produto
+              <Plus className="h-4 w-4" /> Novo Produto
             </Button>
           </DialogTrigger>
           <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
             <DialogHeader>
-              <DialogTitle>{editingProduct ? "Editar Produto" : "Cadastrar Novo Produto"}</DialogTitle>
-              <DialogDescription>
-                Preencha todos os campos obrigatórios para {editingProduct ? "atualizar o" : "cadastrar um novo"} produto.
-              </DialogDescription>
+              <DialogTitle>{editingProduct ? "Editar Produto" : "Cadastrar Produto"}</DialogTitle>
+              <DialogDescription>Preencha os dados do item.</DialogDescription>
             </DialogHeader>
             <Form {...form}>
               <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6">
+                
                 {/* Dados Básicos */}
                 <div className="space-y-4">
                   <h3 className="font-semibold text-foreground flex items-center gap-2">
-                    <Package className="h-4 w-4" />
-                    Dados Básicos
+                    <Package className="h-4 w-4" /> Dados Básicos
                   </h3>
                   <div className="grid gap-4 sm:grid-cols-2">
-                    <FormField
-                      control={form.control}
-                      name="name"
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>Nome do Produto *</FormLabel>
-                          <FormControl>
-                            <Input placeholder="Ex: Coca-Cola 2L" {...field} />
-                          </FormControl>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
-                    <FormField
-                      control={form.control}
-                      name="sku"
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>SKU / Código *</FormLabel>
-                          <FormControl>
-                            <Input placeholder="Ex: BEB001" {...field} />
-                          </FormControl>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
-                  </div>
-                  <FormField
-                    control={form.control}
-                    name="description"
-                    render={({ field }) => (
+                    <FormField control={form.control} name="name" render={({ field }) => (
                       <FormItem>
-                        <FormLabel>Descrição</FormLabel>
+                        <FormLabel>Nome *</FormLabel>
+                        <FormControl><Input placeholder="Ex: Coca-Cola 2L" {...field} /></FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )} />
+                    <FormField control={form.control} name="sku" render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>SKU / Código *</FormLabel>
+                        <FormControl><Input placeholder="Ex: BEB001" {...field} /></FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )} />
+                  </div>
+                  
+                  <FormField control={form.control} name="description" render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Descrição</FormLabel>
+                      <FormControl><Textarea placeholder="Detalhes..." className="resize-none h-20" {...field} /></FormControl>
+                    </FormItem>
+                  )} />
+
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    {/* Categoria com Datalist */}
+                    <FormField control={form.control} name="category" render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Categoria *</FormLabel>
                         <FormControl>
-                          <Textarea
-                            placeholder="Descrição detalhada do produto..."
-                            className="resize-none"
-                            {...field}
-                          />
+                          <div className="relative">
+                            <Input list="category-options" placeholder="Digite ou selecione" {...field} />
+                            <datalist id="category-options">
+                              {existingCategories.map((cat, i) => <option key={i} value={cat} />)}
+                            </datalist>
+                          </div>
                         </FormControl>
                         <FormMessage />
                       </FormItem>
-                    )}
-                  />
-                  <div className="grid gap-4 sm:grid-cols-2">
-                    <FormField
-                      control={form.control}
-                      name="category"
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>Categoria *</FormLabel>
-                          <Select onValueChange={field.onChange} value={field.value}>
-                            <FormControl>
-                              <SelectTrigger>
-                                <SelectValue placeholder="Selecione a categoria" />
-                              </SelectTrigger>
-                            </FormControl>
-                            <SelectContent>
-                              {productCategories.map((cat) => (
-                                <SelectItem key={cat} value={cat}>
-                                  {cat}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
-                    <FormField
-                      control={form.control}
-                      name="supplier"
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>Fornecedor *</FormLabel>
-                          <Select onValueChange={field.onChange} value={field.value}>
-                            <FormControl>
-                              <SelectTrigger>
-                                <SelectValue placeholder="Selecione o fornecedor" />
-                              </SelectTrigger>
-                            </FormControl>
-                            <SelectContent>
-                              {productSuppliers.map((sup) => (
-                                <SelectItem key={sup} value={sup}>
-                                  {sup}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
+                    )} />
+
+                    {/* Fornecedor com Datalist */}
+                    <FormField control={form.control} name="supplier" render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Fornecedor (Opcional)</FormLabel>
+                        <FormControl>
+                          <div className="relative">
+                            <Input list="supplier-options" placeholder="Digite ou selecione" {...field} />
+                            <datalist id="supplier-options">
+                              {existingSuppliers.map((sup, i) => <option key={i} value={sup} />)}
+                            </datalist>
+                          </div>
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )} />
                   </div>
                 </div>
 
                 {/* Precificação */}
                 <div className="space-y-4">
                   <h3 className="font-semibold text-foreground flex items-center gap-2">
-                    <Percent className="h-4 w-4" />
-                    Precificação
+                    <Percent className="h-4 w-4" /> Precificação
                   </h3>
                   <div className="grid gap-4 sm:grid-cols-3">
-                    <FormField
-                      control={form.control}
-                      name="costPrice"
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>Preço de Custo (R$) *</FormLabel>
-                          <FormControl>
-                            <Input
-                              type="number"
-                              step="0.01"
-                              min="0"
-                              placeholder="0.00"
-                              {...field}
-                            />
-                          </FormControl>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
-                    <FormField
-                      control={form.control}
-                      name="salePrice"
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>Preço de Venda (R$) *</FormLabel>
-                          <FormControl>
-                            <Input
-                              type="number"
-                              step="0.01"
-                              min="0"
-                              placeholder="0.00"
-                              {...field}
-                            />
-                          </FormControl>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
-                    <div className="space-y-2">
-                      <Label>Margem de Lucro Estimada</Label>
-                      <div
-                        className={`h-10 flex items-center px-3 rounded-md border bg-muted font-semibold ${getMarginColor(profitMargin)}`}
-                      >
-                        {profitMargin.toFixed(1)}%
-                      </div>
-                      {profitMargin < 10 && profitMargin > 0 && (
-                        <p className="text-xs text-destructive flex items-center gap-1">
-                          <AlertTriangle className="h-3 w-3" />
-                          Margem muito baixa!
-                        </p>
-                      )}
-                    </div>
-                  </div>
-                </div>
-
-                {/* Controle de Estoque */}
-                <div className="space-y-4">
-                  <h3 className="font-semibold text-foreground flex items-center gap-2">
-                    <Package className="h-4 w-4" />
-                    Controle de Estoque
-                  </h3>
-                  <div className="grid gap-4 sm:grid-cols-2">
-                    <FormField
-                      control={form.control}
-                      name="minStock"
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>Estoque Mínimo</FormLabel>
-                          <FormControl>
-                            <Input type="number" min="0" placeholder="5" {...field} />
-                          </FormControl>
-                          <FormDescription>
-                            Alerta de reposição quando atingir este valor.
-                          </FormDescription>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
-                    <FormField
-                      control={form.control}
-                      name="stock"
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>Estoque Inicial</FormLabel>
-                          <FormControl>
-                            <Input type="number" min="0" placeholder="0" {...field} />
-                          </FormControl>
-                          <FormDescription>
-                            Quantidade disponível no momento do cadastro.
-                          </FormDescription>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
-                  </div>
-                </div>
-
-                {/* Unidade de Medida */}
-                <div className="space-y-4">
-                  <h3 className="font-semibold text-foreground flex items-center gap-2">
-                    <BoxIcon className="h-4 w-4" />
-                    Unidade de Venda
-                  </h3>
-                  <div className="space-y-4">
-                    <div className="flex items-center gap-6">
-                      <FormField
-                        control={form.control}
-                        name="sellsByBox"
-                        render={({ field }) => (
-                          <FormItem className="flex items-center gap-2 space-y-0">
-                            <FormControl>
-                              <input
-                                type="checkbox"
-                                checked={field.value || false}
-                                onChange={(e) => {
-                                  field.onChange(e.target.checked);
-                                  if (e.target.checked) form.setValue("sellsByKg", false);
-                                }}
-                                className="h-4 w-4 rounded border-input"
-                              />
-                            </FormControl>
-                            <FormLabel className="!mt-0">Vende por Caixa?</FormLabel>
-                          </FormItem>
-                        )}
-                      />
-                      <FormField
-                        control={form.control}
-                        name="sellsByKg"
-                        render={({ field }) => (
-                          <FormItem className="flex items-center gap-2 space-y-0">
-                            <FormControl>
-                              <input
-                                type="checkbox"
-                                checked={field.value || false}
-                                onChange={(e) => {
-                                  field.onChange(e.target.checked);
-                                  if (e.target.checked) form.setValue("sellsByBox", false);
-                                }}
-                                className="h-4 w-4 rounded border-input"
-                              />
-                            </FormControl>
-                            <FormLabel className="!mt-0">Vende por KG?</FormLabel>
-                          </FormItem>
-                        )}
-                      />
-                    </div>
-                    {form.watch("sellsByBox") && (
-                      <FormField
-                        control={form.control}
-                        name="qtyPerBox"
-                        render={({ field }) => (
-                          <FormItem>
-                            <FormLabel>Quantidade por Caixa</FormLabel>
-                            <FormControl>
-                              <Input type="number" min="1" placeholder="12" {...field} />
-                            </FormControl>
-                            <FormDescription>
-                              Quantas unidades vêm em cada caixa.
-                            </FormDescription>
-                            <FormMessage />
-                          </FormItem>
-                        )}
-                      />
-                    )}
-                  </div>
-                </div>
-
-                {/* Imagem */}
-                <div className="space-y-4">
-                  <h3 className="font-semibold text-foreground flex items-center gap-2">
-                    <Image className="h-4 w-4" />
-                    Imagem do Produto
-                  </h3>
-                  <FormField
-                    control={form.control}
-                    name="imageUrl"
-                    render={({ field }) => (
+                    <FormField control={form.control} name="costPrice" render={({ field }) => (
                       <FormItem>
-                        <FormLabel>URL da Imagem (opcional)</FormLabel>
-                        <FormControl>
-                          <Input
-                            type="url"
-                            placeholder="https://exemplo.com/imagem.jpg"
-                            {...field}
-                          />
-                        </FormControl>
-                        <FormDescription>
-                          Cole o link de uma imagem do produto ou deixe em branco para usar o ícone padrão.
-                        </FormDescription>
+                        <FormLabel>Custo (R$)</FormLabel>
+                        <FormControl><Input type="number" step="0.01" min="0" {...field} /></FormControl>
                         <FormMessage />
                       </FormItem>
-                    )}
-                  />
-                  {form.watch("imageUrl") && (
-                    <div className="flex items-center gap-4">
-                      <div className="w-20 h-20 rounded-lg border bg-muted overflow-hidden">
-                        <img
-                          src={form.watch("imageUrl")}
-                          alt="Preview"
-                          className="w-full h-full object-cover"
-                          onError={(e) => {
-                            (e.target as HTMLImageElement).style.display = "none";
-                          }}
-                        />
+                    )} />
+                    <FormField control={form.control} name="salePrice" render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Venda (R$)</FormLabel>
+                        <FormControl><Input type="number" step="0.01" min="0" {...field} /></FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )} />
+                    <div className="space-y-2">
+                      <Label>Margem</Label>
+                      <div className={`h-10 flex items-center px-3 rounded-md border bg-muted font-semibold ${getMarginColor(profitMargin)}`}>
+                        {profitMargin.toFixed(1)}%
                       </div>
-                      <span className="text-sm text-muted-foreground">Preview da imagem</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Estoque e Detalhes */}
+                <div className="space-y-4">
+                  <h3 className="font-semibold text-foreground flex items-center gap-2">
+                    <BoxIcon className="h-4 w-4" /> Estoque & Tipo
+                  </h3>
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <FormField control={form.control} name="stock" render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Qtd Atual</FormLabel>
+                        {/* Passo 0.001 permite gramas */}
+                        <FormControl><Input type="number" step="0.001" min="0" {...field} /></FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )} />
+                    <FormField control={form.control} name="minStock" render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Qtd Mínima</FormLabel>
+                        <FormControl><Input type="number" step="0.001" min="0" {...field} /></FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )} />
+                  </div>
+
+                  <div className="flex flex-wrap gap-6 pt-2 items-center">
+                    <FormField control={form.control} name="sellsByBox" render={({ field }) => (
+                      <FormItem className="flex items-center gap-2 space-y-0">
+                        <FormControl>
+                          <input type="checkbox" checked={field.value} onChange={e => {
+                            field.onChange(e.target.checked);
+                            if(e.target.checked) form.setValue("sellsByKg", false);
+                          }} className="h-4 w-4 accent-primary" />
+                        </FormControl>
+                        <FormLabel className="!mt-0 cursor-pointer">Vende Caixa?</FormLabel>
+                      </FormItem>
+                    )} />
+                    
+                    <FormField control={form.control} name="sellsByKg" render={({ field }) => (
+                      <FormItem className="flex items-center gap-2 space-y-0">
+                        <FormControl>
+                          <input type="checkbox" checked={field.value} onChange={e => {
+                            field.onChange(e.target.checked);
+                            if(e.target.checked) form.setValue("sellsByBox", false);
+                          }} className="h-4 w-4 accent-primary" />
+                        </FormControl>
+                        <FormLabel className="!mt-0 cursor-pointer">Vende KG?</FormLabel>
+                      </FormItem>
+                    )} />
+                  </div>
+
+                  {/* Configuração da Caixa */}
+                  {form.watch("sellsByBox") && (
+                    <div className="grid gap-4 sm:grid-cols-2 bg-muted/30 p-3 rounded-lg border">
+                      <FormField control={form.control} name="qtyPerBox" render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>Qtd na Caixa</FormLabel>
+                          <FormControl><Input type="number" min="1" {...field} /></FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )} />
+                      <FormField control={form.control} name="boxPrice" render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>Preço da Caixa (R$)</FormLabel>
+                          <FormControl><Input type="number" step="0.01" {...field} /></FormControl>
+                          <FormDescription className="text-xs">
+                            Se não preencher, o sistema usará (Preço Un. x Qtd).
+                          </FormDescription>
+                          <FormMessage />
+                        </FormItem>
+                      )} />
                     </div>
                   )}
                 </div>
 
                 <Button type="submit" className="w-full">
-                  {editingProduct ? "Salvar Alterações" : "Salvar Produto"}
+                  {editingProduct ? "Salvar Alterações" : "Cadastrar Produto"}
                 </Button>
               </form>
             </Form>
@@ -559,182 +455,127 @@ export default function Catalogo() {
         </Dialog>
       </div>
 
-      {/* Filtros */}
+      {/* --- EXPLICAÇÃO DIDÁTICA --- */}
+      {showInfo && (
+        <Alert className="bg-blue-50/50 border-blue-200 text-blue-800 relative pr-10 animate-in slide-in-from-top-2 fade-in shadow-sm">
+          <Info className="h-4 w-4 text-blue-600" />
+          <AlertTitle className="text-blue-700 font-semibold">Guia de Cadastro</AlertTitle>
+          <AlertDescription className="text-blue-700/80 text-sm mt-1">
+            <ul className="list-disc list-inside space-y-1">
+              <li><strong>Vende por KG?</strong> Marque a opção "Vende KG" para produtos fracionados (sorvete, carne). O estoque aceitará valores como 10.500.</li>
+              <li><strong>Vende por Caixa?</strong> Marque se você vende o fardo fechado. Você pode definir um preço especial para a caixa diferente do preço unitário.</li>
+              <li><strong>Categorias:</strong> Você pode selecionar uma existente ou digitar uma nova para criar automaticamente.</li>
+            </ul>
+          </AlertDescription>
+          <Button variant="ghost" size="icon" className="absolute top-2 right-2 text-blue-400 hover:text-blue-700" onClick={handleCloseInfo}>
+            <X className="h-4 w-4" />
+          </Button>
+        </Alert>
+      )}
+
+      {/* Filtros e Tabela */}
       <Card>
-        <CardHeader>
-          <CardTitle className="text-lg">Filtros</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="flex flex-col gap-4 sm:flex-row">
-            <div className="relative flex-1">
+        <CardHeader className="pb-3">
+          <div className="flex flex-col sm:flex-row gap-4 justify-between">
+            <div className="relative flex-1 max-w-sm">
               <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                placeholder="Buscar por nome ou SKU..."
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                className="pl-9"
-              />
+              <Input placeholder="Buscar..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="pl-9" />
             </div>
             <Select value={categoryFilter} onValueChange={setCategoryFilter}>
               <SelectTrigger className="w-full sm:w-[180px]">
                 <SelectValue placeholder="Categoria" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="all">Todas Categorias</SelectItem>
-                {productCategories.map((cat) => (
-                  <SelectItem key={cat} value={cat}>
-                    {cat}
-                  </SelectItem>
+                <SelectItem value="all">Todas</SelectItem>
+                {existingCategories.map((cat) => (
+                  <SelectItem key={cat} value={cat}>{cat}</SelectItem>
                 ))}
               </SelectContent>
             </Select>
           </div>
-        </CardContent>
-      </Card>
-
-      {/* Lista de Produtos */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Produtos Cadastrados</CardTitle>
-          <CardDescription>
-            {filteredProducts.length} produto(s) encontrado(s)
-          </CardDescription>
         </CardHeader>
         <CardContent>
-          <div className="rounded-md border">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead className="w-16">Imagem</TableHead>
-                  <TableHead>Produto</TableHead>
-                  <TableHead>SKU</TableHead>
-                  <TableHead>Categoria</TableHead>
-                  <TableHead className="text-right">Custo</TableHead>
-                  <TableHead className="text-right">Venda</TableHead>
-                  <TableHead className="text-right">Margem</TableHead>
-                  <TableHead className="text-right">Estoque</TableHead>
-                  <TableHead className="w-20">Ações</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {filteredProducts.map((product) => {
-                  const margin = ((product.salePrice - product.costPrice) / product.costPrice) * 100;
-                  const isLowStock = product.stock <= (product.minStock || 5);
-                  return (
-                    <TableRow key={product.id}>
-                      <TableCell>
-                        <div className="w-10 h-10 rounded-md bg-muted flex items-center justify-center overflow-hidden">
-                          {product.imageUrl ? (
-                            <img
-                              src={product.imageUrl}
-                              alt={product.name}
-                              className="w-full h-full object-cover"
-                              onError={(e) => {
-                                (e.target as HTMLImageElement).style.display = "none";
-                                (e.target as HTMLImageElement).parentElement!.innerHTML =
-                                  '<svg class="h-5 w-5 text-muted-foreground" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg>';
-                              }}
-                            />
-                          ) : (
-                            <Package className="h-5 w-5 text-muted-foreground" />
-                          )}
-                        </div>
-                      </TableCell>
-                      <TableCell>
-                        <div>
-                          <p className="font-medium">{product.name}</p>
-                          {product.description && (
-                            <p className="text-xs text-muted-foreground truncate max-w-[200px]">
-                              {product.description}
-                            </p>
-                          )}
-                        </div>
-                      </TableCell>
-                      <TableCell className="font-mono text-sm">{product.sku}</TableCell>
-                      <TableCell>
-                        <Badge variant="secondary">{product.category}</Badge>
-                      </TableCell>
-                      <TableCell className="text-right">
-                        R$ {product.costPrice.toFixed(2)}
-                      </TableCell>
-                      <TableCell className="text-right font-medium">
-                        R$ {product.salePrice.toFixed(2)}
-                      </TableCell>
-                      <TableCell className={`text-right font-semibold ${getMarginColor(margin)}`}>
-                        {margin.toFixed(1)}%
-                      </TableCell>
-                      <TableCell className="text-right">
-                        <div className="flex items-center justify-end gap-2">
-                          {isLowStock && (
-                            <AlertTriangle className="h-4 w-4 text-destructive" />
-                          )}
-                          <span className={isLowStock ? "text-destructive font-medium" : ""}>
-                            {product.stock}
-                          </span>
-                        </div>
-                      </TableCell>
-                      <TableCell>
-                        <div className="flex gap-1">
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            onClick={() => openEditDialog(product)}
-                          >
-                            <Edit className="h-4 w-4" />
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="text-destructive hover:text-destructive"
-                            onClick={() => setDeleteProductId(product.id)}
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </Button>
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  );
-                })}
-                {filteredProducts.length === 0 && (
+          {loading ? (
+            <div className="flex justify-center py-10"><Loader2 className="h-8 w-8 animate-spin text-primary" /></div>
+          ) : (
+            <div className="rounded-md border overflow-x-auto">
+              <Table>
+                <TableHeader>
                   <TableRow>
-                    <TableCell colSpan={9} className="text-center py-8 text-muted-foreground">
-                      Nenhum produto encontrado.
-                    </TableCell>
+                    <TableHead>Produto</TableHead>
+                    <TableHead>SKU</TableHead>
+                    <TableHead>Categoria</TableHead>
+                    <TableHead className="text-right">Venda (Un)</TableHead>
+                    <TableHead className="text-right">Caixa</TableHead>
+                    <TableHead className="text-right">Estoque</TableHead>
+                    <TableHead className="w-20">Ações</TableHead>
                   </TableRow>
-                )}
-              </TableBody>
-            </Table>
-          </div>
+                </TableHeader>
+                <TableBody>
+                  {filteredProducts.map((product) => {
+                    const isLowStock = product.stock <= (product.minStock || 5);
+                    const calculatedBoxPrice = product.boxPrice || (product.qtyPerBox ? product.qtyPerBox * product.salePrice : 0);
+
+                    return (
+                      <TableRow key={product.id}>
+                        <TableCell>
+                          <div className="font-medium">{product.name}</div>
+                          <div className="flex gap-1 mt-1">
+                            {product.sellsByBox && <Badge variant="outline" className="text-[10px]">Vende Caixa</Badge>}
+                            {product.sellsByKg && <Badge variant="outline" className="text-[10px]">KG</Badge>}
+                          </div>
+                        </TableCell>
+                        <TableCell className="font-mono text-xs">{product.sku}</TableCell>
+                        <TableCell><Badge variant="secondary">{product.category}</Badge></TableCell>
+                        <TableCell className="text-right font-medium">
+                          {formatCurrency(product.salePrice)}
+                          {product.sellsByKg && <span className="text-xs text-muted-foreground ml-1">/kg</span>}
+                        </TableCell>
+                        
+                        <TableCell className="text-right">
+                          {product.sellsByBox ? (
+                            <span className={!product.boxPrice ? "text-muted-foreground italic" : "font-medium"}>
+                              {formatCurrency(calculatedBoxPrice)}
+                            </span>
+                          ) : (
+                            <span className="text-muted-foreground/30">-</span>
+                          )}
+                        </TableCell>
+
+                        <TableCell className="text-right">
+                          <span className={isLowStock ? "text-destructive font-bold" : ""}>
+                            {product.stock} {product.sellsByKg ? "kg" : "un"}
+                          </span>
+                        </TableCell>
+
+                        <TableCell>
+                          <div className="flex gap-1">
+                            <Button variant="ghost" size="icon" onClick={() => openEditDialog(product)}><Edit className="h-4 w-4" /></Button>
+                            <Button variant="ghost" size="icon" className="text-destructive" onClick={() => setDeleteProductId(product.id)}><Trash2 className="h-4 w-4" /></Button>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                  {filteredProducts.length === 0 && (
+                    <TableRow><TableCell colSpan={7} className="text-center py-8 text-muted-foreground">Nenhum produto encontrado.</TableCell></TableRow>
+                  )}
+                </TableBody>
+              </Table>
+            </div>
+          )}
         </CardContent>
       </Card>
 
-      {/* Delete Confirmation Dialog */}
       <AlertDialog open={!!deleteProductId} onOpenChange={() => setDeleteProductId(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Tem certeza?</AlertDialogTitle>
-            <AlertDialogDescription>
-              Você está prestes a excluir o produto <strong>{products.find(p => p.id === deleteProductId)?.name}</strong>.
-              Esta ação não pode ser desfeita.
-            </AlertDialogDescription>
+            <AlertDialogTitle>Excluir Produto?</AlertDialogTitle>
+            <AlertDialogDescription>Essa ação é irreversível.</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancelar</AlertDialogCancel>
-            <AlertDialogAction 
-              onClick={() => {
-                if (deleteProductId) {
-                  deleteProduct(deleteProductId);
-                  toast({
-                    title: "Produto excluído!",
-                    description: "O produto foi removido do catálogo.",
-                  });
-                  setDeleteProductId(null);
-                }
-              }} 
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-            >
-              Excluir
-            </AlertDialogAction>
+            <AlertDialogAction onClick={handleDelete} className="bg-destructive hover:bg-destructive/90">Excluir</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

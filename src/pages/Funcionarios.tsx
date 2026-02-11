@@ -1,5 +1,8 @@
 import { useState, useEffect } from "react";
-import { Users, Plus, Search, Shield, ShieldCheck, Phone, Percent, Edit2, Save, X, Trash2 } from "lucide-react";
+import { 
+  Users, Search, ShieldCheck, Phone, Edit2, Save, X, Trash2, 
+  Loader2, UserPlus, KeyRound, UserCog, AlertTriangle 
+} from "lucide-react";
 import { useAuth, AppRole, Profile } from "@/hooks/useAuth";
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
@@ -43,18 +46,27 @@ import {
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
 
-interface Employee extends Profile {
+// Interface ajustada
+interface Employee {
+  id: string;
+  name: string;
+  email?: string;
+  phone?: string | null;
   role: AppRole;
+  active?: boolean;
 }
 
 export default function Funcionarios() {
-  const { isAdmin, signUp } = useAuth();
+  const { isAdmin } = useAuth();
+  
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [search, setSearch] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
+  
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [editData, setEditData] = useState<{ commission: string; role: AppRole } | null>(null);
+  const [editData, setEditData] = useState<{ role: AppRole, phone: string } | null>(null);
+  
   const [deleteEmployee, setDeleteEmployee] = useState<Employee | null>(null);
 
   const [newEmployee, setNewEmployee] = useState({
@@ -63,7 +75,6 @@ export default function Funcionarios() {
     password: "",
     phone: "",
     role: "vendedor" as AppRole,
-    commission: "",
   });
 
   useEffect(() => {
@@ -73,459 +84,324 @@ export default function Funcionarios() {
   const fetchEmployees = async () => {
     setIsLoading(true);
     try {
+      // Busca perfis ATIVOS
       const { data: profiles, error: profilesError } = await supabase
         .from("profiles")
-        .select("*")
+        .select(`*`)
+        .eq("active", true)
         .order("name");
 
       if (profilesError) throw profilesError;
 
-      const { data: roles, error: rolesError } = await supabase
-        .from("user_roles")
-        .select("user_id, role");
+      // Busca cargos
+      const { data: roles } = await supabase.from("user_roles").select("*");
 
-      if (rolesError) throw rolesError;
+      // Formatação segura
+      const formatted: Employee[] = (profiles || [])
+        .map((p: any) => {
+          const roleEntry = roles?.find((r: any) => r.user_id === p.id);
+          const finalRole = (roleEntry?.role as AppRole) || (p.role as AppRole) || "vendedor";
 
-      const employeesWithRoles = profiles?.map((profile) => {
-        const userRole = roles?.find((r) => r.user_id === profile.user_id);
-        return {
-          ...profile,
-          role: (userRole?.role as AppRole) || "vendedor",
-        };
-      }) || [];
+          return {
+            id: p.id,
+            name: p.name || "Sem Nome",
+            phone: p.phone,
+            role: finalRole,
+            active: p.active
+          };
+        });
 
-      setEmployees(employeesWithRoles);
-    } catch (error) {
-      console.error("Error fetching employees:", error);
-      toast.error("Erro ao carregar funcionários");
+      setEmployees(formatted);
+    } catch (error: any) {
+      console.error("Erro ao buscar:", error);
+      toast.error("Erro ao carregar lista.");
+    } finally {
+      setIsLoading(false);
     }
-    setIsLoading(false);
   };
 
   const handleCreateEmployee = async () => {
-    if (!newEmployee.name || !newEmployee.email || !newEmployee.password) {
-      toast.error("Preencha os campos obrigatórios");
+    if (!newEmployee.name || !newEmployee.email) {
+      toast.error("Preencha Nome e E-mail.");
       return;
     }
 
-    const { error } = await signUp(newEmployee.email, newEmployee.password, {
-      name: newEmployee.name,
-      phone: newEmployee.phone || undefined,
-      commission: newEmployee.commission ? parseFloat(newEmployee.commission) : 0,
-      role: newEmployee.role,
-    });
+    const finalPassword = newEmployee.password.trim() === "" ? "123456" : newEmployee.password;
 
-    if (error) {
-      toast.error("Erro ao cadastrar", { description: error.message });
-    } else {
-      toast.success("Funcionário cadastrado!", {
-        description: "Um e-mail de confirmação foi enviado.",
+    try {
+      const { data: authData, error: authError } = await supabase.auth.signUp({
+        email: newEmployee.email,
+        password: finalPassword,
+        options: {
+          data: { name: newEmployee.name, phone: newEmployee.phone }
+        }
       });
-      setIsDialogOpen(false);
-      setNewEmployee({
-        name: "",
-        email: "",
-        password: "",
-        phone: "",
-        role: "vendedor",
-        commission: "",
-      });
-      fetchEmployees();
+
+      if (authError) {
+        if (authError.message.includes("already registered")) {
+            toast.error("E-mail em uso. O usuário pode estar arquivado.");
+            return;
+        }
+        throw authError;
+      }
+
+      const userId = authData.user?.id;
+
+      if (userId) {
+        await new Promise(resolve => setTimeout(resolve, 1500));
+
+        // Cria o perfil
+        await supabase
+            .from('profiles')
+            .upsert({ 
+                id: userId, 
+                name: newEmployee.name, 
+                phone: newEmployee.phone,
+                role: newEmployee.role, 
+                active: true 
+            });
+
+        // Cria a role
+        await supabase
+            .from('user_roles')
+            .upsert({ user_id: userId, role: newEmployee.role }, { onConflict: 'user_id' });
+        
+        // Cria vendedor se necessário
+        if (newEmployee.role === 'vendedor') {
+            await supabase.from('sellers').upsert({ name: newEmployee.name }, { onConflict: 'name' });
+        }
+
+        toast.success("Funcionário criado!", { description: `Senha: ${finalPassword}` });
+        setIsDialogOpen(false);
+        setNewEmployee({ name: "", email: "", password: "", phone: "", role: "vendedor" });
+        fetchEmployees();
+      }
+
+    } catch (error: any) {
+      toast.error("Erro ao cadastrar: " + error.message);
     }
   };
 
   const startEditing = (employee: Employee) => {
     setEditingId(employee.id);
     setEditData({
-      commission: employee.commission.toString(),
       role: employee.role,
+      phone: employee.phone || "",
     });
-  };
-
-  const cancelEditing = () => {
-    setEditingId(null);
-    setEditData(null);
   };
 
   const saveEditing = async (employee: Employee) => {
     if (!editData) return;
 
     try {
-      const { error: profileError } = await supabase
-        .from("profiles")
-        .update({ commission: parseFloat(editData.commission) || 0 })
+      await supabase.from("profiles")
+        .update({ phone: editData.phone, role: editData.role })
         .eq("id", employee.id);
 
-      if (profileError) throw profileError;
+      await supabase.from("user_roles")
+        .upsert({ user_id: employee.id, role: editData.role }, { onConflict: 'user_id' });
 
-      if (editData.role !== employee.role) {
-        const { error: roleError } = await supabase
-          .from("user_roles")
-          .update({ role: editData.role })
-          .eq("user_id", employee.user_id);
-
-        if (roleError) throw roleError;
-      }
-
-      toast.success("Funcionário atualizado!");
-      cancelEditing();
+      toast.success("Dados atualizados!");
+      setEditingId(null);
+      setEditData(null);
       fetchEmployees();
-    } catch (error) {
-      console.error("Error updating employee:", error);
-      toast.error("Erro ao atualizar funcionário");
+    } catch (error: any) {
+      toast.error("Erro ao atualizar.");
     }
   };
 
   const handleDeleteEmployee = async () => {
-    if (!deleteEmployee) return;
+    // 1. Cria uma cópia local (Isso resolve o erro "Object is possibly null")
+    const employeeToDelete = deleteEmployee;
+
+    // 2. Verifica se a cópia existe
+    if (!employeeToDelete) return;
 
     try {
-      const { error: roleError } = await supabase
-        .from("user_roles")
-        .delete()
-        .eq("user_id", deleteEmployee.user_id);
+        // Agora usamos 'employeeToDelete' em vez de 'deleteEmployee'
+        const { error: rpcError } = await supabase.rpc('archive_user', { 
+            target_user_id: employeeToDelete.id 
+        });
 
-      if (roleError) throw roleError;
+        if (rpcError) throw rpcError;
 
-      const { error: profileError } = await supabase
-        .from("profiles")
-        .delete()
-        .eq("id", deleteEmployee.id);
+        await supabase.from("sellers").delete().eq("name", employeeToDelete.name);
 
-      if (profileError) throw profileError;
-
-      toast.success("Funcionário removido!", {
-        description: "O acesso ao sistema foi revogado.",
-      });
-      setDeleteEmployee(null);
-      fetchEmployees();
-    } catch (error) {
-      console.error("Error deleting employee:", error);
-      toast.error("Erro ao remover funcionário");
+        toast.success("Funcionário arquivado!");
+        
+        // Remove da lista usando o ID da cópia local
+        setEmployees(prev => prev.filter(e => e.id !== employeeToDelete.id));
+        setDeleteEmployee(null);
+        
+    } catch (error: any) {
+        console.error(error);
+        toast.error("Erro ao arquivar.");
     }
   };
 
   const filteredEmployees = employees.filter(
     (e) =>
       e.name.toLowerCase().includes(search.toLowerCase()) ||
-      e.phone?.includes(search)
+      (e.phone && e.phone.includes(search))
   );
 
-  if (!isAdmin) {
-    return (
-      <div className="flex items-center justify-center min-h-[60vh]">
-        <Card className="max-w-md">
-          <CardContent className="pt-6 text-center">
-            <Shield className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
-            <h2 className="text-xl font-semibold mb-2">Acesso Restrito</h2>
-            <p className="text-muted-foreground">
-              Apenas administradores podem acessar a gestão de funcionários.
-            </p>
-          </CardContent>
-        </Card>
-      </div>
-    );
-  }
-
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
+    <div className="space-y-6 animate-in fade-in duration-500">
+      <div className="flex flex-col sm:flex-row items-center justify-between gap-4">
         <div className="flex items-center gap-3">
           <div className="p-2 rounded-lg bg-primary/10">
-            <Users className="h-6 w-6 text-primary" />
+            <UserCog className="h-6 w-6 text-primary" />
           </div>
           <div>
-            <h1 className="text-2xl font-semibold text-foreground">Equipe</h1>
-            <p className="text-sm text-muted-foreground">Gestão de funcionários e acessos</p>
+            <h1 className="text-2xl font-semibold text-foreground">Equipe Ativa</h1>
+            <p className="text-sm text-muted-foreground">Gerenciamento de acesso</p>
           </div>
         </div>
 
         <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
           <DialogTrigger asChild>
-            <Button>
-              <Plus className="h-4 w-4 mr-2" />
-              Novo Funcionário
+            <Button className="w-full sm:w-auto gap-2">
+              <UserPlus className="h-4 w-4" /> Novo Funcionário
             </Button>
           </DialogTrigger>
-          <DialogContent>
+          <DialogContent className="max-w-lg">
             <DialogHeader>
               <DialogTitle>Cadastrar Funcionário</DialogTitle>
-              <DialogDescription>
-                Preencha os dados do novo funcionário. Um e-mail de confirmação será enviado.
-              </DialogDescription>
+              <DialogDescription>Crie um acesso. Senha padrão: 123456</DialogDescription>
             </DialogHeader>
-            <div className="space-y-4 py-4">
-              <div className="space-y-2">
-                <Label>Nome Completo *</Label>
-                <Input
-                  value={newEmployee.name}
-                  onChange={(e) => setNewEmployee({ ...newEmployee, name: e.target.value })}
-                  placeholder="João Silva"
-                />
+            <div className="grid gap-4 py-4">
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                    <Label>Nome Completo *</Label>
+                    <Input value={newEmployee.name} onChange={(e) => setNewEmployee({ ...newEmployee, name: e.target.value })} placeholder="Ex: João Silva" />
+                </div>
+                <div className="space-y-2">
+                    <Label>Telefone</Label>
+                    <Input value={newEmployee.phone} onChange={(e) => setNewEmployee({ ...newEmployee, phone: e.target.value })} placeholder="(00) 00000-0000" />
+                </div>
               </div>
               <div className="space-y-2">
-                <Label>E-mail *</Label>
-                <Input
-                  type="email"
-                  value={newEmployee.email}
-                  onChange={(e) => setNewEmployee({ ...newEmployee, email: e.target.value })}
-                  placeholder="joao@empresa.com"
-                />
-              </div>
-              <div className="space-y-2">
-                <Label>Senha de Acesso *</Label>
-                <Input
-                  type="password"
-                  value={newEmployee.password}
-                  onChange={(e) => setNewEmployee({ ...newEmployee, password: e.target.value })}
-                  placeholder="Mínimo 6 caracteres"
-                />
-              </div>
-              <div className="space-y-2">
-                <Label>Telefone</Label>
-                <Input
-                  value={newEmployee.phone}
-                  onChange={(e) => setNewEmployee({ ...newEmployee, phone: e.target.value })}
-                  placeholder="(11) 99999-0000"
-                />
+                <Label>E-mail (Login) *</Label>
+                <Input type="email" value={newEmployee.email} onChange={(e) => setNewEmployee({ ...newEmployee, email: e.target.value })} placeholder="joao@empresa.com" />
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2">
-                  <Label>Cargo *</Label>
-                  <Select
-                    value={newEmployee.role}
-                    onValueChange={(v) => setNewEmployee({ ...newEmployee, role: v as AppRole })}
-                  >
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="vendedor">Vendedor</SelectItem>
-                      <SelectItem value="admin">Administrador</SelectItem>
-                    </SelectContent>
-                  </Select>
+                    <Label>Senha (Opcional)</Label>
+                    <div className="relative">
+                        <KeyRound className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                        {/* INPUT CORRIGIDO: Removido 'uncomfortable' */}
+                        <Input 
+                            type="password" 
+                            className="pl-10" 
+                            value={newEmployee.password} 
+                            onChange={(e) => setNewEmployee({ ...newEmployee, password: e.target.value })} 
+                            placeholder="Padrão: 123456" 
+                        />
+                    </div>
                 </div>
                 <div className="space-y-2">
-                  <Label>Comissão (%)</Label>
-                  <Input
-                    type="number"
-                    step="0.01"
-                    min="0"
-                    max="100"
-                    value={newEmployee.commission}
-                    onChange={(e) => setNewEmployee({ ...newEmployee, commission: e.target.value })}
-                    placeholder="5.00"
-                  />
+                    <Label>Cargo *</Label>
+                    <Select value={newEmployee.role} onValueChange={(v) => setNewEmployee({ ...newEmployee, role: v as AppRole })}>
+                        <SelectTrigger><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                            <SelectItem value="vendedor">Vendedor</SelectItem>
+                            <SelectItem value="admin">Administrador</SelectItem>
+                        </SelectContent>
+                    </Select>
                 </div>
               </div>
             </div>
             <DialogFooter>
-              <Button variant="outline" onClick={() => setIsDialogOpen(false)}>
-                Cancelar
-              </Button>
-              <Button onClick={handleCreateEmployee}>
-                Cadastrar
-              </Button>
+              <Button variant="outline" onClick={() => setIsDialogOpen(false)}>Cancelar</Button>
+              <Button onClick={handleCreateEmployee}>Cadastrar</Button>
             </DialogFooter>
           </DialogContent>
         </Dialog>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-3">
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">Total</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <p className="text-2xl font-bold">{employees.length}</p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
-              <ShieldCheck className="h-4 w-4" />
-              Administradores
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <p className="text-2xl font-bold text-primary">
-              {employees.filter((e) => e.role === "admin").length}
-            </p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
-              <Users className="h-4 w-4" />
-              Vendedores
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <p className="text-2xl font-bold text-green-600">
-              {employees.filter((e) => e.role === "vendedor").length}
-            </p>
-          </CardContent>
-        </Card>
-      </div>
-
       <Card>
         <CardHeader className="pb-4">
-          <div className="flex items-center gap-4">
-            <div className="relative flex-1 max-w-sm">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-              <Input
-                placeholder="Buscar funcionário..."
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                className="pl-10"
-              />
+            <div className="relative max-w-sm">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                <Input placeholder="Buscar funcionário..." value={search} onChange={(e) => setSearch(e.target.value)} className="pl-10" />
             </div>
-          </div>
         </CardHeader>
         <CardContent>
-          {isLoading ? (
-            <div className="text-center py-8 text-muted-foreground">Carregando...</div>
-          ) : filteredEmployees.length === 0 ? (
-            <div className="text-center py-8 text-muted-foreground">
-              Nenhum funcionário encontrado
-            </div>
-          ) : (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Nome</TableHead>
-                  <TableHead>Cargo</TableHead>
-                  <TableHead>Telefone</TableHead>
-                  <TableHead>Comissão</TableHead>
-                  <TableHead className="text-right">Ações</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {filteredEmployees.map((employee) => (
-                  <TableRow key={employee.id}>
-                    <TableCell className="font-medium">{employee.name}</TableCell>
-                    <TableCell>
-                      {editingId === employee.id ? (
-                        <Select
-                          value={editData?.role}
-                          onValueChange={(v) =>
-                            setEditData({ ...editData!, role: v as AppRole })
-                          }
-                        >
-                          <SelectTrigger className="w-32">
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="vendedor">Vendedor</SelectItem>
-                            <SelectItem value="admin">Admin</SelectItem>
-                          </SelectContent>
-                        </Select>
-                      ) : (
-                        <Badge
-                          variant={employee.role === "admin" ? "default" : "secondary"}
-                        >
-                          {employee.role === "admin" ? (
-                            <>
-                              <ShieldCheck className="h-3 w-3 mr-1" />
-                              Admin
-                            </>
-                          ) : (
-                            "Vendedor"
-                          )}
-                        </Badge>
-                      )}
-                    </TableCell>
-                    <TableCell>
-                      {employee.phone ? (
-                        <span className="flex items-center gap-1 text-sm">
-                          <Phone className="h-3 w-3" />
-                          {employee.phone}
-                        </span>
-                      ) : (
-                        <span className="text-muted-foreground">—</span>
-                      )}
-                    </TableCell>
-                    <TableCell>
-                      {editingId === employee.id ? (
-                        <Input
-                          type="number"
-                          step="0.01"
-                          min="0"
-                          max="100"
-                          value={editData?.commission}
-                          onChange={(e) =>
-                            setEditData({ ...editData!, commission: e.target.value })
-                          }
-                          className="w-20"
-                        />
-                      ) : (
-                        <span className="flex items-center gap-1">
-                          <Percent className="h-3 w-3" />
-                          {employee.commission.toFixed(2)}%
-                        </span>
-                      )}
-                    </TableCell>
-                    <TableCell className="text-right">
-                      {editingId === employee.id ? (
-                        <div className="flex justify-end gap-1">
-                          <Button
-                            size="icon"
-                            variant="ghost"
-                            onClick={() => saveEditing(employee)}
-                          >
-                            <Save className="h-4 w-4" />
-                          </Button>
-                          <Button
-                            size="icon"
-                            variant="ghost"
-                            onClick={cancelEditing}
-                          >
-                            <X className="h-4 w-4" />
-                          </Button>
-                        </div>
-                      ) : (
-                        <div className="flex justify-end gap-1">
-                          <Button
-                            size="icon"
-                            variant="ghost"
-                            onClick={() => startEditing(employee)}
-                          >
-                            <Edit2 className="h-4 w-4" />
-                          </Button>
-                          <Button
-                            size="icon"
-                            variant="ghost"
-                            className="text-destructive hover:text-destructive"
-                            onClick={() => setDeleteEmployee(employee)}
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </Button>
-                        </div>
-                      )}
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          )}
+            {isLoading ? (
+                <div className="flex justify-center py-8"><Loader2 className="h-8 w-8 animate-spin text-primary" /></div>
+            ) : filteredEmployees.length === 0 ? (
+                <div className="text-center py-8 text-muted-foreground">Nenhum funcionário ativo encontrado.</div>
+            ) : (
+                <Table>
+                    <TableHeader>
+                        <TableRow>
+                            <TableHead>Nome</TableHead>
+                            <TableHead>Cargo</TableHead>
+                            <TableHead>Telefone</TableHead>
+                            <TableHead className="text-right">Ações</TableHead>
+                        </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                        {filteredEmployees.map((employee) => (
+                            <TableRow key={employee.id}>
+                                <TableCell className="font-medium">{employee.name}</TableCell>
+                                <TableCell>
+                                    {editingId === employee.id ? (
+                                        <Select value={editData?.role} onValueChange={(v) => setEditData({ ...editData!, role: v as AppRole })}>
+                                            <SelectTrigger className="w-32 h-8"><SelectValue /></SelectTrigger>
+                                            <SelectContent>
+                                                <SelectItem value="vendedor">Vendedor</SelectItem>
+                                                <SelectItem value="admin">Admin</SelectItem>
+                                            </SelectContent>
+                                        </Select>
+                                    ) : (
+                                        <Badge variant={employee.role === 'admin' ? 'default' : 'secondary'}>
+                                            {employee.role === 'admin' ? 'Admin' : 'Vendedor'}
+                                        </Badge>
+                                    )}
+                                </TableCell>
+                                <TableCell>
+                                    {editingId === employee.id ? (
+                                        <Input value={editData?.phone} onChange={(e) => setEditData({ ...editData!, phone: e.target.value })} className="h-8 w-32" />
+                                    ) : (employee.phone || "-")}
+                                </TableCell>
+                                <TableCell className="text-right">
+                                    <div className="flex justify-end gap-1">
+                                        {editingId === employee.id ? (
+                                            <>
+                                                <Button size="icon" variant="ghost" className="text-green-600" onClick={() => saveEditing(employee)}><Save className="h-4 w-4" /></Button>
+                                                <Button size="icon" variant="ghost" onClick={() => setEditingId(null)}><X className="h-4 w-4" /></Button>
+                                            </>
+                                        ) : (
+                                            <>
+                                                <Button size="icon" variant="ghost" onClick={() => startEditing(employee)}><Edit2 className="h-4 w-4" /></Button>
+                                                <Button size="icon" variant="ghost" className="text-destructive" onClick={() => setDeleteEmployee(employee)}><Trash2 className="h-4 w-4" /></Button>
+                                            </>
+                                        )}
+                                    </div>
+                                </TableCell>
+                            </TableRow>
+                        ))}
+                    </TableBody>
+                </Table>
+            )}
         </CardContent>
       </Card>
 
       <AlertDialog open={!!deleteEmployee} onOpenChange={() => setDeleteEmployee(null)}>
         <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Tem certeza?</AlertDialogTitle>
-            <AlertDialogDescription>
-              Você está prestes a remover <strong>{deleteEmployee?.name}</strong> da equipe.
-              Esta ação removerá o acesso ao sistema.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancelar</AlertDialogCancel>
-            <AlertDialogAction onClick={handleDeleteEmployee} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
-              Remover
-            </AlertDialogAction>
-          </AlertDialogFooter>
+            <AlertDialogHeader>
+                <AlertDialogTitle className="text-destructive flex items-center gap-2">
+                    <AlertTriangle className="h-5 w-5" /> Arquivar Funcionário?
+                </AlertDialogTitle>
+                <AlertDialogDescription>
+                    Isso mudará o e-mail de <strong>{deleteEmployee?.name}</strong> no banco para liberar o original.
+                </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+                <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                <AlertDialogAction onClick={handleDeleteEmployee} className="bg-destructive hover:bg-destructive/90">Confirmar</AlertDialogAction>
+            </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
     </div>
