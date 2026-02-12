@@ -148,7 +148,7 @@ export default function Catalogo() {
       sku: "",
       category: "",
       supplier: "",
-      // Valores vazios para não aparecer "0"
+      // Valores "vazios" para não exibir 0 no input
       costPrice: "" as unknown as number,
       salePrice: "" as unknown as number,
       minStock: "" as unknown as number,
@@ -166,13 +166,13 @@ export default function Catalogo() {
     return () => clearTimeout(t);
   }, [searchTerm]);
 
-  // Carregar dados com proteção try/catch (evita tela branca)
+  // Carregar dados e preferências com proteção try/catch (evita crash do localStorage)
   useEffect(() => {
     try {
       const isHidden = localStorage.getItem("hide_catalogo_info");
       if (isHidden === "true") setShowInfo(false);
     } catch (e) {
-      console.warn("Erro localStorage:", e);
+      console.warn("Erro ao acessar localStorage", e);
     }
     fetchProducts();
   }, []);
@@ -216,6 +216,7 @@ export default function Catalogo() {
 
       setProducts(mapped);
 
+      // Extrair categorias únicas
       const cats = Array.from(new Set(mapped.map((p) => p.category).filter(Boolean)));
       setExistingCategories(cats);
     } catch (error) {
@@ -226,7 +227,7 @@ export default function Catalogo() {
     }
   };
 
-  // Margem em tempo real
+  // Cálculos de margem em tempo real
   const costPrice = form.watch("costPrice");
   const salePrice = form.watch("salePrice");
   const profitMargin = useMemo(() => {
@@ -283,9 +284,10 @@ export default function Catalogo() {
         finalSku = finalSku.trim().toUpperCase();
       }
 
+      // Validação de duplicidade de SKU
       if (!editingProduct || editingProduct.sku !== finalSku) {
         const conflict = products.find((p) => p.sku === finalSku);
-        if (conflict) finalSku = generateSku();
+        if (conflict) finalSku = generateSku(); // Regenera se der conflito
       }
 
       const payload: any = {
@@ -307,7 +309,7 @@ export default function Catalogo() {
       if (editingProduct) {
         const { error } = await supabase.from("products").update(payload).eq("id", editingProduct.id);
         if (error) throw error;
-        toast({ title: "Atualizado", description: "Produto salvo." });
+        toast({ title: "Atualizado", description: "Produto salvo com sucesso." });
       } else {
         const { error } = await supabase.from("products").insert([payload]);
         if (error) throw error;
@@ -348,7 +350,7 @@ export default function Catalogo() {
   };
 
   return (
-    // Padding ajustado para mobile e desktop
+    // Padding responsivo: menor no mobile (p-4), maior no desktop (md:p-8)
     <div className="space-y-4 p-4 md:p-8 animate-in fade-in duration-500 pb-20">
       
       {/* --- Header --- */}
@@ -370,6 +372,7 @@ export default function Catalogo() {
           <p className="text-sm text-muted-foreground">Gerencie seus produtos</p>
         </div>
 
+        {/* Botão Novo Produto */}
         <Dialog
           open={isDialogOpen}
           onOpenChange={(open) => {
@@ -383,7 +386,7 @@ export default function Catalogo() {
             </Button>
           </DialogTrigger>
 
-          {/* Dialog Responsivo (Tela cheia ou quase no mobile) */}
+          {/* Dialog Otimizado para Mobile */}
           <DialogContent className="w-[95vw] max-w-2xl max-h-[90vh] overflow-y-auto rounded-lg p-4 md:p-6">
             <DialogHeader>
               <DialogTitle>{editingProduct ? "Editar" : "Novo"} Produto</DialogTitle>
@@ -512,6 +515,7 @@ export default function Catalogo() {
                     />
                   </div>
 
+                  {/* Checkboxes em linha */}
                   <div className="flex gap-4 pt-2">
                     <FormField
                       control={form.control}
@@ -568,7 +572,8 @@ export default function Catalogo() {
           <AlertTitle className="text-sm font-bold">Dicas Rápidas</AlertTitle>
           <AlertDescription className="text-xs mt-1 leading-relaxed">
             - O <strong>SKU</strong> é gerado automaticamente.<br/>
-            - Marque <strong>KG</strong> para produtos fracionados.<br/>
+            - Marque <strong>KG</strong> para produtos de peso.<br/>
+            - Use a busca para filtrar categorias.
           </AlertDescription>
           <button onClick={handleCloseInfo} className="absolute top-2 right-2 p-1 text-blue-400">
             <X className="h-4 w-4" />
@@ -602,7 +607,7 @@ export default function Catalogo() {
         </Select>
       </div>
 
-      {/* --- Loading e Conteúdo --- */}
+      {/* --- Loading --- */}
       {loading ? (
         <div className="flex justify-center py-10">
           <Loader2 className="h-8 w-8 animate-spin text-primary" />
@@ -657,7 +662,7 @@ export default function Catalogo() {
             </Table>
           </div>
 
-          {/* === VISÃO MOBILE (CARDS) - Resolve o problema da tela grande demais === */}
+          {/* === VISÃO MOBILE (CARDS) === */}
           <div className="grid gap-3 md:hidden">
             {filteredProducts.map((product) => (
               <Card key={product.id} className="shadow-sm border-l-4 border-l-primary/20">
@@ -677,7 +682,7 @@ export default function Catalogo() {
                     </div>
                   </div>
 
-                  {/* Menu para Editar/Excluir no Mobile */}
+                  {/* Menu de Ações Mobile */}
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
                       <Button variant="ghost" size="icon" className="h-8 w-8 -mr-2">
@@ -709,11 +714,11 @@ export default function Catalogo() {
         </>
       )}
 
-      {/* Confirmação de Exclusão */}
+      {/* Dialog de Confirmação de Exclusão */}
       <AlertDialog open={!!deleteProductId} onOpenChange={() => setDeleteProductId(null)}>
         <AlertDialogContent className="w-[95vw] rounded-lg">
           <AlertDialogHeader>
-            <AlertDialogTitle>Excluir produto?</AlertDialogTitle>
+            <AlertDialogTitle>Excluir este produto?</AlertDialogTitle>
             <AlertDialogDescription>
               Essa ação não pode ser desfeita.
             </AlertDialogDescription>
