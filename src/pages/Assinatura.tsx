@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   CreditCard,
   RefreshCcw,
@@ -16,14 +16,23 @@ import {
   Sparkles,
   BadgeCheck,
   ArrowRight,
+  Zap,
+  Users,
+  Boxes,
+  BarChart3,
+  Shield,
+  Crown,
 } from "lucide-react";
+
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
+
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Separator } from "@/components/ui/separator";
+
 import { format } from "date-fns";
 import { ptBR } from "date-fns/locale";
 
@@ -96,8 +105,46 @@ function statusIcon(s: SubStatus) {
 
 function humanPlan(plan?: string) {
   if (!plan) return "Mensal";
-  if (plan.includes("monthly")) return "Mensal";
+  if (plan.toLowerCase().includes("monthly")) return "Mensal";
   return plan;
+}
+
+function statusShortDescription(s: SubStatus) {
+  switch (s) {
+    case "active":
+      return "Acesso liberado para toda a empresa.";
+    case "past_due":
+      return "Pagamento em atraso. Gere um novo link para regularizar.";
+    case "cancelled":
+      return "Assinatura cancelada. Gere um novo link para reativar.";
+    case "blocked_manual":
+      return "Bloqueio manual ativo. Fale com o admin master/suporte.";
+    case "inactive":
+    default:
+      return "Assinatura ainda não iniciada. Gere um link para ativar.";
+  }
+}
+
+function FeatureRow({
+  icon,
+  title,
+  desc,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  desc: string;
+}) {
+  return (
+    <div className="flex items-start gap-3 rounded-2xl border border-border/60 bg-background/60 p-4">
+      <div className="mt-0.5 h-10 w-10 rounded-2xl bg-primary/10 flex items-center justify-center">
+        {icon}
+      </div>
+      <div className="min-w-0">
+        <p className="text-sm font-semibold text-foreground">{title}</p>
+        <p className="text-xs text-muted-foreground leading-relaxed">{desc}</p>
+      </div>
+    </div>
+  );
 }
 
 export default function Assinatura() {
@@ -131,19 +178,14 @@ export default function Assinatura() {
     else setRefreshing(true);
 
     try {
-      const {
-        data: { user },
-        error: userErr,
-      } = await supabase.auth.getUser();
-
+      const { data: userData, error: userErr } = await supabase.auth.getUser();
       if (userErr) throw userErr;
-      if (!user) throw new Error("Usuário não autenticado.");
+      if (!userData.user) throw new Error("Usuário não autenticado.");
 
-      // company_id do perfil
       const { data: profile, error: pErr } = await supabase
         .from("profiles")
         .select("company_id")
-        .eq("id", user.id)
+        .eq("id", userData.user.id)
         .single();
 
       if (pErr) throw pErr;
@@ -175,16 +217,21 @@ export default function Assinatura() {
     setCreating(true);
 
     try {
+      const { data: sessData, error: sessErr } = await supabase.auth.getSession();
+      if (sessErr) throw sessErr;
+
+      const token = sessData.session?.access_token;
+      if (!token) throw new Error("Sessão expirada. Faça login novamente.");
+
       const { data, error } = await supabase.functions.invoke("create-subscription", {
         body: { companyId, price: PRICE, cycle: "MONTHLY" },
+        headers: { Authorization: `Bearer ${token}` },
       });
 
       if (error) throw error;
       if (!data?.paymentUrl) throw new Error("Não foi possível gerar o link de pagamento.");
 
       window.open(data.paymentUrl, "_blank", "noopener,noreferrer");
-
-      // atualiza sem travar a tela
       await loadCompanyAndSubscription(false);
     } catch (e: any) {
       console.error(e);
@@ -213,7 +260,7 @@ export default function Assinatura() {
 
   if (loading) {
     return (
-      <div className="flex h-full items-center justify-center">
+      <div className="flex h-[60vh] items-center justify-center">
         <Loader2 className="h-8 w-8 animate-spin text-primary" />
       </div>
     );
@@ -224,50 +271,51 @@ export default function Assinatura() {
       {/* Top Bar */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-3">
-          <div className="p-2 rounded-xl bg-primary/10">
+          <div className="p-2 rounded-2xl bg-primary/10">
             <CreditCard className="h-6 w-6 text-primary" />
           </div>
 
           <div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               <h1 className="text-2xl font-semibold text-foreground">Assinatura</h1>
+
               <Badge variant={statusBadgeVariant(currentStatus)} className="gap-1">
                 {statusIcon(currentStatus)}
                 {statusLabel(currentStatus)}
               </Badge>
+
               {sub?.manual_override && currentStatus !== "blocked_manual" && (
                 <Badge variant="outline" className="border-amber-300 text-amber-700 bg-amber-50 gap-1">
                   <Sparkles className="h-3.5 w-3.5" />
                   Liberação manual
                 </Badge>
               )}
+
+              <Badge variant="outline" className="gap-1">
+                <Crown className="h-3.5 w-3.5" />
+                SaaS
+              </Badge>
             </div>
 
             <p className="text-sm text-muted-foreground">
-              Cobrança mensal e liberação de acesso para a empresa
+              Plano, cobrança e liberação de acesso por empresa (multi-tenant).
             </p>
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
-          <Button
-            variant="outline"
-            onClick={() => loadCompanyAndSubscription(false)}
-            disabled={refreshing}
-          >
-            {refreshing ? (
-              <>
-                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                Atualizando...
-              </>
-            ) : (
-              <>
-                <RefreshCcw className="h-4 w-4 mr-2" />
-                Atualizar
-              </>
-            )}
-          </Button>
-        </div>
+        <Button variant="outline" onClick={() => loadCompanyAndSubscription(false)} disabled={refreshing}>
+          {refreshing ? (
+            <>
+              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+              Atualizando...
+            </>
+          ) : (
+            <>
+              <RefreshCcw className="h-4 w-4 mr-2" />
+              Atualizar
+            </>
+          )}
+        </Button>
       </div>
 
       {errorMsg && (
@@ -282,195 +330,198 @@ export default function Assinatura() {
         <Alert variant="destructive" className="bg-red-50 text-red-900 border-red-200">
           <Lock className="h-4 w-4" />
           <AlertTitle>Empresa bloqueada</AlertTitle>
-          <AlertDescription>
-            {sub?.blocked_reason ? sub.blocked_reason : "Bloqueio manual ativo."}
-          </AlertDescription>
+          <AlertDescription>{sub?.blocked_reason || "Bloqueio manual ativo."}</AlertDescription>
         </Alert>
       )}
 
-      {/* HERO */}
+      {/* Hero / Pricing */}
       <Card className="relative overflow-hidden">
-        <div className="absolute inset-0 bg-gradient-to-r from-primary/10 via-transparent to-transparent" />
-        <CardHeader className="relative">
-          <CardTitle className="text-lg font-medium flex items-center gap-2">
-            <ShieldCheck className="h-5 w-5 text-primary" />
-            Plano {humanPlan(sub?.plan)} — {formatCurrency(PRICE)}/mês
-          </CardTitle>
-          <p className="text-sm text-muted-foreground">
-            Pagando, o acesso é liberado automaticamente para todos os usuários da empresa.
-          </p>
-        </CardHeader>
+        <div className="absolute inset-0 bg-gradient-to-r from-primary/12 via-primary/5 to-transparent" />
+        <div className="absolute -top-24 -right-24 h-56 w-56 rounded-full bg-primary/10 blur-2xl" />
+        <div className="absolute -bottom-24 -left-24 h-56 w-56 rounded-full bg-primary/10 blur-2xl" />
 
-        <CardContent className="relative space-y-4">
-          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-            <div className="flex items-center gap-2 text-sm text-muted-foreground">
-              <CalendarClock className="h-4 w-4" />
-              <span>
-                Próxima renovação: <strong className="text-foreground">{nextRenewal}</strong>
-              </span>
-            </div>
+        <CardContent className="relative p-6">
+          <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-6">
+            <div className="space-y-2">
+              <div className="inline-flex items-center gap-2 rounded-full border border-border/60 bg-background/70 px-3 py-1 text-xs text-muted-foreground">
+                <BadgeCheck className="h-3.5 w-3.5 text-primary" />
+                Plano recomendado para pequenas e médias empresas
+              </div>
 
-            <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto">
-              <Button
-                onClick={handleSubscribe}
-                disabled={creating || !canPay}
-                className="w-full sm:w-auto"
-              >
-                {creating ? (
-                  <>
-                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                    Gerando link...
-                  </>
-                ) : (
-                  <>
-                    <ExternalLink className="h-4 w-4 mr-2" />
-                    {primaryCtaLabel}
-                  </>
-                )}
-              </Button>
+              <h2 className="text-xl sm:text-2xl font-semibold text-foreground flex items-center gap-2">
+                <ShieldCheck className="h-5 w-5 text-primary" />
+                Plano {humanPlan(sub?.plan)}{" "}
+                <Badge variant="outline" className="ml-1">
+                  Recomendado
+                </Badge>
+              </h2>
 
-              <Button
-                variant="outline"
-                onClick={() => loadCompanyAndSubscription(false)}
-                className="w-full sm:w-auto"
-                disabled={refreshing}
-              >
-                <RefreshCcw className="h-4 w-4 mr-2" />
-                Verificar status
-              </Button>
-            </div>
-          </div>
+              <p className="text-sm text-muted-foreground max-w-xl">
+                Cobrança mensal com liberação automática após confirmação do pagamento via Asaas.
+              </p>
 
-          <Separator />
-
-          {/* RESUMO */}
-          <div className="grid gap-3 md:grid-cols-3">
-            <Card className="border-border/60">
-              <CardContent className="p-4">
-                <div className="flex items-center justify-between">
-                  <p className="text-sm text-muted-foreground">Status</p>
-                  <Badge variant={statusBadgeVariant(currentStatus)} className="gap-1">
-                    {statusIcon(currentStatus)}
-                    {statusLabel(currentStatus)}
-                  </Badge>
-                </div>
-                <p className="mt-2 text-sm text-muted-foreground">
-                  {currentStatus === "active"
-                    ? "Acesso liberado."
-                    : currentStatus === "past_due"
-                    ? "Pagamento em atraso."
-                    : currentStatus === "cancelled"
-                    ? "Assinatura cancelada."
-                    : currentStatus === "blocked_manual"
-                    ? "Bloqueio manual."
-                    : "Aguardando assinatura."}
+              <div className="flex items-end gap-2">
+                <p className="text-4xl font-extrabold tracking-tight text-foreground">
+                  {formatCurrency(PRICE)}
                 </p>
-              </CardContent>
-            </Card>
-
-            <Card className="border-border/60">
-              <CardContent className="p-4">
-                <div className="flex items-center justify-between">
-                  <p className="text-sm text-muted-foreground">Renovação</p>
-                  <CalendarClock className="h-4 w-4 text-muted-foreground" />
-                </div>
-                <p className="mt-2 text-xl font-semibold">{nextRenewal}</p>
-                <p className="text-sm text-muted-foreground">Data do próximo ciclo</p>
-              </CardContent>
-            </Card>
-
-            <Card className="border-border/60">
-              <CardContent className="p-4">
-                <div className="flex items-center justify-between">
-                  <p className="text-sm text-muted-foreground">Plano</p>
-                  <BadgeCheck className="h-4 w-4 text-muted-foreground" />
-                </div>
-                <p className="mt-2 text-xl font-semibold">{humanPlan(sub?.plan)}</p>
-                <p className="text-sm text-muted-foreground">Cobrança recorrente</p>
-              </CardContent>
-            </Card>
-          </div>
-
-          {/* PASSOS */}
-          <div className="pt-2">
-            <p className="text-sm font-medium text-foreground mb-3">Como funciona</p>
-
-            <div className="grid gap-2 md:grid-cols-3">
-              <div className="rounded-lg border border-border/60 p-3 flex items-start gap-3">
-                <div className="mt-0.5 h-8 w-8 rounded-lg bg-primary/10 flex items-center justify-center">
-                  <ExternalLink className="h-4 w-4 text-primary" />
-                </div>
-                <div>
-                  <p className="font-medium text-sm">1) Gerar link</p>
-                  <p className="text-xs text-muted-foreground">
-                    Clique em <strong>{primaryCtaLabel}</strong> e pague pelo Asaas.
-                  </p>
-                </div>
+                <span className="text-sm text-muted-foreground pb-1">/ mês</span>
               </div>
 
-              <div className="rounded-lg border border-border/60 p-3 flex items-start gap-3">
-                <div className="mt-0.5 h-8 w-8 rounded-lg bg-primary/10 flex items-center justify-center">
-                  <ArrowRight className="h-4 w-4 text-primary" />
-                </div>
-                <div>
-                  <p className="font-medium text-sm">2) Confirmação</p>
-                  <p className="text-xs text-muted-foreground">
-                    O Asaas confirma e envia um webhook para seu sistema.
-                  </p>
-                </div>
-              </div>
-
-              <div className="rounded-lg border border-border/60 p-3 flex items-start gap-3">
-                <div className="mt-0.5 h-8 w-8 rounded-lg bg-primary/10 flex items-center justify-center">
-                  <CheckCircle2 className="h-4 w-4 text-primary" />
-                </div>
-                <div>
-                  <p className="font-medium text-sm">3) Liberação</p>
-                  <p className="text-xs text-muted-foreground">
-                    O status vira <strong>Ativo</strong> e o acesso é liberado.
-                  </p>
-                </div>
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <CalendarClock className="h-4 w-4" />
+                <span>
+                  Próxima renovação: <strong className="text-foreground">{nextRenewal}</strong>
+                </span>
               </div>
             </div>
 
-            {currentStatus === "past_due" && (
-              <Alert className="mt-4 border-amber-200 bg-amber-50 text-amber-900">
-                <AlertTriangle className="h-4 w-4" />
-                <AlertTitle>Pagamento em atraso</AlertTitle>
-                <AlertDescription>
-                  Gere um novo link para regularizar o acesso da empresa.
-                </AlertDescription>
-              </Alert>
-            )}
+            <div className="w-full lg:w-[420px] space-y-3">
+              <Card className="border-border/60 bg-background/70">
+                <CardContent className="p-4 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <p className="text-sm font-semibold text-foreground">Status da empresa</p>
+                    <Badge variant={statusBadgeVariant(currentStatus)} className="gap-1">
+                      {statusIcon(currentStatus)}
+                      {statusLabel(currentStatus)}
+                    </Badge>
+                  </div>
+
+                  <p className="text-sm text-muted-foreground">{statusShortDescription(currentStatus)}</p>
+
+                  <Separator />
+
+                  <div className="flex flex-col sm:flex-row gap-2">
+                    <Button onClick={handleSubscribe} disabled={creating || !canPay} className="w-full">
+                      {creating ? (
+                        <>
+                          <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                          Gerando link...
+                        </>
+                      ) : (
+                        <>
+                          <ExternalLink className="h-4 w-4 mr-2" />
+                          {primaryCtaLabel}
+                        </>
+                      )}
+                    </Button>
+
+                    <Button
+                      variant="outline"
+                      onClick={() => loadCompanyAndSubscription(false)}
+                      disabled={refreshing}
+                      className="w-full"
+                    >
+                      <RefreshCcw className="h-4 w-4 mr-2" />
+                      Verificar
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+          </div>
+
+          {/* Benefits */}
+          <div className="mt-6 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+            <FeatureRow
+              icon={<Zap className="h-5 w-5 text-primary" />}
+              title="Ativação rápida"
+              desc="Link de pagamento em 1 clique. Confirmação via webhook."
+            />
+            <FeatureRow
+              icon={<Users className="h-5 w-5 text-primary" />}
+              title="Multiusuário"
+              desc="Liberação para todos os usuários vinculados à empresa."
+            />
+            <FeatureRow
+              icon={<Boxes className="h-5 w-5 text-primary" />}
+              title="Recursos completos"
+              desc="PDV, estoque, clientes, histórico e relatórios."
+            />
+            <FeatureRow
+              icon={<BarChart3 className="h-5 w-5 text-primary" />}
+              title="Gestão e performance"
+              desc="Métricas, fechamento e controle do operacional."
+            />
           </div>
         </CardContent>
       </Card>
 
-      {/* Inclui */}
+      {/* Steps + Security */}
       <div className="grid gap-4 lg:grid-cols-3">
         <Card className="lg:col-span-2">
           <CardHeader>
-            <CardTitle className="text-sm font-medium">Inclui</CardTitle>
+            <CardTitle className="text-sm font-semibold">Como funciona</CardTitle>
           </CardHeader>
-          <CardContent className="grid gap-2 sm:grid-cols-2 text-sm text-muted-foreground">
-            <p>• PDV e vendas</p>
-            <p>• Estoque e alertas</p>
-            <p>• Financeiro e relatórios</p>
-            <p>• Usuários e permissões</p>
-            <p className="sm:col-span-2 pt-2 text-xs">
-              * O status muda automaticamente quando o Asaas confirmar o pagamento (webhook).
-            </p>
+          <CardContent className="space-y-3">
+            <div className="grid gap-2 md:grid-cols-3">
+              <div className="rounded-2xl border border-border/60 p-4">
+                <div className="flex items-center gap-2">
+                  <div className="h-9 w-9 rounded-2xl bg-primary/10 flex items-center justify-center">
+                    <ExternalLink className="h-4 w-4 text-primary" />
+                  </div>
+                  <p className="text-sm font-semibold">1) Gerar link</p>
+                </div>
+                <p className="mt-2 text-xs text-muted-foreground">
+                  Clique em <strong>{primaryCtaLabel}</strong> e pague no Asaas.
+                </p>
+              </div>
+
+              <div className="rounded-2xl border border-border/60 p-4">
+                <div className="flex items-center gap-2">
+                  <div className="h-9 w-9 rounded-2xl bg-primary/10 flex items-center justify-center">
+                    <ArrowRight className="h-4 w-4 text-primary" />
+                  </div>
+                  <p className="text-sm font-semibold">2) Confirmação</p>
+                </div>
+                <p className="mt-2 text-xs text-muted-foreground">
+                  O Asaas confirma e envia webhook pro seu backend.
+                </p>
+              </div>
+
+              <div className="rounded-2xl border border-border/60 p-4">
+                <div className="flex items-center gap-2">
+                  <div className="h-9 w-9 rounded-2xl bg-primary/10 flex items-center justify-center">
+                    <CheckCircle2 className="h-4 w-4 text-primary" />
+                  </div>
+                  <p className="text-sm font-semibold">3) Liberação</p>
+                </div>
+                <p className="mt-2 text-xs text-muted-foreground">
+                  O status vira <strong>Ativo</strong> e o acesso é liberado.
+                </p>
+              </div>
+            </div>
+
+            <Separator />
+
+            <div className="flex items-start gap-3 rounded-2xl border border-border/60 p-4 bg-background/60">
+              <div className="h-10 w-10 rounded-2xl bg-primary/10 flex items-center justify-center">
+                <Shield className="h-5 w-5 text-primary" />
+              </div>
+              <div>
+                <p className="text-sm font-semibold text-foreground">Segurança</p>
+                <p className="text-xs text-muted-foreground leading-relaxed">
+                  Os links são gerados no servidor (Edge Function). A liberação é feita automaticamente
+                  quando o Asaas confirmar via webhook.
+                </p>
+              </div>
+            </div>
           </CardContent>
         </Card>
 
         <Card className="h-full">
           <CardHeader>
-            <CardTitle className="text-sm font-medium">Dicas</CardTitle>
+            <CardTitle className="text-sm font-semibold">Inclui no plano</CardTitle>
           </CardHeader>
           <CardContent className="space-y-2 text-sm text-muted-foreground">
-            <p>• Clique em “Atualizar” após pagar para ver o status.</p>
-            <p>• Se houver atraso, gere um novo link.</p>
-            <p>• Caso esteja bloqueado manualmente, fale com o suporte/admin master.</p>
+            <p>• PDV e vendas</p>
+            <p>• Estoque e alertas</p>
+            <p>• Clientes e histórico</p>
+            <p>• Despesas, performance e fechamento</p>
+            <p>• Usuários e permissões</p>
+
+            <p className="pt-2 text-xs">
+              * O status muda automaticamente quando o Asaas confirmar o pagamento (webhook).
+            </p>
           </CardContent>
         </Card>
       </div>

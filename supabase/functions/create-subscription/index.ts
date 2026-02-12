@@ -1,10 +1,27 @@
+// supabase/functions/create-subscription/index.ts
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 
-const ASAAS_TOKEN = Deno.env.get("ASAAS_ACCESS_TOKEN")!;
+const ASAAS_TOKEN = Deno.env.get("ASAAS_ACCESS_TOKEN");
 const ASAAS_URL = "https://api.asaas.com/v3";
 
-function todayYMD() {
+// ✅ CORS
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers":
+    "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+};
+
+function json(data: unknown, status = 200) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { ...corsHeaders, "Content-Type": "application/json" },
+  });
+}
+
+function addDaysYMD(days: number) {
   const d = new Date();
+  d.setDate(d.getDate() + days);
   const yyyy = d.getFullYear();
   const mm = String(d.getMonth() + 1).padStart(2, "0");
   const dd = String(d.getDate()).padStart(2, "0");
@@ -12,88 +29,152 @@ function todayYMD() {
 }
 
 serve(async (req) => {
+  // ✅ Preflight
+  if (req.method === "OPTIONS") {
+    return new Response("ok", { headers: corsHeaders });
+  }
+
   try {
     if (req.method !== "POST") {
-      return new Response(JSON.stringify({ error: "Use POST" }), { status: 405 });
+      return json({ error: "Use POST" }, 405);
     }
 
-    const { companyId, price } = await req.json();
-
-    if (!companyId) {
-      return new Response(JSON.stringify({ error: "companyId é obrigatório" }), { status: 400 });
+    if (!ASAAS_TOKEN) {
+      return json(
+        {
+          error:
+            "Missing secret ASAAS_ACCESS_TOKEN. Configure em: Supabase Dashboard > Edge Functions > Secrets",
+        },
+        500
+      );
     }
+
+    // Body
+    const body = await req.json().catch(() => null);
+    const companyId = body?.companyId;
+    const price = body?.price;
+    const cycle = String(body?.cycle ?? "MONTHLY");
+
+    if (!companyId) return json({ error: "companyId é obrigatório" }, 400);
 
     const value = Number(price ?? 120);
     if (!Number.isFinite(value) || value <= 0) {
-      return new Response(JSON.stringify({ error: "price inválido" }), { status: 400 });
+      return json({ error: "price inválido" }, 400);
     }
 
-    // 1) procurar customer existente (por externalReference)
+    // ✅ Header correto do Asaas: access_token (não Bearer)
+    const asaasHeaders: HeadersInit = {
+      "Content-Type": "application/json",
+      access_token: ASAAS_TOKEN,
+    };
+
+    // 1) Buscar customer por externalReference
     const searchRes = await fetch(
-      `${ASAAS_URL}/customers?externalReference=${encodeURIComponent(String(companyId))}`,
-      { headers: { access_token: ASAAS_TOKEN } }
+      `${ASAAS_URL}/customers?externalReference=${encodeURIComponent(
+        String(companyId)
+      )}`,
+      { headers: asaasHeaders }
     );
 
-    const search = await searchRes.json();
-    let customerId: string | null = search?.data?.[0]?.id ?? null;
+    const searchJson = await searchRes.json().catch(() => ({}));
 
-    // 2) criar customer se não existir
+    if (!searchRes.ok) {
+      return json(
+        {
+          error: "Falha ao buscar customer no Asaas",
+          status: searchRes.status,
+          details: searchJson,
+        },
+        400
+      );
+    }
+
+    let customerId: string | null = searchJson?.data?.[0]?.id ?? null;
+
+    // 2) Criar customer se não existir
     if (!customerId) {
       const customerRes = await fetch(`${ASAAS_URL}/customers`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          access_token: ASAAS_TOKEN,
-        },
+        headers: asaasHeaders,
         body: JSON.stringify({
           name: `Empresa ${companyId}`,
           externalReference: String(companyId),
         }),
       });
 
-      const customer = await customerRes.json();
-      if (!customer?.id) {
-        return new Response(JSON.stringify({ error: "Falha ao criar customer", details: customer }), {
-          status: 400,
-          headers: { "Content-Type": "application/json" },
-        });
+      const customerJson = await customerRes.json().catch(() => ({}));
+
+      if (!customerRes.ok || !customerJson?.id) {
+        return json(
+          {
+            error: "Falha ao criar customer no Asaas",
+            status: customerRes.status,
+            details: customerJson,
+          },
+          400
+        );
       }
-      customerId = customer.id;
+
+      customerId = customerJson.id;
     }
 
-    // 3) criar pagamento (link)
+    // 3) Criar cobrança (payment link)
+    // ⚠️ Isso cria UMA cobrança. Para recorrência real, depois usamos /subscriptions.
+    const dueDate = addDaysYMD(1); // amanhã
+
     const paymentRes = await fetch(`${ASAAS_URL}/payments`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        access_token: ASAAS_TOKEN,
-      },
+      headers: asaasHeaders,
       body: JSON.stringify({
         customer: customerId,
-        billingType: "UNDEFINED", // Asaas decide (pix/boleto/cartão) conforme sua conta
+        billingType: "UNDEFINED", // Asaas deixa o pagador escolher (pix/boleto/cartão) se sua conta permitir
         value,
-        dueDate: todayYMD(),
-        description: "Assinatura mensal - SaaS",
+        dueDate,
+        description: `Assinatura ${cycle} - SaaS`,
         externalReference: String(companyId),
       }),
     });
 
-    const payment = await paymentRes.json();
+    const paymentJson = await paymentRes.json().catch(() => ({}));
 
-    if (!payment?.invoiceUrl) {
-      return new Response(JSON.stringify({ error: "Falha ao criar pagamento", details: payment }), {
-        status: 400,
-        headers: { "Content-Type": "application/json" },
-      });
+    if (!paymentRes.ok) {
+      return json(
+        {
+          error: "Falha ao criar cobrança no Asaas",
+          status: paymentRes.status,
+          details: paymentJson,
+        },
+        400
+      );
     }
 
-    return new Response(JSON.stringify({ paymentUrl: payment.invoiceUrl }), {
-      headers: { "Content-Type": "application/json" },
-    });
+    const paymentUrl = paymentJson?.invoiceUrl || paymentJson?.bankSlipUrl || null;
+
+    if (!paymentUrl) {
+      return json(
+        {
+          error: "Cobrança criada mas não veio invoiceUrl/bankSlipUrl",
+          details: paymentJson,
+        },
+        400
+      );
+    }
+
+    return json(
+      {
+        paymentUrl,
+        asaas: {
+          paymentId: paymentJson?.id ?? null,
+          customerId,
+          dueDate,
+        },
+      },
+      200
+    );
   } catch (err: any) {
-    return new Response(JSON.stringify({ error: err?.message || "Erro interno" }), {
-      status: 500,
-      headers: { "Content-Type": "application/json" },
-    });
+    return json(
+      { error: err?.message || "Erro interno", details: String(err) },
+      500
+    );
   }
 });
