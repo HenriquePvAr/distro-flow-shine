@@ -7,7 +7,6 @@ import {
   Plus,
   Edit,
   History,
-,
   ArrowDownCircle,
   ArrowUpCircle,
   RefreshCw,
@@ -192,7 +191,10 @@ export default function Estoque() {
   const fetchProducts = async () => {
     setLoading(true);
     try {
-      const { data, error } = await supabase.from("products").select("*").order("name");
+      const { data, error } = await supabase
+        .from("products")
+        .select("*")
+        .order("name");
       if (error) throw error;
 
       if (data) {
@@ -297,7 +299,8 @@ export default function Estoque() {
     notes?: string;
     user_id?: string | null;
   }) => {
-    const userId = typeof args.user_id !== "undefined" ? args.user_id : await getAuthedUserId();
+    const userId =
+      typeof args.user_id !== "undefined" ? args.user_id : await getAuthedUserId();
 
     const reasonPacked = [
       args.reason,
@@ -347,9 +350,14 @@ export default function Estoque() {
       const newStock = product.stock + qty;
 
       const updateData: any = { stock: newStock };
-      if (typeof costPrice === "number" && Number.isFinite(costPrice)) updateData.cost_price = costPrice;
+      if (typeof costPrice === "number" && Number.isFinite(costPrice)) {
+        updateData.cost_price = costPrice;
+      }
 
-      const { error } = await supabase.from("products").update(updateData).eq("id", product.id);
+      const { error } = await supabase
+        .from("products")
+        .update(updateData)
+        .eq("id", product.id);
       if (error) throw error;
 
       await logStockMovement({
@@ -398,7 +406,10 @@ export default function Estoque() {
         return;
       }
 
-      const { error } = await supabase.from("products").update({ stock: newStock }).eq("id", product.id);
+      const { error } = await supabase
+        .from("products")
+        .update({ stock: newStock })
+        .eq("id", product.id);
       if (error) throw error;
 
       await logStockMovement({
@@ -448,7 +459,9 @@ export default function Estoque() {
           </div>
           <div>
             <h1 className="text-2xl font-semibold text-foreground">Gestão de Estoque</h1>
-            <p className="text-sm text-muted-foreground">{products.length} produtos cadastrados</p>
+            <p className="text-sm text-muted-foreground">
+              {products.length} produtos cadastrados
+            </p>
           </div>
         </div>
 
@@ -512,7 +525,11 @@ export default function Estoque() {
 
                 <div className="space-y-2">
                   <Label>Operador *</Label>
-                  <Input value={entryOperator} onChange={(e) => setEntryOperator(e.target.value)} placeholder="Seu nome" />
+                  <Input
+                    value={entryOperator}
+                    onChange={(e) => setEntryOperator(e.target.value)}
+                    placeholder="Seu nome"
+                  />
                 </div>
 
                 <div className="space-y-2">
@@ -590,12 +607,20 @@ export default function Estoque() {
 
                 <div className="space-y-2">
                   <Label>Operador *</Label>
-                  <Input value={adjustOperator} onChange={(e) => setAdjustOperator(e.target.value)} placeholder="Seu nome" />
+                  <Input
+                    value={adjustOperator}
+                    onChange={(e) => setAdjustOperator(e.target.value)}
+                    placeholder="Seu nome"
+                  />
                 </div>
 
                 <div className="space-y-2">
                   <Label>Justificativa</Label>
-                  <Textarea value={adjustNotes} onChange={(e) => setAdjustNotes(e.target.value)} placeholder="Por que está ajustando?" />
+                  <Textarea
+                    value={adjustNotes}
+                    onChange={(e) => setAdjustNotes(e.target.value)}
+                    placeholder="Por que está ajustando?"
+                  />
                 </div>
 
                 <Button onClick={handleAdjustment} className="w-full h-11">
@@ -631,8 +656,12 @@ export default function Estoque() {
       {/* ABAS PRINCIPAIS */}
       <Tabs defaultValue="produtos" className="space-y-4">
         <TabsList className="w-full sm:w-auto">
-          <TabsTrigger value="produtos" className="flex-1 sm:flex-none">Produtos</TabsTrigger>
-          <TabsTrigger value="movimentacoes" className="flex-1 sm:flex-none">Histórico</TabsTrigger>
+          <TabsTrigger value="produtos" className="flex-1 sm:flex-none">
+            Produtos
+          </TabsTrigger>
+          <TabsTrigger value="movimentacoes" className="flex-1 sm:flex-none">
+            Histórico
+          </TabsTrigger>
         </TabsList>
 
         {/* TAB 1: PRODUTOS */}
@@ -718,14 +747,17 @@ export default function Estoque() {
                 <Loader2 className="h-5 w-5 animate-spin" /> Carregando produtos...
               </div>
             ) : products.length === 0 ? (
-              <div className="py-10 text-center text-muted-foreground">
-                Nenhum produto cadastrado.
-              </div>
+              <div className="py-10 text-center text-muted-foreground">Nenhum produto cadastrado.</div>
             ) : (
               products.map((product) => {
                 const isLow = product.stock < product.minStock;
                 return (
-                  <Card key={product.id} className={`shadow-sm border-l-4 ${isLow ? "border-l-destructive" : "border-l-primary/40"}`}>
+                  <Card
+                    key={product.id}
+                    className={`shadow-sm border-l-4 ${
+                      isLow ? "border-l-destructive" : "border-l-primary/40"
+                    }`}
+                  >
                     <CardContent className="p-3">
                       <div className="flex items-start justify-between gap-2">
                         <div className="min-w-0">
@@ -770,11 +802,7 @@ export default function Estoque() {
                       </div>
 
                       <div className="pt-3">
-                        <Button
-                          variant="outline"
-                          className="w-full"
-                          onClick={() => openKardex(product)}
-                        >
+                        <Button variant="outline" className="w-full" onClick={() => openKardex(product)}>
                           <History className="h-4 w-4 mr-2" />
                           Ver Kardex
                         </Button>
@@ -801,7 +829,12 @@ export default function Estoque() {
                 />
               </div>
 
-              <Button variant="outline" onClick={loadLogs} disabled={loadingLogs} className="w-full sm:w-auto">
+              <Button
+                variant="outline"
+                onClick={loadLogs}
+                disabled={loadingLogs}
+                className="w-full sm:w-auto"
+              >
                 <RefreshCw className={`h-4 w-4 mr-2 ${loadingLogs ? "animate-spin" : ""}`} />
                 Atualizar
               </Button>
