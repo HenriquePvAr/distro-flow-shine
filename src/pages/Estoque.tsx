@@ -1,16 +1,18 @@
+"use client";
+
 import { useState, useMemo, useEffect } from "react";
-import { 
-  Package, 
-  AlertTriangle, 
-  Plus, 
-  Edit, 
-  History, 
-  ArrowDownCircle, 
-  ArrowUpCircle, 
-  RefreshCw, 
-  ShoppingCart, 
-  Search, 
-  Loader2 
+import {
+  Package,
+  AlertTriangle,
+  Plus,
+  Edit,
+  History,
+  ArrowDownCircle,
+  ArrowUpCircle,
+  RefreshCw,
+  ShoppingCart,
+  Search,
+  Loader2,
 } from "lucide-react";
 import { format } from "date-fns";
 import { ptBR } from "date-fns/locale";
@@ -45,7 +47,6 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
-import { logStockMovement, fetchStockLogs, type StockLogRow } from "@/lib/stockLogger";
 
 // --- TIPAGEM ---
 interface Product {
@@ -58,6 +59,32 @@ interface Product {
   costPrice: number;
   salePrice: number;
 }
+
+type StockLogDBRow = {
+  id: string;
+  product_id: string;
+  user_id: string | null;
+  change_amount: number;
+  new_stock: number | null;
+  reason: string | null;
+  created_at: string;
+  products?: { name?: string | null } | null;
+  profiles?: { name?: string | null } | null;
+};
+
+type StockLogView = {
+  id: string;
+  product_id: string;
+  product_name: string;
+  movement_type: "entrada" | "saida" | "ajuste" | "venda";
+  quantity: number;
+  previous_stock: number;
+  new_stock: number;
+  reason: string | null;
+  operator: string;
+  notes?: string | null;
+  created_at: string;
+};
 
 // --- CONFIGURAÇÕES ---
 const adjustmentReasons = [
@@ -75,6 +102,43 @@ const movementTypeLabels: Record<string, { label: string; color: string; icon: a
   venda: { label: "Venda", color: "bg-blue-500", icon: ShoppingCart },
 };
 
+function safeLower(v: string | null | undefined) {
+  return (v || "").toLowerCase();
+}
+
+function inferMovementType(row: StockLogDBRow): StockLogView["movement_type"] {
+  const reason = safeLower(row.reason);
+  const qty = Number(row.change_amount || 0);
+
+  if (reason.includes("venda")) return "venda";
+  if (reason.includes("ajuste")) return "ajuste";
+  if (reason.includes("entrada")) return "entrada";
+  if (reason.includes("saida") || reason.includes("saída")) return "saida";
+
+  if (qty > 0) return "entrada";
+  if (qty < 0) return "saida";
+  return "ajuste";
+}
+
+function extractOperatorFromReason(reason: string | null | undefined) {
+  const r = reason || "";
+  const marker = "Operador:";
+  const idx = r.indexOf(marker);
+  if (idx === -1) return "";
+  const after = r.slice(idx + marker.length).trim();
+  const endIdx = after.indexOf("|");
+  return (endIdx === -1 ? after : after.slice(0, endIdx)).trim();
+}
+
+function extractNotesFromReason(reason: string | null | undefined) {
+  const r = reason || "";
+  const marker = "Notas:";
+  const idx = r.indexOf(marker);
+  if (idx === -1) return "";
+  const after = r.slice(idx + marker.length).trim();
+  return after.trim();
+}
+
 export default function Estoque() {
   // Estados de Dados
   const [products, setProducts] = useState<Product[]>([]);
@@ -84,7 +148,7 @@ export default function Estoque() {
   const [entryDialogOpen, setEntryDialogOpen] = useState(false);
   const [adjustDialogOpen, setAdjustDialogOpen] = useState(false);
   const [kardexDialogOpen, setKardexDialogOpen] = useState(false);
-  
+
   // Estado de Seleção
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
 
@@ -103,7 +167,7 @@ export default function Estoque() {
   const [adjustOperator, setAdjustOperator] = useState("");
 
   // Logs
-  const [supabaseLogs, setSupabaseLogs] = useState<StockLogRow[]>([]);
+  const [supabaseLogs, setSupabaseLogs] = useState<StockLogView[]>([]);
   const [logsSearch, setLogsSearch] = useState("");
   const [loadingLogs, setLoadingLogs] = useState(false);
 
@@ -116,10 +180,7 @@ export default function Estoque() {
   const fetchProducts = async () => {
     setLoading(true);
     try {
-      const { data, error } = await supabase
-        .from("products")
-        .select("*")
-        .order('name');
+      const { data, error } = await supabase.from("products").select("*").order("name");
 
       if (error) throw error;
 
@@ -144,6 +205,57 @@ export default function Estoque() {
     }
   };
 
+  const fetchStockLogs = async (limit = 200): Promise<StockLogView[]> => {
+    const { data, error } = await supabase
+      .from("stock_logs")
+      .select(
+        `
+        id,
+        product_id,
+        user_id,
+        change_amount,
+        new_stock,
+        reason,
+        created_at,
+        products:product_id ( name ),
+        profiles:user_id ( name )
+      `
+      )
+      .order("created_at", { ascending: false })
+      .limit(limit);
+
+    if (error) throw error;
+
+    const rows = (data as unknown as StockLogDBRow[]) || [];
+
+    return rows.map((r) => {
+      const qty = Number(r.change_amount || 0);
+      const newStock = Number(r.new_stock ?? 0);
+      const prevStock = Number.isFinite(newStock - qty) ? newStock - qty : 0;
+
+      const type = inferMovementType(r);
+      const operatorFromProfile = r.profiles?.name || "";
+      const operatorFromReason = extractOperatorFromReason(r.reason);
+      const operator = (operatorFromProfile || operatorFromReason || "Sistema").trim();
+
+      const productName = (r.products?.name || r.product_id || "Produto").trim();
+
+      return {
+        id: r.id,
+        product_id: r.product_id,
+        product_name: productName,
+        movement_type: type,
+        quantity: qty,
+        previous_stock: prevStock,
+        new_stock: newStock,
+        reason: r.reason,
+        operator,
+        notes: extractNotesFromReason(r.reason) || null,
+        created_at: r.created_at,
+      };
+    });
+  };
+
   const loadLogs = async () => {
     setLoadingLogs(true);
     try {
@@ -156,6 +268,45 @@ export default function Estoque() {
     }
   };
 
+  const getAuthedUserId = async (): Promise<string | null> => {
+    try {
+      const { data } = await supabase.auth.getUser();
+      return data?.user?.id ?? null;
+    } catch {
+      return null;
+    }
+  };
+
+  const logStockMovement = async (args: {
+    product_id: string;
+    change_amount: number;
+    new_stock: number;
+    reason: string;
+    operator?: string;
+    notes?: string;
+    user_id?: string | null;
+  }) => {
+    const userId = typeof args.user_id !== "undefined" ? args.user_id : await getAuthedUserId();
+
+    const reasonPacked = [
+      args.reason,
+      args.operator ? `Operador: ${args.operator}` : "",
+      args.notes ? `Notas: ${args.notes}` : "",
+    ]
+      .filter(Boolean)
+      .join(" | ");
+
+    const { error } = await supabase.from("stock_logs").insert({
+      product_id: args.product_id,
+      user_id: userId,
+      change_amount: args.change_amount,
+      new_stock: args.new_stock,
+      reason: reasonPacked || args.reason,
+    });
+
+    if (error) throw error;
+  };
+
   // --- HELPERS ---
   const formatCurrency = (value: number) =>
     value.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
@@ -166,7 +317,6 @@ export default function Estoque() {
   };
 
   // --- AÇÕES ---
-
   const handleEntry = async () => {
     if (!entryProductId || !entryQuantity || !entryOperator) {
       toast.error("Preencha todos os campos obrigatórios");
@@ -177,53 +327,40 @@ export default function Estoque() {
       toast.error("Quantidade inválida");
       return;
     }
-    
+
     const costPrice = entryCostPrice ? parseFloat(entryCostPrice) : undefined;
     const product = products.find((p) => p.id === entryProductId);
     if (!product) return;
 
     try {
-      // 1. Atualiza Banco de Dados
       const newStock = product.stock + qty;
-      
-      // Se informou custo novo, atualiza o custo também
+
       const updateData: any = { stock: newStock };
-      if (costPrice) updateData.cost_price = costPrice;
+      if (typeof costPrice === "number" && Number.isFinite(costPrice)) updateData.cost_price = costPrice;
 
-      const { error } = await supabase
-        .from("products")
-        .update(updateData)
-        .eq("id", product.id);
-
+      const { error } = await supabase.from("products").update(updateData).eq("id", product.id);
       if (error) throw error;
 
-      // 2. Registra Log
       await logStockMovement({
         product_id: entryProductId,
-        product_name: product.name,
-        movement_type: "entrada",
-        quantity: qty,
-        previous_stock: product.stock,
+        change_amount: qty,
         new_stock: newStock,
-        reason: "Entrada Fornecedor",
-        notes: entryNotes,
+        reason: "entrada_fornecedor",
         operator: entryOperator,
-        cost_price: costPrice,
+        notes: entryNotes,
       });
 
       toast.success("Entrada registrada com sucesso!");
       setEntryDialogOpen(false);
-      
-      // Limpa e Recarrega
+
       setEntryProductId("");
       setEntryQuantity("");
       setEntryNotes("");
       setEntryOperator("");
       setEntryCostPrice("");
-      
-      fetchProducts(); // Atualiza a tabela
-      loadLogs();      // Atualiza o kardex
 
+      fetchProducts();
+      loadLogs();
     } catch (error: any) {
       toast.error("Erro ao registrar entrada", { description: error.message });
     }
@@ -239,41 +376,32 @@ export default function Estoque() {
       toast.error("Quantidade inválida");
       return;
     }
-    
+
     const product = products.find((p) => p.id === adjustProductId);
     if (!product) return;
 
     try {
-      // 1. Atualiza Banco
-      const newStock = product.stock + qty; // qty pode ser negativo
+      const newStock = product.stock + qty;
       if (newStock < 0) {
         toast.error("O estoque não pode ficar negativo.");
         return;
       }
 
-      const { error } = await supabase
-        .from("products")
-        .update({ stock: newStock })
-        .eq("id", product.id);
-
+      const { error } = await supabase.from("products").update({ stock: newStock }).eq("id", product.id);
       if (error) throw error;
 
-      // 2. Registra Log
       await logStockMovement({
         product_id: adjustProductId,
-        product_name: product.name,
-        movement_type: "ajuste",
-        quantity: qty,
-        previous_stock: product.stock,
+        change_amount: qty,
         new_stock: newStock,
-        reason: adjustReason,
-        notes: adjustNotes,
+        reason: `ajuste_${adjustReason}`,
         operator: adjustOperator,
+        notes: adjustNotes,
       });
 
       toast.success("Ajuste realizado!");
       setAdjustDialogOpen(false);
-      
+
       setAdjustProductId("");
       setAdjustQuantity("");
       setAdjustReason("");
@@ -282,22 +410,19 @@ export default function Estoque() {
 
       fetchProducts();
       loadLogs();
-
     } catch (error: any) {
       toast.error("Erro ao ajustar estoque", { description: error.message });
     }
   };
 
-  // Abre Kardex Individual
   const openKardex = (product: Product) => {
     setSelectedProduct(product);
     setKardexDialogOpen(true);
   };
 
-  // Filtra logs para o produto selecionado no modal
   const productSpecificLogs = useMemo(() => {
     if (!selectedProduct) return [];
-    return supabaseLogs.filter(log => log.product_name === selectedProduct.name);
+    return supabaseLogs.filter((log) => log.product_id === selectedProduct.id);
   }, [selectedProduct, supabaseLogs]);
 
   const lowStockProducts = products.filter((p) => p.stock < p.minStock);
@@ -312,12 +437,10 @@ export default function Estoque() {
           </div>
           <div>
             <h1 className="text-2xl font-semibold text-foreground">Gestão de Estoque</h1>
-            <p className="text-sm text-muted-foreground">
-              {products.length} produtos cadastrados
-            </p>
+            <p className="text-sm text-muted-foreground">{products.length} produtos cadastrados</p>
           </div>
         </div>
-        
+
         <div className="flex gap-2 w-full sm:w-auto">
           {/* BOTÃO NOVA ENTRADA */}
           <Dialog open={entryDialogOpen} onOpenChange={setEntryDialogOpen}>
@@ -346,30 +469,32 @@ export default function Estoque() {
                     </SelectContent>
                   </Select>
                 </div>
+
                 <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-2">
+                  <div className="space-y-2">
                     <Label>Quantidade *</Label>
                     <Input
-                        type="number"
-                        min="0.001"
-                        step="0.001"
-                        value={entryQuantity}
-                        onChange={(e) => setEntryQuantity(e.target.value)}
-                        placeholder="Ex: 10"
+                      type="number"
+                      min="0.001"
+                      step="0.001"
+                      value={entryQuantity}
+                      onChange={(e) => setEntryQuantity(e.target.value)}
+                      placeholder="Ex: 10"
                     />
-                    </div>
-                    <div className="space-y-2">
+                  </div>
+                  <div className="space-y-2">
                     <Label>Custo Unit. (R$)</Label>
                     <Input
-                        type="number"
-                        step="0.01"
-                        min="0"
-                        value={entryCostPrice}
-                        onChange={(e) => setEntryCostPrice(e.target.value)}
-                        placeholder="0,00"
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      value={entryCostPrice}
+                      onChange={(e) => setEntryCostPrice(e.target.value)}
+                      placeholder="0,00"
                     />
-                    </div>
+                  </div>
                 </div>
+
                 <div className="space-y-2">
                   <Label>Operador *</Label>
                   <Input
@@ -378,6 +503,7 @@ export default function Estoque() {
                     placeholder="Seu nome"
                   />
                 </div>
+
                 <div className="space-y-2">
                   <Label>Observações</Label>
                   <Textarea
@@ -386,7 +512,10 @@ export default function Estoque() {
                     placeholder="Nota fiscal, fornecedor, etc."
                   />
                 </div>
-                <Button onClick={handleEntry} className="w-full">Registrar Entrada</Button>
+
+                <Button onClick={handleEntry} className="w-full">
+                  Registrar Entrada
+                </Button>
               </div>
             </DialogContent>
           </Dialog>
@@ -418,6 +547,7 @@ export default function Estoque() {
                     </SelectContent>
                   </Select>
                 </div>
+
                 <div className="space-y-2">
                   <Label>Qtd (+ adiciona, - remove) *</Label>
                   <Input
@@ -428,6 +558,7 @@ export default function Estoque() {
                     placeholder="Ex: +5 ou -3.5"
                   />
                 </div>
+
                 <div className="space-y-2">
                   <Label>Motivo *</Label>
                   <Select value={adjustReason} onValueChange={setAdjustReason}>
@@ -443,6 +574,7 @@ export default function Estoque() {
                     </SelectContent>
                   </Select>
                 </div>
+
                 <div className="space-y-2">
                   <Label>Operador *</Label>
                   <Input
@@ -451,6 +583,7 @@ export default function Estoque() {
                     placeholder="Seu nome"
                   />
                 </div>
+
                 <div className="space-y-2">
                   <Label>Justificativa</Label>
                   <Textarea
@@ -459,7 +592,10 @@ export default function Estoque() {
                     placeholder="Por que está ajustando?"
                   />
                 </div>
-                <Button onClick={handleAdjustment} className="w-full">Confirmar Ajuste</Button>
+
+                <Button onClick={handleAdjustment} className="w-full">
+                  Confirmar Ajuste
+                </Button>
               </div>
             </DialogContent>
           </Dialog>
@@ -512,87 +648,89 @@ export default function Estoque() {
               </TableHeader>
               <TableBody>
                 {loading ? (
-                    <TableRow>
-                        <TableCell colSpan={8} className="h-32 text-center text-muted-foreground">
-                            <div className="flex justify-center items-center gap-2">
-                                <Loader2 className="h-6 w-6 animate-spin" /> Carregando produtos...
-                            </div>
-                        </TableCell>
-                    </TableRow>
+                  <TableRow>
+                    <TableCell colSpan={8} className="h-32 text-center text-muted-foreground">
+                      <div className="flex justify-center items-center gap-2">
+                        <Loader2 className="h-6 w-6 animate-spin" /> Carregando produtos...
+                      </div>
+                    </TableCell>
+                  </TableRow>
                 ) : products.length === 0 ? (
-                    <TableRow>
-                        <TableCell colSpan={8} className="h-32 text-center text-muted-foreground">
-                            Nenhum produto cadastrado. Vá em Catálogo para adicionar.
-                        </TableCell>
-                    </TableRow>
+                  <TableRow>
+                    <TableCell colSpan={8} className="h-32 text-center text-muted-foreground">
+                      Nenhum produto cadastrado. Vá em Catálogo para adicionar.
+                    </TableCell>
+                  </TableRow>
                 ) : (
-                    products.map((product) => (
+                  products.map((product) => (
                     <TableRow key={product.id} className="hover:bg-muted/30 transition-colors">
-                        <TableCell className="font-medium">{product.name}</TableCell>
-                        <TableCell className="text-muted-foreground font-mono text-xs hidden md:table-cell">
+                      <TableCell className="font-medium">{product.name}</TableCell>
+                      <TableCell className="text-muted-foreground font-mono text-xs hidden md:table-cell">
                         {product.sku}
-                        </TableCell>
-                        <TableCell className="hidden md:table-cell">
-                        <Badge variant="secondary" className="font-normal">{product.category}</Badge>
-                        </TableCell>
-                        <TableCell className="text-right text-muted-foreground text-xs">
+                      </TableCell>
+                      <TableCell className="hidden md:table-cell">
+                        <Badge variant="secondary" className="font-normal">
+                          {product.category}
+                        </Badge>
+                      </TableCell>
+                      <TableCell className="text-right text-muted-foreground text-xs">
                         {formatCurrency(product.costPrice)}
-                        </TableCell>
-                        <TableCell className="text-right font-medium">
+                      </TableCell>
+                      <TableCell className="text-right font-medium">
                         {formatCurrency(product.salePrice)}
-                        </TableCell>
-                        <TableCell className="text-right hidden md:table-cell">
+                      </TableCell>
+                      <TableCell className="text-right hidden md:table-cell">
                         <span className="text-emerald-600 font-medium text-xs bg-emerald-50 px-2 py-1 rounded-full">
-                            {getMargin(product.costPrice, product.salePrice)}%
+                          {getMargin(product.costPrice, product.salePrice)}%
                         </span>
-                        </TableCell>
-                        <TableCell className="text-center">
+                      </TableCell>
+                      <TableCell className="text-center">
                         {product.stock < product.minStock ? (
-                            <div className="flex items-center justify-center gap-1 text-destructive font-bold">
+                          <div className="flex items-center justify-center gap-1 text-destructive font-bold">
                             <AlertTriangle className="h-4 w-4" />
                             {product.stock}
-                            </div>
+                          </div>
                         ) : (
-                            <span className="font-medium">{product.stock}</span>
+                          <span className="font-medium">{product.stock}</span>
                         )}
-                        </TableCell>
-                        <TableCell className="text-center">
+                      </TableCell>
+                      <TableCell className="text-center">
                         <Button
-                            variant="ghost"
-                            size="icon"
-                            onClick={() => openKardex(product)}
-                            title="Ver Histórico"
+                          variant="ghost"
+                          size="icon"
+                          onClick={() => openKardex(product)}
+                          title="Ver Histórico"
                         >
-                            <History className="h-4 w-4 text-muted-foreground" />
+                          <History className="h-4 w-4 text-muted-foreground" />
                         </Button>
-                        </TableCell>
+                      </TableCell>
                     </TableRow>
-                    ))
+                  ))
                 )}
               </TableBody>
             </Table>
           </div>
         </TabsContent>
 
-        {/* TAB 2: HISTÓRICO GERAL (SUPABASE LOGS) */}
+        {/* TAB 2: HISTÓRICO GERAL */}
         <TabsContent value="movimentacoes">
           <div className="space-y-4">
             <div className="flex gap-2">
-                <div className="relative flex-1">
-                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                    <Input
-                        placeholder="Buscar por produto, operador ou motivo..."
-                        value={logsSearch}
-                        onChange={(e) => setLogsSearch(e.target.value)}
-                        className="pl-10"
-                    />
-                </div>
-                <Button variant="outline" onClick={loadLogs} disabled={loadingLogs}>
-                    <RefreshCw className={`h-4 w-4 mr-2 ${loadingLogs ? 'animate-spin' : ''}`} />
-                    Atualizar
-                </Button>
+              <div className="relative flex-1">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                <Input
+                  placeholder="Buscar por produto, operador ou motivo..."
+                  value={logsSearch}
+                  onChange={(e) => setLogsSearch(e.target.value)}
+                  className="pl-10"
+                />
+              </div>
+              <Button variant="outline" onClick={loadLogs} disabled={loadingLogs}>
+                <RefreshCw className={`h-4 w-4 mr-2 ${loadingLogs ? "animate-spin" : ""}`} />
+                Atualizar
+              </Button>
             </div>
-            
+
             <div className="rounded-xl border border-border bg-card shadow-sm overflow-hidden">
               <Table>
                 <TableHeader>
@@ -608,13 +746,13 @@ export default function Estoque() {
                 </TableHeader>
                 <TableBody>
                   {loadingLogs ? (
-                      <TableRow>
-                          <TableCell colSpan={7} className="h-24 text-center">
-                              <div className="flex justify-center items-center gap-2 text-muted-foreground">
-                                  <Loader2 className="h-5 w-5 animate-spin" /> Carregando registros...
-                              </div>
-                          </TableCell>
-                      </TableRow>
+                    <TableRow>
+                      <TableCell colSpan={7} className="h-24 text-center">
+                        <div className="flex justify-center items-center gap-2 text-muted-foreground">
+                          <Loader2 className="h-5 w-5 animate-spin" /> Carregando registros...
+                        </div>
+                      </TableCell>
+                    </TableRow>
                   ) : supabaseLogs.length === 0 ? (
                     <TableRow>
                       <TableCell colSpan={7} className="text-center text-muted-foreground py-8">
@@ -627,14 +765,21 @@ export default function Estoque() {
                         if (!logsSearch) return true;
                         const s = logsSearch.toLowerCase();
                         return (
-                          log.product_name.toLowerCase().includes(s) ||
-                          log.operator.toLowerCase().includes(s) ||
-                          (log.reason || "").toLowerCase().includes(s)
+                          safeLower(log.product_name).includes(s) ||
+                          safeLower(log.operator).includes(s) ||
+                          safeLower(log.reason).includes(s)
                         );
                       })
                       .map((log) => {
-                        const typeInfo = movementTypeLabels[log.movement_type] || { label: log.movement_type, color: "bg-gray-500", icon: History };
+                        const typeInfo =
+                          movementTypeLabels[log.movement_type] || ({
+                            label: log.movement_type,
+                            color: "bg-gray-500",
+                            icon: History,
+                          } as any);
+
                         const Icon = typeInfo.icon;
+
                         return (
                           <TableRow key={log.id} className="hover:bg-muted/30 transition-colors">
                             <TableCell className="text-muted-foreground text-xs whitespace-nowrap">
@@ -648,12 +793,20 @@ export default function Estoque() {
                               </Badge>
                             </TableCell>
                             <TableCell className="text-center">
-                              <span className={log.quantity > 0 ? "text-emerald-600 font-bold" : "text-red-600 font-bold"}>
+                              <span
+                                className={
+                                  log.quantity > 0
+                                    ? "text-emerald-600 font-bold"
+                                    : log.quantity < 0
+                                    ? "text-red-600 font-bold"
+                                    : "text-muted-foreground font-bold"
+                                }
+                              >
                                 {log.quantity > 0 ? `+${log.quantity}` : log.quantity}
                               </span>
                             </TableCell>
                             <TableCell className="text-center text-xs text-muted-foreground hidden md:table-cell">
-                                {log.previous_stock} → <strong>{log.new_stock}</strong>
+                              {log.previous_stock} → <strong>{log.new_stock}</strong>
                             </TableCell>
                             <TableCell className="text-xs hidden md:table-cell">{log.reason || "-"}</TableCell>
                             <TableCell className="text-xs hidden md:table-cell">{log.operator}</TableCell>
@@ -677,26 +830,26 @@ export default function Estoque() {
               Kardex - {selectedProduct?.name}
             </DialogTitle>
           </DialogHeader>
-          
+
           <div className="space-y-6 pt-2">
             {/* Resumo do Produto */}
             {selectedProduct && (
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4 p-4 bg-muted/20 rounded-lg border">
                 <div>
-                    <span className="text-xs text-muted-foreground block">SKU</span>
-                    <span className="font-mono font-medium">{selectedProduct.sku}</span>
+                  <span className="text-xs text-muted-foreground block">SKU</span>
+                  <span className="font-mono font-medium">{selectedProduct.sku}</span>
                 </div>
                 <div>
-                    <span className="text-xs text-muted-foreground block">Estoque Atual</span>
-                    <span className="text-xl font-bold">{selectedProduct.stock}</span>
+                  <span className="text-xs text-muted-foreground block">Estoque Atual</span>
+                  <span className="text-xl font-bold">{selectedProduct.stock}</span>
                 </div>
                 <div>
-                    <span className="text-xs text-muted-foreground block">Preço Custo</span>
-                    <span className="font-medium">{formatCurrency(selectedProduct.costPrice)}</span>
+                  <span className="text-xs text-muted-foreground block">Preço Custo</span>
+                  <span className="font-medium">{formatCurrency(selectedProduct.costPrice)}</span>
                 </div>
                 <div>
-                    <span className="text-xs text-muted-foreground block">Preço Venda</span>
-                    <span className="font-medium">{formatCurrency(selectedProduct.salePrice)}</span>
+                  <span className="text-xs text-muted-foreground block">Preço Venda</span>
+                  <span className="font-medium">{formatCurrency(selectedProduct.salePrice)}</span>
                 </div>
               </div>
             )}
@@ -723,7 +876,13 @@ export default function Estoque() {
                     </TableRow>
                   ) : (
                     productSpecificLogs.map((movement) => {
-                      const typeInfo = movementTypeLabels[movement.movement_type] || { label: movement.movement_type, color: "bg-gray-500", icon: History };
+                      const typeInfo =
+                        movementTypeLabels[movement.movement_type] || ({
+                          label: movement.movement_type,
+                          color: "bg-gray-500",
+                          icon: History,
+                        } as any);
+
                       return (
                         <TableRow key={movement.id} className="hover:bg-muted/30">
                           <TableCell className="text-xs text-muted-foreground">
@@ -731,17 +890,23 @@ export default function Estoque() {
                           </TableCell>
                           <TableCell>
                             <Badge className={`${typeInfo.color} text-white h-5 text-[10px]`}>
-                                {typeInfo.label}
+                              {typeInfo.label}
                             </Badge>
                           </TableCell>
                           <TableCell className="text-center font-bold">
-                            <span className={movement.quantity > 0 ? "text-emerald-600" : "text-red-600"}>
-                                {movement.quantity > 0 ? `+${movement.quantity}` : movement.quantity}
+                            <span
+                              className={
+                                movement.quantity > 0
+                                  ? "text-emerald-600"
+                                  : movement.quantity < 0
+                                  ? "text-red-600"
+                                  : "text-muted-foreground"
+                              }
+                            >
+                              {movement.quantity > 0 ? `+${movement.quantity}` : movement.quantity}
                             </span>
                           </TableCell>
-                          <TableCell className="text-center text-xs">
-                            {movement.new_stock}
-                          </TableCell>
+                          <TableCell className="text-center text-xs">{movement.new_stock}</TableCell>
                           <TableCell className="text-xs">{movement.operator}</TableCell>
                           <TableCell className="text-xs text-muted-foreground max-w-[150px] truncate">
                             {movement.notes || "-"}

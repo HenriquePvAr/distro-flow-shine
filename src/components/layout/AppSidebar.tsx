@@ -7,13 +7,12 @@ import {
   Users,
   History,
   LogOut,
-  FileText,
   BookOpen,
   Receipt,
   Trophy,
   Calculator,
-  Landmark,
-  UserCircle
+  UserCircle,
+  CreditCard, // ✅ NOVO (Assinatura)
 } from "lucide-react";
 import {
   Sidebar,
@@ -35,7 +34,7 @@ export function AppSidebar() {
   const location = useLocation();
   const { signOut, isAdmin, userData } = useAuth();
 
-  // Define os itens do menu
+  // MENU PRINCIPAL
   const menuItems = [
     { title: "Dashboard", url: "/", icon: LayoutDashboard },
     { title: "Vendas (PDV)", url: "/pdv", icon: ShoppingCart },
@@ -45,9 +44,10 @@ export function AppSidebar() {
     { title: "Histórico", url: "/historico", icon: History },
   ];
 
-  // Itens exclusivos de Admin
+  // MENU ADMIN
   if (isAdmin) {
     menuItems.push(
+      { title: "Assinatura", url: "/assinatura", icon: CreditCard }, // ⭐ NOVO
       { title: "Despesas", url: "/despesas", icon: Receipt },
       { title: "Performance", url: "/performance", icon: Trophy },
       { title: "Fechamento", url: "/fechamento", icon: Calculator },
@@ -55,20 +55,19 @@ export function AppSidebar() {
     );
   }
 
-  // 1. Pega as iniciais do nome para o Avatar
-  const initials = userData?.name
-    ?.split(" ")
-    .map((n) => n[0])
-    .slice(0, 2)
-    .join("")
-    .toUpperCase() || "U";
+  const initials =
+    userData?.name
+      ?.split(" ")
+      .map((n) => n[0])
+      .slice(0, 2)
+      .join("")
+      .toUpperCase() || "U";
 
-  // 2. NOVA FUNÇÃO: Formata para mostrar apenas Primeiro e Segundo nome
   const formatDisplayName = (fullName: string | undefined) => {
     if (!fullName) return "Usuário";
     const parts = fullName.trim().split(" ");
-    if (parts.length <= 1) return parts[0]; // Só tem primeiro nome
-    return `${parts[0]} ${parts[1]}`; // Retorna "Nome Sobrenome"
+    if (parts.length <= 1) return parts[0];
+    return `${parts[0]} ${parts[1]}`;
   };
 
   const displayName = formatDisplayName(userData?.name);
@@ -85,32 +84,38 @@ export function AppSidebar() {
 
   return (
     <Sidebar>
-      {/* CABEÇALHO COM LOGO */}
+      {/* HEADER */}
       <SidebarHeader className="p-4 border-b border-border/50">
         <div className="flex items-center gap-3 px-2">
           <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10">
-            <img 
-              src="/logo.png" 
-              alt="Logo" 
-              className="h-8 w-8 object-contain" 
+            <img
+              src="/logo.png"
+              alt="Logo"
+              className="h-8 w-8 object-contain"
               onError={(e) => {
-                e.currentTarget.style.display = 'none';
-                e.currentTarget.nextElementSibling?.classList.remove('hidden');
-              }} 
+                e.currentTarget.style.display = "none";
+                e.currentTarget.nextElementSibling?.classList.remove("hidden");
+              }}
             />
             <Package className="h-6 w-6 text-primary hidden" />
           </div>
+
           <div className="flex flex-col">
-            <span className="font-bold text-lg leading-none text-primary">Distribuidora 2G</span>
-            <span className="text-xs text-muted-foreground">Sistema de Gestão</span>
+            <span className="font-bold text-lg leading-none text-primary">
+              Distribuidora 2G
+            </span>
+            <span className="text-xs text-muted-foreground">
+              Sistema de Gestão
+            </span>
           </div>
         </div>
       </SidebarHeader>
 
-      {/* MENU PRINCIPAL */}
+      {/* MENU */}
       <SidebarContent>
         <SidebarGroup>
           <SidebarGroupLabel>Menu Principal</SidebarGroupLabel>
+
           <SidebarGroupContent>
             <SidebarMenu>
               {menuItems.map((item) => (
@@ -132,40 +137,43 @@ export function AppSidebar() {
         </SidebarGroup>
       </SidebarContent>
 
-      {/* RODAPÉ COM PERFIL E BOTÃO SAIR */}
+      {/* FOOTER */}
       <SidebarFooter className="p-4 border-t border-border/50 bg-sidebar-accent/30">
         <div className="flex flex-col gap-4">
-          
-          {/* Card do Usuário */}
           <div className="flex items-center gap-3 px-1">
             <Avatar className="h-10 w-10 border-2 border-primary/20">
               <AvatarFallback className="bg-primary text-primary-foreground font-bold text-lg">
                 {initials}
               </AvatarFallback>
             </Avatar>
+
             <div className="flex flex-col flex-1 min-w-0">
-              {/* Usando o nome formatado (curto) */}
-              <span className="text-lg font-extrabold truncate text-primary leading-tight" title={userData?.name}>
+              <span
+                className="text-lg font-extrabold truncate text-primary"
+                title={userData?.name}
+              >
                 {displayName}
               </span>
+
               <div className="flex items-center gap-2 mt-0.5">
-                <Badge variant={isAdmin ? "default" : "secondary"} className="text-[10px] px-2 h-5 font-semibold">
+                <Badge
+                  variant={isAdmin ? "default" : "secondary"}
+                  className="text-[10px] px-2 h-5 font-semibold"
+                >
                   {isAdmin ? "Administrador" : "Vendedor"}
                 </Badge>
               </div>
             </div>
           </div>
 
-          {/* Botão de Sair (AZUL / Primary) */}
-          <Button 
-            variant="default" 
+          <Button
+            variant="default"
             className="w-full justify-center gap-2 font-bold shadow-sm hover:opacity-90 transition-opacity"
             onClick={handleLogout}
           >
             <LogOut className="h-4 w-4" />
             Sair do Sistema
           </Button>
-
         </div>
       </SidebarFooter>
     </Sidebar>

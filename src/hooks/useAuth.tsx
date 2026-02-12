@@ -33,40 +33,39 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [userData, setUserData] = useState<UserData | null>(null);
   const [loading, setLoading] = useState(true);
-// Função para buscar dados do perfil no banco
-const fetchUserData = async (userId: string) => {
-  try {
-    const { data, error } = await supabase
-      .from("profiles")
-      .select("*")
-      .eq("id", userId)
-      .maybeSingle();
 
-    if (error) {
-      console.error("Erro ao buscar perfil:", error);
-      return;
+  // Função para buscar dados do perfil no banco
+  const fetchUserData = async (userId: string) => {
+    try {
+      const { data, error } = await supabase
+        .from("profiles")
+        .select("*")
+        .eq("id", userId)
+        .maybeSingle();
+
+      if (error) {
+        console.error("Erro ao buscar perfil:", error);
+        return;
+      }
+
+      if (data) {
+        // Trata como any para evitar erros de tipagem do TypeScript com campos que podem não estar gerados ainda
+        const profile = data as any;
+
+        setUserData({
+          id: profile.id,
+          name: profile.name || "Usuário",
+          role: (profile.role as AppRole) || "vendedor", 
+          phone: profile.phone || null,
+          email: user?.email
+        });
+      }
+    } catch (error) {
+      console.error("Erro inesperado ao buscar perfil:", error);
+    } finally {
+      setLoading(false);
     }
-
-    if (data) {
-      // CORREÇÃO: Dizemos ao TypeScript para tratar 'data' como qualquer coisa (any)
-      // Isso evita o erro de tipagem na leitura do 'role'
-      const profile = data as any;
-
-      setUserData({
-        id: profile.id,
-        name: profile.name || "Usuário",
-        // Agora ele aceita converter a string do banco para o tipo AppRole
-        role: (profile.role as AppRole) || "vendedor", 
-        phone: profile.phone || null,
-        email: user?.email
-      });
-    }
-  } catch (error) {
-    console.error("Erro inesperado ao buscar perfil:", error);
-  } finally {
-    setLoading(false);
-  }
-};
+  };
 
   useEffect(() => {
     // 1. Verifica sessão atual ao carregar a página
@@ -156,8 +155,8 @@ const fetchUserData = async (userId: string) => {
     setSession(null);
     setUser(null);
     setUserData(null);
-    // Redirecionamento forçado é útil para limpar estados de cache de query (como TanStack Query)
-    window.location.href = "/auth"; 
+    // Redirecionamento corrigido para /login (antes estava /auth)
+    window.location.href = "/login"; 
   };
 
   const value = {

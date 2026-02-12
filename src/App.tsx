@@ -18,7 +18,7 @@ import Despesas from "./pages/Despesas";
 import Performance from "./pages/Performance";
 import Fechamento from "./pages/Fechamento";
 import Funcionarios from "./pages/Funcionarios";
-// import Financeiro from "./pages/Financeiro";  <-- REMOVIDO
+import Assinatura from "./pages/Assinatura"; // ✅ NOVO
 import Login from "./pages/Login";
 import Cadastro from "./pages/Cadastro";
 import RedefinirSenha from "./pages/RedefinirSenha";
@@ -38,7 +38,7 @@ const App = () => (
             <Route path="/login" element={<Login />} />
             <Route path="/cadastro" element={<Cadastro />} />
             <Route path="/redefinir-senha" element={<RedefinirSenha />} />
-            
+
             {/* --- Rotas Protegidas (Exige Login) --- */}
             <Route
               path="/"
@@ -142,8 +142,18 @@ const App = () => (
                 </ProtectedRoute>
               }
             />
-            
-            {/* ROTA FINANCEIRO REMOVIDA DAQUI POIS O ARQUIVO FOI APAGADO */}
+
+            {/* ✅ NOVA ROTA (Admin): Assinatura / Pagamento */}
+            <Route
+              path="/assinatura"
+              element={
+                <ProtectedRoute requiredRole="admin">
+                  <AppLayout>
+                    <Assinatura />
+                  </AppLayout>
+                </ProtectedRoute>
+              }
+            />
 
             {/* Rota de Erro 404 */}
             <Route path="*" element={<NotFound />} />
