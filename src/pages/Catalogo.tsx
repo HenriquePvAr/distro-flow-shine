@@ -15,10 +15,9 @@ import {
   Loader2,
   Info,
   X,
-  MoreVertical,
 } from "lucide-react";
 
-import { Card, CardContent } from "@/components/ui/card";
+import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -32,6 +31,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import {
   Dialog,
@@ -59,24 +59,24 @@ import {
 import {
   Form,
   FormControl,
+  FormDescription,
   FormField,
   FormItem,
   FormLabel,
   FormMessage,
 } from "@/components/ui/form";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { useToast } from "@/hooks/use-toast";
 import { supabase } from "@/integrations/supabase/client";
 
-// --- Utilitários ---
+// =======================
+// HELPERS
+// =======================
 const formatCurrency = (val: number) =>
-  Number(val || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+  Number(val || 0).toLocaleString("pt-BR", {
+    style: "currency",
+    currency: "BRL",
+  });
 
 const safeNumber = (v: any) => {
   const n = Number(v);
@@ -90,18 +90,33 @@ const normalizeText = (s: string | undefined | null) => {
 
 const generateSku = () => `PROD-${Date.now().toString(36).toUpperCase()}`;
 
-// --- Schema ---
+// Evita value={NaN} / undefined no type="number" (isso pode crashar em alguns WebViews)
+const safeNumberInputValue = (v: any) => {
+  if (v === null || v === undefined) return "";
+  const n = Number(v);
+  if (!Number.isFinite(n)) return "";
+  // ✅ você pediu: não mostrar "0" ao cadastrar
+  if (n === 0) return "";
+  // Mantém como string para input number
+  return String(v);
+};
+
+// =======================
+// SCHEMA
+// =======================
 const productSchema = z
   .object({
-    name: z.string().min(2, "Nome curto demais").max(100),
+    name: z.string().min(2, "Nome deve ter pelo menos 2 caracteres").max(100),
     description: z.string().max(500).optional(),
     sku: z.string().optional(),
-    category: z.string().min(1, "Categoria obrigatória").transform((v) => v.trim()),
+    category: z.string().min(1, "Categoria é obrigatória").transform((v) => v.trim()),
     supplier: z.string().optional().transform((v) => normalizeText(v)),
+
     costPrice: z.coerce.number().min(0.01, "Informe o custo"),
     salePrice: z.coerce.number().min(0.01, "Informe a venda"),
     minStock: z.coerce.number().min(0, "Inválido"),
     stock: z.coerce.number().min(0, "Inválido"),
+
     sellsByBox: z.coerce.boolean().optional().default(false),
     qtyPerBox: z.coerce.number().optional(),
     boxPrice: z.coerce.number().optional(),
@@ -113,8 +128,17 @@ const productSchema = z
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           path: ["qtyPerBox"],
-          message: "Qtd/Caixa inválida",
+          message: "Informe a quantidade por caixa (mínimo 1).",
         });
+      }
+      if (data.boxPrice !== undefined && data.boxPrice !== null && data.boxPrice !== 0) {
+        if (data.boxPrice < 0.01) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["boxPrice"],
+            message: "Preço da caixa inválido.",
+          });
+        }
       }
     }
   });
@@ -130,15 +154,21 @@ export default function Catalogo() {
 
   const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
+  const [fatalError, setFatalError] = useState<string | null>(null);
+
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
+
   const [deleteProductId, setDeleteProductId] = useState<string | null>(null);
+
   const [searchTerm, setSearchTerm] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [categoryFilter, setCategoryFilter] = useState<string>("all");
+
   const [showInfo, setShowInfo] = useState(true);
 
   const [existingCategories, setExistingCategories] = useState<string[]>([]);
+  const [existingSuppliers, setExistingSuppliers] = useState<string[]>([]);
 
   const form = useForm<ProductFormData>({
     resolver: zodResolver(productSchema),
@@ -148,7 +178,6 @@ export default function Catalogo() {
       sku: "",
       category: "",
       supplier: "",
-      // Valores "vazios" para não exibir 0 no input
       costPrice: "" as unknown as number,
       salePrice: "" as unknown as number,
       minStock: "" as unknown as number,
@@ -160,94 +189,113 @@ export default function Catalogo() {
     },
   });
 
-  // Debounce da busca
   useEffect(() => {
-    const t = setTimeout(() => setDebouncedSearch(searchTerm.trim().toLowerCase()), 300);
+    const t = setTimeout(() => setDebouncedSearch(searchTerm.trim().toLowerCase()), 200);
     return () => clearTimeout(t);
   }, [searchTerm]);
 
-  // Carregar dados e preferências com proteção try/catch (evita crash do localStorage)
   useEffect(() => {
-    try {
-      const isHidden = localStorage.getItem("hide_catalogo_info");
-      if (isHidden === "true") setShowInfo(false);
-    } catch (e) {
-      console.warn("Erro ao acessar localStorage", e);
-    }
+    const isHidden = localStorage.getItem("hide_catalogo_info");
+    if (isHidden === "true") setShowInfo(false);
+
     fetchProducts();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const handleCloseInfo = () => {
     setShowInfo(false);
-    try {
-      localStorage.setItem("hide_catalogo_info", "true");
-    } catch {}
+    localStorage.setItem("hide_catalogo_info", "true");
   };
 
   const handleShowInfo = () => {
     setShowInfo(true);
-    try {
-      localStorage.removeItem("hide_catalogo_info");
-    } catch {}
+    localStorage.removeItem("hide_catalogo_info");
   };
 
   const fetchProducts = async () => {
     setLoading(true);
+    setFatalError(null);
     try {
       const { data, error } = await supabase.from("products").select("*").order("name");
       if (error) throw error;
 
-      const mapped: Product[] = (data || []).map((item: any) => ({
-        id: item.id,
-        name: item.name,
-        description: item.description || "",
-        sku: (item.sku || "").toUpperCase(),
-        category: item.category || "Geral",
-        supplier: item.supplier || "",
-        costPrice: safeNumber(item.cost_price),
-        salePrice: safeNumber(item.sale_price),
-        minStock: safeNumber(item.min_stock),
-        stock: safeNumber(item.stock),
-        sellsByBox: Boolean(item.sells_by_box),
-        qtyPerBox: item.qty_per_box ?? 1,
-        boxPrice: safeNumber(item.box_price),
-        sellsByKg: Boolean(item.sells_by_kg),
-      }));
+      const mappedProducts: Product[] =
+        (data || []).map((item: any) => ({
+          id: item.id,
+          name: item.name,
+          description: item.description || "",
+          sku: (item.sku || "").toUpperCase(),
+          category: item.category || "Geral",
+          supplier: item.supplier || "",
+          costPrice: safeNumber(item.cost_price ?? 0),
+          salePrice: safeNumber(item.sale_price ?? 0),
+          minStock: safeNumber(item.min_stock ?? 0),
+          stock: safeNumber(item.stock ?? 0),
+          sellsByBox: Boolean(item.sells_by_box ?? false),
+          qtyPerBox: item.qty_per_box ?? 1,
+          boxPrice: safeNumber(item.box_price ?? 0),
+          sellsByKg: Boolean(item.sells_by_kg ?? false),
+        })) || [];
 
-      setProducts(mapped);
+      setProducts(mappedProducts);
 
-      // Extrair categorias únicas
-      const cats = Array.from(new Set(mapped.map((p) => p.category).filter(Boolean)));
+      const cats = Array.from(new Set(mappedProducts.map((p) => p.category).filter(Boolean)));
+      const sups = Array.from(
+        new Set(mappedProducts.map((p) => p.supplier).filter(Boolean) as string[])
+      );
       setExistingCategories(cats);
-    } catch (error) {
+      setExistingSuppliers(sups);
+    } catch (error: any) {
       console.error(error);
+      setFatalError(error?.message || "Falha ao carregar catálogo.");
       toast({ variant: "destructive", title: "Erro", description: "Falha ao carregar catálogo." });
     } finally {
       setLoading(false);
     }
   };
 
-  // Cálculos de margem em tempo real
   const costPrice = form.watch("costPrice");
   const salePrice = form.watch("salePrice");
+
   const profitMargin = useMemo(() => {
     const cp = Number(costPrice);
     const sp = Number(salePrice);
-    if (cp > 0 && sp > 0) return ((sp - cp) / cp) * 100;
+    if (Number.isFinite(cp) && Number.isFinite(sp) && cp > 0 && sp > 0) return ((sp - cp) / cp) * 100;
     return 0;
   }, [costPrice, salePrice]);
+
+  const sellsByBox = form.watch("sellsByBox");
+  const qtyPerBox = form.watch("qtyPerBox");
+  const boxPrice = form.watch("boxPrice");
+
+  const boxPricePreview = useMemo(() => {
+    if (!sellsByBox) return 0;
+    const qty = safeNumber(qtyPerBox || 0);
+    const unit = safeNumber(salePrice || 0);
+    const typed = safeNumber(boxPrice || 0);
+    return typed > 0 ? typed : qty > 0 ? qty * unit : 0;
+  }, [sellsByBox, qtyPerBox, salePrice, boxPrice]);
 
   const filteredProducts = useMemo(() => {
     return products.filter((product) => {
       const s = debouncedSearch;
+
       const matchesSearch =
         !s ||
         (product.name || "").toLowerCase().includes(s) ||
         (product.sku || "").toLowerCase().includes(s);
+
       const matchesCategory = categoryFilter === "all" || product.category === categoryFilter;
       return matchesSearch && matchesCategory;
     });
   }, [products, debouncedSearch, categoryFilter]);
+
+  const openEditDialog = (product: Product) => {
+    setEditingProduct(product);
+    // garante sku sempre setado ao editar
+    form.reset({ ...product, sku: product.sku || "" });
+    setIsDialogOpen(true);
+  };
 
   const openNewDialog = () => {
     setEditingProduct(null);
@@ -269,12 +317,6 @@ export default function Catalogo() {
     setIsDialogOpen(true);
   };
 
-  const openEditDialog = (product: Product) => {
-    setEditingProduct(product);
-    form.reset(product);
-    setIsDialogOpen(true);
-  };
-
   const onSubmit = async (data: ProductFormData) => {
     try {
       let finalSku = data.sku;
@@ -284,43 +326,51 @@ export default function Catalogo() {
         finalSku = finalSku.trim().toUpperCase();
       }
 
-      // Validação de duplicidade de SKU
       if (!editingProduct || editingProduct.sku !== finalSku) {
         const conflict = products.find((p) => p.sku === finalSku);
-        if (conflict) finalSku = generateSku(); // Regenera se der conflito
+        if (conflict) finalSku = generateSku();
       }
 
-      const payload: any = {
+      const productData: any = {
         name: data.name.trim(),
         description: normalizeText(data.description),
         sku: finalSku,
         category: data.category.trim(),
         supplier: normalizeText(data.supplier),
+
         cost_price: Number(data.costPrice),
         sale_price: Number(data.salePrice),
         min_stock: Number(data.minStock),
         stock: Number(data.stock),
+
         sells_by_box: Boolean(data.sellsByBox),
-        qty_per_box: data.sellsByBox ? data.qtyPerBox : null,
-        box_price: data.sellsByBox && Number(data.boxPrice) > 0 ? Number(data.boxPrice) : null,
+        qty_per_box: data.sellsByBox ? Number(data.qtyPerBox) : null,
+        box_price:
+          data.sellsByBox && data.boxPrice && Number(data.boxPrice) > 0 ? Number(data.boxPrice) : null,
+
         sells_by_kg: Boolean(data.sellsByKg),
       };
 
       if (editingProduct) {
-        const { error } = await supabase.from("products").update(payload).eq("id", editingProduct.id);
+        const { error } = await supabase.from("products").update(productData).eq("id", editingProduct.id);
         if (error) throw error;
-        toast({ title: "Atualizado", description: "Produto salvo com sucesso." });
+        toast({ title: "Sucesso!", description: "Produto atualizado." });
       } else {
-        const { error } = await supabase.from("products").insert([payload]);
+        const { error } = await supabase.from("products").insert([productData]);
         if (error) throw error;
-        toast({ title: "Criado", description: "Produto cadastrado." });
+        toast({ title: "Sucesso!", description: "Produto cadastrado." });
       }
 
       setIsDialogOpen(false);
       setEditingProduct(null);
       await fetchProducts();
     } catch (error: any) {
-      toast({ variant: "destructive", title: "Erro", description: error.message });
+      console.error(error);
+      toast({
+        variant: "destructive",
+        title: "Erro ao salvar",
+        description: error?.message || "Falha ao salvar.",
+      });
     }
   };
 
@@ -332,47 +382,45 @@ export default function Catalogo() {
       toast({ title: "Excluído", description: "Produto removido." });
       setDeleteProductId(null);
       await fetchProducts();
-    } catch {
-      toast({ variant: "destructive", title: "Erro", description: "Não foi possível excluir." });
+    } catch (err: any) {
+      console.error(err);
+      toast({ variant: "destructive", title: "Erro", description: "Erro ao excluir." });
     }
   };
 
   const getMarginColor = (margin: number) => {
-    if (margin < 10) return "text-destructive border-destructive/30 bg-destructive/10";
-    if (margin < 25) return "text-yellow-600 border-yellow-200 bg-yellow-50";
-    return "text-green-600 border-green-200 bg-green-50";
+    if (margin < 10) return "text-destructive";
+    if (margin < 25) return "text-yellow-600";
+    return "text-green-600";
   };
 
   const formatStock = (p: Product) => {
-    const val = safeNumber(p.stock);
-    if (p.sellsByKg) return `${val.toFixed(3)} kg`;
-    return `${val.toFixed(0)} un`;
+    if (p.sellsByKg) return `${safeNumber(p.stock).toFixed(3)} kg`;
+    return `${safeNumber(p.stock).toFixed(0)} un`;
   };
 
   return (
-    // Padding responsivo: menor no mobile (p-4), maior no desktop (md:p-8)
-    <div className="space-y-4 p-4 md:p-8 animate-in fade-in duration-500 pb-20">
-      
-      {/* --- Header --- */}
-      <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+    <div className="space-y-6 animate-in fade-in duration-500">
+      {/* Header */}
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-2xl md:text-3xl font-bold text-foreground flex items-center gap-2">
+          <h1 className="text-2xl sm:text-3xl font-bold text-foreground flex items-center gap-2">
             Catálogo
             {!showInfo && (
               <Button
                 variant="ghost"
                 size="icon"
-                className="h-8 w-8 text-muted-foreground"
+                className="h-6 w-6 ml-2 text-muted-foreground"
                 onClick={handleShowInfo}
+                title="Ajuda"
               >
                 <Info className="h-4 w-4" />
               </Button>
             )}
           </h1>
-          <p className="text-sm text-muted-foreground">Gerencie seus produtos</p>
+          <p className="text-muted-foreground">Gerencie seus produtos</p>
         </div>
 
-        {/* Botão Novo Produto */}
         <Dialog
           open={isDialogOpen}
           onOpenChange={(open) => {
@@ -381,50 +429,90 @@ export default function Catalogo() {
           }}
         >
           <DialogTrigger asChild>
-            <Button onClick={openNewDialog} className="w-full md:w-auto gap-2">
+            <Button onClick={openNewDialog} className="gap-2">
               <Plus className="h-4 w-4" /> Novo Produto
             </Button>
           </DialogTrigger>
 
-          {/* Dialog Otimizado para Mobile */}
-          <DialogContent className="w-[95vw] max-w-2xl max-h-[90vh] overflow-y-auto rounded-lg p-4 md:p-6">
+          {/* ✅ Dialog responsivo no mobile */}
+          <DialogContent className="w-[95vw] sm:w-full max-w-lg sm:max-w-2xl max-h-[90vh] overflow-y-auto p-4 sm:p-6">
             <DialogHeader>
-              <DialogTitle>{editingProduct ? "Editar" : "Novo"} Produto</DialogTitle>
-              <DialogDescription>Preencha os dados abaixo.</DialogDescription>
+              <DialogTitle>{editingProduct ? "Editar Produto" : "Cadastrar Produto"}</DialogTitle>
+              <DialogDescription>Preencha os dados do item.</DialogDescription>
             </DialogHeader>
 
             <Form {...form}>
-              <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-5 mt-2">
-                {/* 1. Dados Básicos */}
-                <div className="space-y-3 border p-3 rounded-md bg-muted/20">
-                  <h3 className="text-sm font-semibold flex items-center gap-2 text-muted-foreground">
-                    <Package className="h-4 w-4" /> Dados
+              <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-5 sm:space-y-6">
+                {/* Dados Básicos */}
+                <div className="space-y-3 sm:space-y-4">
+                  <h3 className="font-semibold text-foreground flex items-center gap-2">
+                    <Package className="h-4 w-4" /> Dados Básicos
                   </h3>
+
+                  <div className="grid gap-3 sm:gap-4 sm:grid-cols-2">
+                    <FormField
+                      control={form.control}
+                      name="name"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>Nome *</FormLabel>
+                          <FormControl>
+                            <Input placeholder="Ex: Coca-Cola 2L" {...field} />
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+
+                    {/* SKU removido da interface (gera automático no submit) */}
+
+                    <FormField
+                      control={form.control}
+                      name="category"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>Categoria *</FormLabel>
+                          <FormControl>
+                            <div className="relative">
+                              <Input list="category-options" placeholder="Digite ou selecione" {...field} />
+                              <datalist id="category-options">
+                                {existingCategories.map((cat, i) => (
+                                  <option key={i} value={cat} />
+                                ))}
+                              </datalist>
+                            </div>
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                  </div>
+
                   <FormField
                     control={form.control}
-                    name="name"
+                    name="description"
                     render={({ field }) => (
                       <FormItem>
-                        <FormLabel>Nome do Produto</FormLabel>
+                        <FormLabel>Descrição</FormLabel>
                         <FormControl>
-                          <Input placeholder="Ex: Coca-Cola" {...field} />
+                          <Textarea placeholder="Detalhes..." className="resize-none h-20" {...field} />
                         </FormControl>
-                        <FormMessage />
                       </FormItem>
                     )}
                   />
+
                   <FormField
                     control={form.control}
-                    name="category"
+                    name="supplier"
                     render={({ field }) => (
                       <FormItem>
-                        <FormLabel>Categoria</FormLabel>
+                        <FormLabel>Fornecedor (Opcional)</FormLabel>
                         <FormControl>
                           <div className="relative">
-                            <Input list="cats" placeholder="Selecionar ou digitar..." {...field} />
-                            <datalist id="cats">
-                              {existingCategories.map((c) => (
-                                <option key={c} value={c} />
+                            <Input list="supplier-options" placeholder="Digite ou selecione" {...field} />
+                            <datalist id="supplier-options">
+                              {existingSuppliers.map((sup, i) => (
+                                <option key={i} value={sup} />
                               ))}
                             </datalist>
                           </div>
@@ -435,12 +523,14 @@ export default function Catalogo() {
                   />
                 </div>
 
-                {/* 2. Preços */}
-                <div className="space-y-3 border p-3 rounded-md bg-muted/20">
-                  <h3 className="text-sm font-semibold flex items-center gap-2 text-muted-foreground">
-                    <Percent className="h-4 w-4" /> Valores
+                {/* Precificação */}
+                <div className="space-y-3 sm:space-y-4">
+                  <h3 className="font-semibold text-foreground flex items-center gap-2">
+                    <Percent className="h-4 w-4" /> Precificação
                   </h3>
-                  <div className="grid grid-cols-2 gap-3">
+
+                  {/* ✅ no mobile vira 2 colunas, no desktop 3 */}
+                  <div className="grid gap-3 sm:gap-4 grid-cols-2 sm:grid-cols-3">
                     <FormField
                       control={form.control}
                       name="costPrice"
@@ -451,14 +541,18 @@ export default function Catalogo() {
                             <Input
                               type="number"
                               step="0.01"
-                              placeholder="0,00"
+                              min="0"
+                              inputMode="decimal"
                               {...field}
-                              value={field.value || ""}
+                              value={safeNumberInputValue(field.value)}
+                              onChange={(e) => field.onChange(e.target.value)}
                             />
                           </FormControl>
+                          <FormMessage />
                         </FormItem>
                       )}
                     />
+
                     <FormField
                       control={form.control}
                       name="salePrice"
@@ -469,54 +563,95 @@ export default function Catalogo() {
                             <Input
                               type="number"
                               step="0.01"
-                              placeholder="0,00"
+                              min="0"
+                              inputMode="decimal"
                               {...field}
-                              value={field.value || ""}
+                              value={safeNumberInputValue(field.value)}
+                              onChange={(e) => field.onChange(e.target.value)}
                             />
                           </FormControl>
+                          <FormMessage />
                         </FormItem>
                       )}
                     />
+
+                    {/* ✅ margem ocupa 2 colunas no mobile */}
+                    <div className="space-y-2 col-span-2 sm:col-span-1">
+                      <Label>Margem</Label>
+                      <div
+                        className={`h-10 flex items-center px-3 rounded-md border bg-muted font-semibold ${getMarginColor(
+                          profitMargin
+                        )}`}
+                      >
+                        {profitMargin.toFixed(1)}%
+                      </div>
+                    </div>
                   </div>
-                  <div className={`text-xs font-semibold px-2 py-1 rounded w-fit ${getMarginColor(profitMargin)}`}>
-                    Margem: {profitMargin.toFixed(1)}%
-                  </div>
+
+                  {sellsByBox && (
+                    <div className="text-xs text-muted-foreground">
+                      <strong>Prévia Caixa:</strong> {formatCurrency(boxPricePreview)}{" "}
+                      <span className="italic">(calculado auto se vazio)</span>
+                    </div>
+                  )}
                 </div>
 
-                {/* 3. Estoque */}
-                <div className="space-y-3 border p-3 rounded-md bg-muted/20">
-                  <h3 className="text-sm font-semibold flex items-center gap-2 text-muted-foreground">
-                    <BoxIcon className="h-4 w-4" /> Estoque
+                {/* Estoque e Tipo */}
+                <div className="space-y-3 sm:space-y-4">
+                  <h3 className="font-semibold text-foreground flex items-center gap-2">
+                    <BoxIcon className="h-4 w-4" /> Estoque & Tipo
                   </h3>
-                  <div className="grid grid-cols-2 gap-3">
+
+                  <div className="grid gap-3 sm:gap-4 sm:grid-cols-2">
                     <FormField
                       control={form.control}
                       name="stock"
                       render={({ field }) => (
                         <FormItem>
-                          <FormLabel>Atual</FormLabel>
+                          <FormLabel>Qtd Atual</FormLabel>
                           <FormControl>
-                            <Input type="number" step="0.001" placeholder="0" {...field} value={field.value || ""} />
+                            <Input
+                              type="number"
+                              step="0.001"
+                              min="0"
+                              inputMode="decimal"
+                              {...field}
+                              value={safeNumberInputValue(field.value)}
+                              onChange={(e) => field.onChange(e.target.value)}
+                            />
                           </FormControl>
+                          <FormDescription className="text-xs">
+                            Aceita decimais (ex: 10.500)
+                          </FormDescription>
+                          <FormMessage />
                         </FormItem>
                       )}
                     />
+
                     <FormField
                       control={form.control}
                       name="minStock"
                       render={({ field }) => (
                         <FormItem>
-                          <FormLabel>Mínimo</FormLabel>
+                          <FormLabel>Qtd Mínima</FormLabel>
                           <FormControl>
-                            <Input type="number" step="0.001" placeholder="5" {...field} value={field.value || ""} />
+                            <Input
+                              type="number"
+                              step="0.001"
+                              min="0"
+                              inputMode="decimal"
+                              {...field}
+                              value={safeNumberInputValue(field.value)}
+                              onChange={(e) => field.onChange(e.target.value)}
+                            />
                           </FormControl>
+                          <FormMessage />
                         </FormItem>
                       )}
                     />
                   </div>
 
-                  {/* Checkboxes em linha */}
-                  <div className="flex gap-4 pt-2">
+                  <div className="flex flex-wrap gap-6 pt-2 items-center">
                     <FormField
                       control={form.control}
                       name="sellsByBox"
@@ -525,15 +660,16 @@ export default function Catalogo() {
                           <FormControl>
                             <input
                               type="checkbox"
-                              className="h-4 w-4"
-                              checked={field.value}
+                              checked={Boolean(field.value)}
                               onChange={(e) => field.onChange(e.target.checked)}
+                              className="h-4 w-4 accent-primary"
                             />
                           </FormControl>
-                          <FormLabel className="font-normal cursor-pointer">Vende Caixa</FormLabel>
+                          <FormLabel className="!mt-0 cursor-pointer">Vende Caixa?</FormLabel>
                         </FormItem>
                       )}
                     />
+
                     <FormField
                       control={form.control}
                       name="sellsByKg"
@@ -542,190 +678,295 @@ export default function Catalogo() {
                           <FormControl>
                             <input
                               type="checkbox"
-                              className="h-4 w-4"
-                              checked={field.value}
+                              checked={Boolean(field.value)}
                               onChange={(e) => field.onChange(e.target.checked)}
+                              className="h-4 w-4 accent-primary"
                             />
                           </FormControl>
-                          <FormLabel className="font-normal cursor-pointer">Vende KG</FormLabel>
+                          <FormLabel className="!mt-0 cursor-pointer">Vende KG?</FormLabel>
                         </FormItem>
                       )}
                     />
                   </div>
+
+                  {/* Configuração da Caixa */}
+                  {sellsByBox && (
+                    <div className="grid gap-3 sm:gap-4 sm:grid-cols-2 bg-muted/30 p-3 rounded-lg border">
+                      <FormField
+                        control={form.control}
+                        name="qtyPerBox"
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>Qtd na Caixa</FormLabel>
+                            <FormControl>
+                              <Input
+                                type="number"
+                                min="1"
+                                step="1"
+                                inputMode="numeric"
+                                {...field}
+                                value={
+                                  field.value === null || field.value === undefined
+                                    ? ""
+                                    : String(field.value)
+                                }
+                                onChange={(e) => field.onChange(safeNumber(e.target.value))}
+                              />
+                            </FormControl>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+
+                      <FormField
+                        control={form.control}
+                        name="boxPrice"
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>Preço Caixa (Opcional)</FormLabel>
+                            <FormControl>
+                              <Input
+                                type="number"
+                                step="0.01"
+                                min="0"
+                                inputMode="decimal"
+                                {...field}
+                                value={safeNumberInputValue(field.value)}
+                                onChange={(e) => field.onChange(e.target.value)}
+                              />
+                            </FormControl>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+                    </div>
+                  )}
                 </div>
 
-                <div className="pt-2">
-                  <Button type="submit" className="w-full h-12 text-base">
-                    Salvar Produto
-                  </Button>
-                </div>
+                <Button type="submit" className="w-full">
+                  {editingProduct ? "Salvar Alterações" : "Cadastrar Produto"}
+                </Button>
               </form>
             </Form>
           </DialogContent>
         </Dialog>
       </div>
 
-      {/* --- Dica Mobile --- */}
+      {/* Dica */}
       {showInfo && (
-        <Alert className="bg-blue-50 border-blue-100 text-blue-900 shadow-sm relative pr-8">
+        <Alert className="bg-blue-50/50 border-blue-200 text-blue-800 relative pr-10 animate-in slide-in-from-top-2 fade-in shadow-sm">
           <Info className="h-4 w-4 text-blue-600" />
-          <AlertTitle className="text-sm font-bold">Dicas Rápidas</AlertTitle>
-          <AlertDescription className="text-xs mt-1 leading-relaxed">
-            - O <strong>SKU</strong> é gerado automaticamente.<br/>
-            - Marque <strong>KG</strong> para produtos de peso.<br/>
-            - Use a busca para filtrar categorias.
+          <AlertTitle className="text-blue-700 font-semibold">Dicas</AlertTitle>
+          <AlertDescription className="text-blue-700/80 text-sm mt-1">
+            <ul className="list-disc list-inside space-y-1">
+              <li>
+                <strong>SKU:</strong> O código é gerado automaticamente pelo sistema.
+              </li>
+              <li>
+                <strong>Vende por KG?</strong> Marque para produtos fracionados (ex: 10.500).
+              </li>
+            </ul>
           </AlertDescription>
-          <button onClick={handleCloseInfo} className="absolute top-2 right-2 p-1 text-blue-400">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="absolute top-2 right-2 text-blue-400 hover:text-blue-700"
+            onClick={handleCloseInfo}
+          >
             <X className="h-4 w-4" />
-          </button>
+          </Button>
         </Alert>
       )}
 
-      {/* --- Filtros --- */}
-      <div className="flex flex-col md:flex-row gap-3">
-        <div className="relative flex-1">
-          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            placeholder="Buscar nome..."
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-            className="pl-9 bg-background"
-          />
-        </div>
-        <Select value={categoryFilter} onValueChange={setCategoryFilter}>
-          <SelectTrigger className="w-full md:w-[180px] bg-background">
-            <SelectValue placeholder="Categoria" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">Todas</SelectItem>
-            {existingCategories.map((cat) => (
-              <SelectItem key={cat} value={cat}>
-                {cat}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </div>
+      {/* Filtros + Tabela */}
+      <Card>
+        <CardHeader className="pb-3">
+          <div className="flex flex-col sm:flex-row gap-4 justify-between">
+            <div className="relative flex-1 sm:max-w-sm">
+              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                placeholder="Buscar por nome..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="pl-9"
+              />
+            </div>
 
-      {/* --- Loading --- */}
-      {loading ? (
-        <div className="flex justify-center py-10">
-          <Loader2 className="h-8 w-8 animate-spin text-primary" />
-        </div>
-      ) : (
-        <>
-          {/* === VISÃO DESKTOP (TABELA) === */}
-          <div className="hidden md:block rounded-md border bg-card">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Produto</TableHead>
-                  <TableHead>Categoria</TableHead>
-                  <TableHead className="text-right">Venda</TableHead>
-                  <TableHead className="text-right">Estoque</TableHead>
-                  <TableHead className="w-[100px]">Ações</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {filteredProducts.map((product) => (
-                  <TableRow key={product.id}>
-                    <TableCell className="font-medium">{product.name}</TableCell>
-                    <TableCell>
-                      <Badge variant="secondary" className="font-normal">{product.category}</Badge>
-                    </TableCell>
-                    <TableCell className="text-right">{formatCurrency(product.salePrice)}</TableCell>
-                    <TableCell className="text-right">
-                      <span className={product.stock <= product.minStock ? "text-red-600 font-bold" : ""}>
-                        {formatStock(product)}
-                      </span>
-                    </TableCell>
-                    <TableCell>
-                      <div className="flex gap-1">
-                        <Button variant="ghost" size="icon" onClick={() => openEditDialog(product)}>
-                          <Edit className="h-4 w-4" />
-                        </Button>
-                        <Button variant="ghost" size="icon" className="text-destructive" onClick={() => setDeleteProductId(product.id)}>
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
-                      </div>
-                    </TableCell>
-                  </TableRow>
+            <Select value={categoryFilter} onValueChange={setCategoryFilter}>
+              <SelectTrigger className="w-full sm:w-[180px]">
+                <SelectValue placeholder="Categoria" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">Todas</SelectItem>
+                {existingCategories.map((cat) => (
+                  <SelectItem key={cat} value={cat}>
+                    {cat}
+                  </SelectItem>
                 ))}
-                {filteredProducts.length === 0 && (
+              </SelectContent>
+            </Select>
+          </div>
+        </CardHeader>
+
+        <CardContent>
+          {fatalError && (
+            <Alert className="mb-4" variant="destructive">
+              <AlertTitle>Erro ao carregar</AlertTitle>
+              <AlertDescription className="flex items-center justify-between gap-3">
+                <span className="text-sm">{fatalError}</span>
+                <Button variant="outline" onClick={fetchProducts}>
+                  Tentar de novo
+                </Button>
+              </AlertDescription>
+            </Alert>
+          )}
+
+          {loading ? (
+            <div className="flex justify-center py-10">
+              <Loader2 className="h-8 w-8 animate-spin text-primary" />
+            </div>
+          ) : (
+            <div className="rounded-md border overflow-hidden">
+              <Table>
+                <TableHeader>
                   <TableRow>
-                    <TableCell colSpan={5} className="text-center py-8 text-muted-foreground">
-                      Nenhum produto encontrado.
-                    </TableCell>
+                    <TableHead>Produto</TableHead>
+
+                    {/* ✅ some no mobile */}
+                    <TableHead className="hidden sm:table-cell">Categoria</TableHead>
+
+                    <TableHead className="text-right">Venda</TableHead>
+
+                    {/* ✅ some no mobile */}
+                    <TableHead className="hidden sm:table-cell text-right">Caixa</TableHead>
+
+                    <TableHead className="text-right">Estoque</TableHead>
+                    <TableHead className="w-20">Ações</TableHead>
                   </TableRow>
-                )}
-              </TableBody>
-            </Table>
-          </div>
+                </TableHeader>
 
-          {/* === VISÃO MOBILE (CARDS) === */}
-          <div className="grid gap-3 md:hidden">
-            {filteredProducts.map((product) => (
-              <Card key={product.id} className="shadow-sm border-l-4 border-l-primary/20">
-                <CardContent className="p-4 flex justify-between items-start">
-                  <div className="space-y-1">
-                    <div className="font-bold text-base">{product.name}</div>
-                    <div className="text-xs text-muted-foreground uppercase tracking-wide">
-                      {product.category}
-                    </div>
-                    <div className="flex gap-3 pt-2 text-sm">
-                      <div className="font-semibold text-green-700">
-                        {formatCurrency(product.salePrice)}
-                      </div>
-                      <div className={product.stock <= product.minStock ? "text-red-600 font-bold" : "text-muted-foreground"}>
-                        Est: {formatStock(product)}
-                      </div>
-                    </div>
-                  </div>
+                <TableBody>
+                  {filteredProducts.map((product) => {
+                    const min = safeNumber(product.minStock || 0);
+                    const stock = safeNumber(product.stock || 0);
+                    const isLowStock = stock <= (min || 5);
 
-                  {/* Menu de Ações Mobile */}
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <Button variant="ghost" size="icon" className="h-8 w-8 -mr-2">
-                        <MoreVertical className="h-4 w-4" />
-                      </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end">
-                      <DropdownMenuItem onClick={() => openEditDialog(product)}>
-                        <Edit className="h-4 w-4 mr-2" /> Editar
-                      </DropdownMenuItem>
-                      <DropdownMenuItem 
-                        className="text-destructive focus:text-destructive"
-                        onClick={() => setDeleteProductId(product.id)}
-                      >
-                        <Trash2 className="h-4 w-4 mr-2" /> Excluir
-                      </DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                </CardContent>
-              </Card>
-            ))}
-            
-            {filteredProducts.length === 0 && (
-              <div className="text-center py-10 text-muted-foreground text-sm">
-                Nenhum produto encontrado.
-              </div>
-            )}
-          </div>
-        </>
-      )}
+                    const qty = safeNumber(product.qtyPerBox || 0);
+                    const calculatedBoxPrice =
+                      safeNumber(product.boxPrice || 0) > 0
+                        ? safeNumber(product.boxPrice)
+                        : qty > 0
+                        ? qty * safeNumber(product.salePrice)
+                        : 0;
 
-      {/* Dialog de Confirmação de Exclusão */}
+                    return (
+                      <TableRow key={product.id}>
+                        <TableCell>
+                          <div className="font-medium">{product.name}</div>
+
+                          <div className="flex gap-1 mt-1">
+                            {product.sellsByBox && (
+                              <Badge variant="outline" className="text-[10px]">
+                                Caixa
+                              </Badge>
+                            )}
+                            {product.sellsByKg && (
+                              <Badge variant="outline" className="text-[10px]">
+                                KG
+                              </Badge>
+                            )}
+                          </div>
+
+                          {/* ✅ resumo mobile para não precisar arrastar */}
+                          <div className="sm:hidden text-xs text-muted-foreground mt-2 space-y-1">
+                            <div>
+                              <span className="font-medium">Categoria:</span> {product.category}
+                            </div>
+                            {product.sellsByBox && (
+                              <div>
+                                <span className="font-medium">Caixa:</span>{" "}
+                                {formatCurrency(calculatedBoxPrice)}
+                              </div>
+                            )}
+                          </div>
+                        </TableCell>
+
+                        <TableCell className="hidden sm:table-cell">
+                          <Badge variant="secondary">{product.category}</Badge>
+                        </TableCell>
+
+                        <TableCell className="text-right font-medium whitespace-nowrap">
+                          {formatCurrency(product.salePrice)}
+                          {product.sellsByKg && (
+                            <span className="text-xs text-muted-foreground ml-1">/kg</span>
+                          )}
+                        </TableCell>
+
+                        <TableCell className="hidden sm:table-cell text-right whitespace-nowrap">
+                          {product.sellsByBox ? (
+                            <span
+                              className={
+                                safeNumber(product.boxPrice || 0) <= 0
+                                  ? "text-muted-foreground italic"
+                                  : "font-medium"
+                              }
+                            >
+                              {formatCurrency(calculatedBoxPrice)}
+                            </span>
+                          ) : (
+                            <span className="text-muted-foreground/30">-</span>
+                          )}
+                        </TableCell>
+
+                        <TableCell className="text-right whitespace-nowrap">
+                          <span className={isLowStock ? "text-destructive font-bold" : ""}>
+                            {formatStock(product)}
+                          </span>
+                        </TableCell>
+
+                        <TableCell>
+                          <div className="flex gap-1">
+                            <Button variant="ghost" size="icon" onClick={() => openEditDialog(product)}>
+                              <Edit className="h-4 w-4" />
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="text-destructive"
+                              onClick={() => setDeleteProductId(product.id)}
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+
+                  {filteredProducts.length === 0 && (
+                    <TableRow>
+                      <TableCell colSpan={6} className="text-center py-8 text-muted-foreground">
+                        Nenhum produto encontrado.
+                      </TableCell>
+                    </TableRow>
+                  )}
+                </TableBody>
+              </Table>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Confirmar delete */}
       <AlertDialog open={!!deleteProductId} onOpenChange={() => setDeleteProductId(null)}>
-        <AlertDialogContent className="w-[95vw] rounded-lg">
+        <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Excluir este produto?</AlertDialogTitle>
-            <AlertDialogDescription>
-              Essa ação não pode ser desfeita.
-            </AlertDialogDescription>
+            <AlertDialogTitle>Excluir Produto?</AlertDialogTitle>
+            <AlertDialogDescription>Essa ação é irreversível.</AlertDialogDescription>
           </AlertDialogHeader>
-          <AlertDialogFooter className="flex-row gap-2 justify-end">
-            <AlertDialogCancel className="mt-0">Cancelar</AlertDialogCancel>
-            <AlertDialogAction onClick={handleDelete} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+            <AlertDialogAction onClick={handleDelete} className="bg-destructive hover:bg-destructive/90">
               Excluir
             </AlertDialogAction>
           </AlertDialogFooter>
