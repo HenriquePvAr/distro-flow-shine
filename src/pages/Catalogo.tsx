@@ -1,5 +1,4 @@
 "use client";
-
 import { useEffect, useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -11,10 +10,11 @@ import {
   Percent,
   Edit,
   Trash2,
-  Box, // Corrigido de BoxIcon para Box
+  Box,
   Loader2,
   Info,
   X,
+  MoreVertical,
 } from "lucide-react";
 
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
@@ -65,6 +65,12 @@ import {
   FormLabel,
   FormMessage,
 } from "@/components/ui/form";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { useToast } from "@/hooks/use-toast";
 import { supabase } from "@/integrations/supabase/client";
@@ -193,14 +199,12 @@ export default function Catalogo() {
   }, [searchTerm]);
 
   useEffect(() => {
-    // Proteção contra erro de LocalStorage (Evita tela branca se estiver bloqueado)
     try {
       const isHidden = localStorage.getItem("hide_catalogo_info");
       if (isHidden === "true") setShowInfo(false);
     } catch (e) {
       console.warn("LocalStorage indisponível", e);
     }
-
     fetchProducts();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -299,7 +303,6 @@ export default function Catalogo() {
 
   const openEditDialog = (product: Product) => {
     setEditingProduct(product);
-    // garante sku sempre setado ao editar
     form.reset({ ...product, sku: product.sku || "" });
     setIsDialogOpen(true);
   };
@@ -396,9 +399,9 @@ export default function Catalogo() {
   };
 
   const getMarginColor = (margin: number) => {
-    if (margin < 10) return "text-destructive";
-    if (margin < 25) return "text-yellow-600";
-    return "text-green-600";
+    if (margin < 10) return "text-destructive border-destructive/30 bg-destructive/10";
+    if (margin < 25) return "text-yellow-600 border-yellow-200 bg-yellow-50";
+    return "text-green-600 border-green-200 bg-green-50";
   };
 
   const formatStock = (p: Product) => {
@@ -407,7 +410,8 @@ export default function Catalogo() {
   };
 
   return (
-    <div className="space-y-6 animate-in fade-in duration-500">
+    // Padding responsivo para evitar que o conteúdo fique colado nas bordas
+    <div className="space-y-6 animate-in fade-in duration-500 p-4 md:p-6 pb-24">
       {/* Header */}
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
@@ -436,23 +440,23 @@ export default function Catalogo() {
           }}
         >
           <DialogTrigger asChild>
-            <Button onClick={openNewDialog} className="gap-2">
+            <Button onClick={openNewDialog} className="gap-2 w-full sm:w-auto">
               <Plus className="h-4 w-4" /> Novo Produto
             </Button>
           </DialogTrigger>
 
-          {/* Dialog responsivo no mobile */}
-          <DialogContent className="w-[95vw] sm:w-full max-w-lg sm:max-w-2xl max-h-[90vh] overflow-y-auto p-4 sm:p-6">
+          {/* Dialog Responsivo (Ocupa 95% da tela no mobile para não cortar) */}
+          <DialogContent className="w-[95vw] sm:w-full max-w-lg sm:max-w-2xl max-h-[90vh] overflow-y-auto p-4 sm:p-6 rounded-lg">
             <DialogHeader>
               <DialogTitle>{editingProduct ? "Editar Produto" : "Cadastrar Produto"}</DialogTitle>
               <DialogDescription>Preencha os dados do item.</DialogDescription>
             </DialogHeader>
 
             <Form {...form}>
-              <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-5 sm:space-y-6">
+              <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-5 sm:space-y-6 pt-2">
                 {/* Dados Básicos */}
-                <div className="space-y-3 sm:space-y-4">
-                  <h3 className="font-semibold text-foreground flex items-center gap-2">
+                <div className="space-y-3 sm:space-y-4 border p-3 rounded-md bg-muted/10">
+                  <h3 className="font-semibold text-foreground flex items-center gap-2 text-sm sm:text-base">
                     <Package className="h-4 w-4" /> Dados Básicos
                   </h3>
 
@@ -529,8 +533,8 @@ export default function Catalogo() {
                 </div>
 
                 {/* Precificação */}
-                <div className="space-y-3 sm:space-y-4">
-                  <h3 className="font-semibold text-foreground flex items-center gap-2">
+                <div className="space-y-3 sm:space-y-4 border p-3 rounded-md bg-muted/10">
+                  <h3 className="font-semibold text-foreground flex items-center gap-2 text-sm sm:text-base">
                     <Percent className="h-4 w-4" /> Precificação
                   </h3>
 
@@ -600,8 +604,8 @@ export default function Catalogo() {
                 </div>
 
                 {/* Estoque e Tipo */}
-                <div className="space-y-3 sm:space-y-4">
-                  <h3 className="font-semibold text-foreground flex items-center gap-2">
+                <div className="space-y-3 sm:space-y-4 border p-3 rounded-md bg-muted/10">
+                  <h3 className="font-semibold text-foreground flex items-center gap-2 text-sm sm:text-base">
                     <Box className="h-4 w-4" /> Estoque & Tipo
                   </h3>
 
@@ -654,7 +658,7 @@ export default function Catalogo() {
                     />
                   </div>
 
-                  <div className="flex flex-wrap gap-6 pt-2 items-center">
+                  <div className="flex flex-wrap gap-4 pt-2 items-center">
                     <FormField
                       control={form.control}
                       name="sellsByBox"
@@ -668,7 +672,7 @@ export default function Catalogo() {
                               className="h-4 w-4 accent-primary"
                             />
                           </FormControl>
-                          <FormLabel className="!mt-0 cursor-pointer">Vende Caixa?</FormLabel>
+                          <FormLabel className="!mt-0 cursor-pointer font-normal">Vende Caixa?</FormLabel>
                         </FormItem>
                       )}
                     />
@@ -686,7 +690,7 @@ export default function Catalogo() {
                               className="h-4 w-4 accent-primary"
                             />
                           </FormControl>
-                          <FormLabel className="!mt-0 cursor-pointer">Vende KG?</FormLabel>
+                          <FormLabel className="!mt-0 cursor-pointer font-normal">Vende KG?</FormLabel>
                         </FormItem>
                       )}
                     />
@@ -694,7 +698,7 @@ export default function Catalogo() {
 
                   {/* Configuração da Caixa */}
                   {sellsByBox && (
-                    <div className="grid gap-3 sm:gap-4 sm:grid-cols-2 bg-muted/30 p-3 rounded-lg border">
+                    <div className="grid gap-3 sm:gap-4 sm:grid-cols-2 bg-background p-3 rounded-lg border">
                       <FormField
                         control={form.control}
                         name="qtyPerBox"
@@ -746,34 +750,30 @@ export default function Catalogo() {
                   )}
                 </div>
 
-                <Button type="submit" className="w-full">
-                  {editingProduct ? "Salvar Alterações" : "Cadastrar Produto"}
-                </Button>
+                <div className="pt-2">
+                  <Button type="submit" className="w-full h-12 text-lg font-medium">
+                    {editingProduct ? "Salvar Alterações" : "Cadastrar Produto"}
+                  </Button>
+                </div>
               </form>
             </Form>
           </DialogContent>
         </Dialog>
       </div>
 
-      {/* Dica */}
+      {/* Dica (Mobile Friendly) */}
       {showInfo && (
-        <Alert className="bg-blue-50/50 border-blue-200 text-blue-800 relative pr-10 animate-in slide-in-from-top-2 fade-in shadow-sm">
+        <Alert className="bg-blue-50/50 border-blue-200 text-blue-800 relative pr-10 shadow-sm">
           <Info className="h-4 w-4 text-blue-600" />
-          <AlertTitle className="text-blue-700 font-semibold">Dicas</AlertTitle>
-          <AlertDescription className="text-blue-700/80 text-sm mt-1">
-            <ul className="list-disc list-inside space-y-1">
-              <li>
-                <strong>SKU:</strong> O código é gerado automaticamente pelo sistema.
-              </li>
-              <li>
-                <strong>Vende por KG?</strong> Marque para produtos fracionados (ex: 10.500).
-              </li>
-            </ul>
+          <AlertTitle className="text-blue-700 font-bold text-sm">Dicas Rápidas</AlertTitle>
+          <AlertDescription className="text-blue-700/90 text-xs mt-1 leading-relaxed">
+            - O <strong>SKU</strong> é gerado automaticamente.<br/>
+            - Marque <strong>KG</strong> para vender por peso (ex: 0.500 kg).
           </AlertDescription>
           <Button
             variant="ghost"
             size="icon"
-            className="absolute top-2 right-2 text-blue-400 hover:text-blue-700"
+            className="absolute top-1 right-1 text-blue-400 hover:text-blue-700"
             onClick={handleCloseInfo}
           >
             <X className="h-4 w-4" />
@@ -783,20 +783,20 @@ export default function Catalogo() {
 
       {/* Filtros + Tabela */}
       <Card>
-        <CardHeader className="pb-3">
-          <div className="flex flex-col sm:flex-row gap-4 justify-between">
-            <div className="relative flex-1 sm:max-w-sm">
+        <CardHeader className="pb-3 px-4 pt-4">
+          <div className="flex flex-col sm:flex-row gap-3 justify-between">
+            <div className="relative flex-1">
               <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
               <Input
-                placeholder="Buscar por nome..."
+                placeholder="Buscar produto..."
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
-                className="pl-9"
+                className="pl-9 h-10"
               />
             </div>
 
             <Select value={categoryFilter} onValueChange={setCategoryFilter}>
-              <SelectTrigger className="w-full sm:w-[180px]">
+              <SelectTrigger className="w-full sm:w-[180px] h-10">
                 <SelectValue placeholder="Categoria" />
               </SelectTrigger>
               <SelectContent>
@@ -811,17 +811,14 @@ export default function Catalogo() {
           </div>
         </CardHeader>
 
-        <CardContent>
+        <CardContent className="p-0 sm:p-6">
           {fatalError && (
-            <Alert className="mb-4" variant="destructive">
-              <AlertTitle>Erro ao carregar</AlertTitle>
-              <AlertDescription className="flex items-center justify-between gap-3">
-                <span className="text-sm">{fatalError}</span>
-                <Button variant="outline" onClick={fetchProducts}>
-                  Tentar de novo
-                </Button>
-              </AlertDescription>
-            </Alert>
+            <div className="p-4">
+              <Alert variant="destructive">
+                <AlertTitle>Erro</AlertTitle>
+                <AlertDescription>{fatalError}</AlertDescription>
+              </Alert>
+            </div>
           )}
 
           {loading ? (
@@ -829,147 +826,177 @@ export default function Catalogo() {
               <Loader2 className="h-8 w-8 animate-spin text-primary" />
             </div>
           ) : (
-            <div className="rounded-md border overflow-hidden">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Produto</TableHead>
+            <>
+              {/* VERSÃO DESKTOP (Tabela) */}
+              <div className="hidden md:block rounded-md border overflow-hidden">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Produto</TableHead>
+                      <TableHead>Categoria</TableHead>
+                      <TableHead className="text-right">Venda</TableHead>
+                      <TableHead className="text-right">Caixa</TableHead>
+                      <TableHead className="text-right">Estoque</TableHead>
+                      <TableHead className="w-20">Ações</TableHead>
+                    </TableRow>
+                  </TableHeader>
 
-                    {/* ✅ some no mobile */}
-                    <TableHead className="hidden sm:table-cell">Categoria</TableHead>
+                  <TableBody>
+                    {filteredProducts.map((product) => {
+                      const min = safeNumber(product.minStock || 0);
+                      const stock = safeNumber(product.stock || 0);
+                      const isLowStock = stock <= (min || 5);
 
-                    <TableHead className="text-right">Venda</TableHead>
+                      const qty = safeNumber(product.qtyPerBox || 0);
+                      const calculatedBoxPrice =
+                        safeNumber(product.boxPrice || 0) > 0
+                          ? safeNumber(product.boxPrice)
+                          : qty > 0
+                          ? qty * safeNumber(product.salePrice)
+                          : 0;
 
-                    {/* ✅ some no mobile */}
-                    <TableHead className="hidden sm:table-cell text-right">Caixa</TableHead>
-
-                    <TableHead className="text-right">Estoque</TableHead>
-                    <TableHead className="w-20">Ações</TableHead>
-                  </TableRow>
-                </TableHeader>
-
-                <TableBody>
-                  {filteredProducts.map((product) => {
-                    const min = safeNumber(product.minStock || 0);
-                    const stock = safeNumber(product.stock || 0);
-                    const isLowStock = stock <= (min || 5);
-
-                    const qty = safeNumber(product.qtyPerBox || 0);
-                    const calculatedBoxPrice =
-                      safeNumber(product.boxPrice || 0) > 0
-                        ? safeNumber(product.boxPrice)
-                        : qty > 0
-                        ? qty * safeNumber(product.salePrice)
-                        : 0;
-
-                    return (
-                      <TableRow key={product.id}>
-                        <TableCell>
-                          <div className="font-medium">{product.name}</div>
-
-                          <div className="flex gap-1 mt-1">
-                            {product.sellsByBox && (
-                              <Badge variant="outline" className="text-[10px]">
-                                Caixa
-                              </Badge>
-                            )}
-                            {product.sellsByKg && (
-                              <Badge variant="outline" className="text-[10px]">
-                                KG
-                              </Badge>
-                            )}
-                          </div>
-
-                          {/* ✅ resumo mobile para não precisar arrastar */}
-                          <div className="sm:hidden text-xs text-muted-foreground mt-2 space-y-1">
-                            <div>
-                              <span className="font-medium">Categoria:</span> {product.category}
+                      return (
+                        <TableRow key={product.id}>
+                          <TableCell>
+                            <div className="font-medium">{product.name}</div>
+                            <div className="flex gap-1 mt-1">
+                              {product.sellsByBox && (
+                                <Badge variant="outline" className="text-[10px]">Cx</Badge>
+                              )}
+                              {product.sellsByKg && (
+                                <Badge variant="outline" className="text-[10px]">Kg</Badge>
+                              )}
                             </div>
-                            {product.sellsByBox && (
-                              <div>
-                                <span className="font-medium">Caixa:</span>{" "}
-                                {formatCurrency(calculatedBoxPrice)}
-                              </div>
+                          </TableCell>
+
+                          <TableCell>
+                            <Badge variant="secondary" className="font-normal">{product.category}</Badge>
+                          </TableCell>
+
+                          <TableCell className="text-right font-medium">
+                            {formatCurrency(product.salePrice)}
+                          </TableCell>
+
+                          <TableCell className="text-right">
+                            {product.sellsByBox ? (
+                              <span className="text-sm">{formatCurrency(calculatedBoxPrice)}</span>
+                            ) : (
+                              <span className="text-muted-foreground/30">-</span>
                             )}
-                          </div>
-                        </TableCell>
+                          </TableCell>
 
-                        <TableCell className="hidden sm:table-cell">
-                          <Badge variant="secondary">{product.category}</Badge>
-                        </TableCell>
-
-                        <TableCell className="text-right font-medium whitespace-nowrap">
-                          {formatCurrency(product.salePrice)}
-                          {product.sellsByKg && (
-                            <span className="text-xs text-muted-foreground ml-1">/kg</span>
-                          )}
-                        </TableCell>
-
-                        <TableCell className="hidden sm:table-cell text-right whitespace-nowrap">
-                          {product.sellsByBox ? (
-                            <span
-                              className={
-                                safeNumber(product.boxPrice || 0) <= 0
-                                  ? "text-muted-foreground italic"
-                                  : "font-medium"
-                              }
-                            >
-                              {formatCurrency(calculatedBoxPrice)}
+                          <TableCell className="text-right">
+                            <span className={isLowStock ? "text-destructive font-bold" : ""}>
+                              {formatStock(product)}
                             </span>
-                          ) : (
-                            <span className="text-muted-foreground/30">-</span>
-                          )}
-                        </TableCell>
+                          </TableCell>
 
-                        <TableCell className="text-right whitespace-nowrap">
-                          <span className={isLowStock ? "text-destructive font-bold" : ""}>
-                            {formatStock(product)}
-                          </span>
-                        </TableCell>
-
-                        <TableCell>
-                          <div className="flex gap-1">
-                            <Button variant="ghost" size="icon" onClick={() => openEditDialog(product)}>
-                              <Edit className="h-4 w-4" />
-                            </Button>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="text-destructive"
-                              onClick={() => setDeleteProductId(product.id)}
-                            >
-                              <Trash2 className="h-4 w-4" />
-                            </Button>
-                          </div>
+                          <TableCell>
+                            <div className="flex gap-1">
+                              <Button variant="ghost" size="icon" onClick={() => openEditDialog(product)}>
+                                <Edit className="h-4 w-4" />
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="text-destructive"
+                                onClick={() => setDeleteProductId(product.id)}
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </Button>
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
+                    {filteredProducts.length === 0 && (
+                      <TableRow>
+                        <TableCell colSpan={6} className="text-center py-8 text-muted-foreground">
+                          Nenhum produto encontrado.
                         </TableCell>
                       </TableRow>
-                    );
-                  })}
+                    )}
+                  </TableBody>
+                </Table>
+              </div>
 
-                  {filteredProducts.length === 0 && (
-                    <TableRow>
-                      <TableCell colSpan={6} className="text-center py-8 text-muted-foreground">
-                        Nenhum produto encontrado.
-                      </TableCell>
-                    </TableRow>
-                  )}
-                </TableBody>
-              </Table>
-            </div>
+              {/* VERSÃO MOBILE (Cards) - Substitui a tabela no celular */}
+              <div className="md:hidden flex flex-col gap-2 p-2 bg-muted/5">
+                {filteredProducts.map((product) => {
+                  const stock = safeNumber(product.stock || 0);
+                  const min = safeNumber(product.minStock || 0);
+                  const isLowStock = stock <= (min || 5);
+
+                  return (
+                    <Card key={product.id} className="shadow-sm border-l-4 border-l-primary/40">
+                      <CardContent className="p-3 flex justify-between items-start">
+                        <div className="space-y-1 w-full">
+                          <div className="flex justify-between items-start">
+                            <span className="font-bold text-base line-clamp-1">{product.name}</span>
+                            {/* Menu de ações (3 pontinhos) */}
+                            <DropdownMenu>
+                              <DropdownMenuTrigger asChild>
+                                <Button variant="ghost" size="icon" className="h-6 w-6 -mr-2 -mt-1">
+                                  <MoreVertical className="h-4 w-4 text-muted-foreground" />
+                                </Button>
+                              </DropdownMenuTrigger>
+                              <DropdownMenuContent align="end">
+                                <DropdownMenuItem onClick={() => openEditDialog(product)}>
+                                  <Edit className="h-4 w-4 mr-2" /> Editar
+                                </DropdownMenuItem>
+                                <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={() => setDeleteProductId(product.id)}>
+                                  <Trash2 className="h-4 w-4 mr-2" /> Excluir
+                                </DropdownMenuItem>
+                              </DropdownMenuContent>
+                            </DropdownMenu>
+                          </div>
+                          
+                          <div className="text-xs text-muted-foreground uppercase font-semibold">
+                            {product.category}
+                          </div>
+
+                          <div className="flex items-center gap-4 pt-2">
+                            <div className="flex flex-col">
+                              <span className="text-[10px] text-muted-foreground">Venda</span>
+                              <span className="font-bold text-green-700 text-sm">
+                                {formatCurrency(product.salePrice)}
+                              </span>
+                            </div>
+                            
+                            <div className="flex flex-col">
+                              <span className="text-[10px] text-muted-foreground">Estoque</span>
+                              <span className={`text-sm ${isLowStock ? "text-red-600 font-bold" : ""}`}>
+                                {formatStock(product)}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  );
+                })}
+                
+                {filteredProducts.length === 0 && (
+                  <div className="text-center py-10 text-muted-foreground">
+                    Nenhum produto encontrado.
+                  </div>
+                )}
+              </div>
+            </>
           )}
         </CardContent>
       </Card>
 
       {/* Confirmar delete */}
       <AlertDialog open={!!deleteProductId} onOpenChange={() => setDeleteProductId(null)}>
-        <AlertDialogContent>
+        <AlertDialogContent className="w-[90vw] rounded-lg">
           <AlertDialogHeader>
             <AlertDialogTitle>Excluir Produto?</AlertDialogTitle>
             <AlertDialogDescription>Essa ação é irreversível.</AlertDialogDescription>
           </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancelar</AlertDialogCancel>
-            <AlertDialogAction onClick={handleDelete} className="bg-destructive hover:bg-destructive/90">
+          <AlertDialogFooter className="flex-row gap-2 justify-end">
+            <AlertDialogCancel className="mt-0">Cancelar</AlertDialogCancel>
+            <AlertDialogAction onClick={handleDelete} className="bg-destructive hover:bg-destructive/90 text-white">
               Excluir
             </AlertDialogAction>
           </AlertDialogFooter>
