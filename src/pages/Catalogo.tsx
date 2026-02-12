@@ -11,7 +11,7 @@ import {
   Percent,
   Edit,
   Trash2,
-  BoxIcon,
+  Box, // Corrigido de BoxIcon para Box
   Loader2,
   Info,
   X,
@@ -90,14 +90,12 @@ const normalizeText = (s: string | undefined | null) => {
 
 const generateSku = () => `PROD-${Date.now().toString(36).toUpperCase()}`;
 
-// Evita value={NaN} / undefined no type="number" (isso pode crashar em alguns WebViews)
+// Evita value={NaN} / undefined no type="number"
 const safeNumberInputValue = (v: any) => {
   if (v === null || v === undefined) return "";
   const n = Number(v);
   if (!Number.isFinite(n)) return "";
-  // ✅ você pediu: não mostrar "0" ao cadastrar
   if (n === 0) return "";
-  // Mantém como string para input number
   return String(v);
 };
 
@@ -195,8 +193,13 @@ export default function Catalogo() {
   }, [searchTerm]);
 
   useEffect(() => {
-    const isHidden = localStorage.getItem("hide_catalogo_info");
-    if (isHidden === "true") setShowInfo(false);
+    // Proteção contra erro de LocalStorage (Evita tela branca se estiver bloqueado)
+    try {
+      const isHidden = localStorage.getItem("hide_catalogo_info");
+      if (isHidden === "true") setShowInfo(false);
+    } catch (e) {
+      console.warn("LocalStorage indisponível", e);
+    }
 
     fetchProducts();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -204,12 +207,16 @@ export default function Catalogo() {
 
   const handleCloseInfo = () => {
     setShowInfo(false);
-    localStorage.setItem("hide_catalogo_info", "true");
+    try {
+      localStorage.setItem("hide_catalogo_info", "true");
+    } catch {}
   };
 
   const handleShowInfo = () => {
     setShowInfo(true);
-    localStorage.removeItem("hide_catalogo_info");
+    try {
+      localStorage.removeItem("hide_catalogo_info");
+    } catch {}
   };
 
   const fetchProducts = async () => {
@@ -434,7 +441,7 @@ export default function Catalogo() {
             </Button>
           </DialogTrigger>
 
-          {/* ✅ Dialog responsivo no mobile */}
+          {/* Dialog responsivo no mobile */}
           <DialogContent className="w-[95vw] sm:w-full max-w-lg sm:max-w-2xl max-h-[90vh] overflow-y-auto p-4 sm:p-6">
             <DialogHeader>
               <DialogTitle>{editingProduct ? "Editar Produto" : "Cadastrar Produto"}</DialogTitle>
@@ -463,8 +470,6 @@ export default function Catalogo() {
                         </FormItem>
                       )}
                     />
-
-                    {/* SKU removido da interface (gera automático no submit) */}
 
                     <FormField
                       control={form.control}
@@ -529,7 +534,6 @@ export default function Catalogo() {
                     <Percent className="h-4 w-4" /> Precificação
                   </h3>
 
-                  {/* ✅ no mobile vira 2 colunas, no desktop 3 */}
                   <div className="grid gap-3 sm:gap-4 grid-cols-2 sm:grid-cols-3">
                     <FormField
                       control={form.control}
@@ -575,7 +579,6 @@ export default function Catalogo() {
                       )}
                     />
 
-                    {/* ✅ margem ocupa 2 colunas no mobile */}
                     <div className="space-y-2 col-span-2 sm:col-span-1">
                       <Label>Margem</Label>
                       <div
@@ -599,7 +602,7 @@ export default function Catalogo() {
                 {/* Estoque e Tipo */}
                 <div className="space-y-3 sm:space-y-4">
                   <h3 className="font-semibold text-foreground flex items-center gap-2">
-                    <BoxIcon className="h-4 w-4" /> Estoque & Tipo
+                    <Box className="h-4 w-4" /> Estoque & Tipo
                   </h3>
 
                   <div className="grid gap-3 sm:gap-4 sm:grid-cols-2">
