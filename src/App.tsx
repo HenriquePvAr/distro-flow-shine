@@ -18,7 +18,8 @@ import Despesas from "./pages/Despesas";
 import Performance from "./pages/Performance";
 import Fechamento from "./pages/Fechamento";
 import Funcionarios from "./pages/Funcionarios";
-import Assinatura from "./pages/Assinatura"; // ✅ NOVO
+import Assinatura from "./pages/Assinatura";
+import AdminMaster from "./pages/AdminMaster"; // ✅ [NOVO] Importação do Painel Master
 import Login from "./pages/Login";
 import Cadastro from "./pages/Cadastro";
 import RedefinirSenha from "./pages/RedefinirSenha";
@@ -131,7 +132,7 @@ const App = () => (
               }
             />
 
-            {/* --- Rotas de Administrador --- */}
+            {/* --- Rotas de Administrador da Empresa --- */}
             <Route
               path="/funcionarios"
               element={
@@ -143,7 +144,6 @@ const App = () => (
               }
             />
 
-            {/* ✅ NOVA ROTA (Admin): Assinatura / Pagamento */}
             <Route
               path="/assinatura"
               element={
@@ -151,6 +151,17 @@ const App = () => (
                   <AppLayout>
                     <Assinatura />
                   </AppLayout>
+                </ProtectedRoute>
+              }
+            />
+
+            {/* ✅ [NOVO] Rota Secreta do Super Admin */}
+            {/* Não usamos o AppLayout aqui para ter mais espaço na tela */}
+            <Route
+              path="/admin-master"
+              element={
+                <ProtectedRoute>
+                   <AdminMaster />
                 </ProtectedRoute>
               }
             />

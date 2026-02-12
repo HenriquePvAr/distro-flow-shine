@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState, ReactNode } from "react";
+import { createContext, useContext, useEffect, useMemo, useState, ReactNode } from "react";
 import { User, Session } from "@supabase/supabase-js";
 import { supabase } from "@/integrations/supabase/client";
 
@@ -12,6 +12,23 @@ export interface UserData {
   role: AppRole;
   phone?: string | null;
   email?: string;
+  company_id?: string | null;
+}
+
+// Assinatura
+export type SubscriptionStatus =
+  | "active"
+  | "past_due"
+  | "blocked_manual"
+  | "inactive"
+  | "cancelled";
+
+export interface SubscriptionData {
+  company_id: string;
+  status: SubscriptionStatus;
+  current_period_end: string | null;
+  manual_override?: boolean | null;
+  blocked_reason?: string | null;
 }
 
 interface AuthContextType {
@@ -19,103 +36,196 @@ interface AuthContextType {
   user: User | null;
   userData: UserData | null;
   role: AppRole | null;
+
   loading: boolean;
+
+  subscription: SubscriptionData | null;
+  subscriptionLoading: boolean;
+
+  // ✅ regra final
+  canUseApp: boolean;
+
+  // ✅ bypass
+  isSuperAdmin: boolean;
+
   isAdmin: boolean;
+
   signIn: (email: string, password: string) => Promise<{ error: any }>;
-  signUp: (email: string, password: string, data: { name: string; phone?: string; role?: AppRole }) => Promise<{ error: any, data?: any }>;
+  signUp: (
+    email: string,
+    password: string,
+    data: { name: string; phone?: string; role?: AppRole }
+  ) => Promise<{ error: any; data?: any }>;
   signOut: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
+// ✅ SEU EMAIL MESTRE
+const SUPER_ADMIN_EMAIL = "henriquepaiva2808@gmail.com";
+
+// ✅ Regra oficial: quando o app deve ser liberado?
+function calcCanUseApp(sub: SubscriptionData | null): boolean {
+  // 🔒 se não existe assinatura -> BLOQUEIA (pra só deixar /assinatura)
+  if (!sub) return false;
+
+  if (sub.status !== "active") return false;
+  if (!sub.current_period_end) return false;
+
+  const end = new Date(sub.current_period_end).getTime();
+  return end >= Date.now();
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
   const [user, setUser] = useState<User | null>(null);
+
   const [userData, setUserData] = useState<UserData | null>(null);
+
   const [loading, setLoading] = useState(true);
 
-  // Função para buscar dados do perfil no banco
-  const fetchUserData = async (userId: string) => {
+  const [subscription, setSubscription] = useState<SubscriptionData | null>(null);
+  const [subscriptionLoading, setSubscriptionLoading] = useState(true);
+
+  const isSuperAdmin = useMemo(() => {
+    const email = user?.email?.trim().toLowerCase();
+    return email === SUPER_ADMIN_EMAIL.trim().toLowerCase();
+  }, [user?.email]);
+
+  const canUseApp = useMemo(() => {
+    // ✅ super admin nunca bloqueia
+    if (isSuperAdmin) return true;
+    return calcCanUseApp(subscription);
+  }, [subscription, isSuperAdmin]);
+
+  // Busca assinatura da empresa
+  const fetchSubscription = async (companyId: string) => {
+    setSubscriptionLoading(true);
+    try {
+      const { data, error } = await supabase
+        .from("company_subscriptions")
+        .select("company_id, status, current_period_end, manual_override, blocked_reason")
+        .eq("company_id", companyId)
+        .maybeSingle();
+
+      if (error) {
+        console.error("Erro ao buscar assinatura:", error);
+        setSubscription(null); // vai bloquear (canUseApp=false) para não liberar indevidamente
+        return;
+      }
+
+      setSubscription((data ?? null) as SubscriptionData | null);
+    } catch (e) {
+      console.error("Erro inesperado ao buscar assinatura:", e);
+      setSubscription(null);
+    } finally {
+      setSubscriptionLoading(false);
+    }
+  };
+
+  // Busca dados do perfil + assinatura
+  const fetchUserData = async (userId: string, userEmail?: string) => {
+    setLoading(true);
+    setSubscriptionLoading(true);
+
     try {
       const { data, error } = await supabase
         .from("profiles")
-        .select("*")
+        .select("id, name, role, phone, company_id")
         .eq("id", userId)
         .maybeSingle();
 
       if (error) {
         console.error("Erro ao buscar perfil:", error);
+        setUserData(null);
+        setSubscription(null); // sem profile -> bloqueia por segurança
         return;
       }
 
-      if (data) {
-        // Trata como any para evitar erros de tipagem do TypeScript com campos que podem não estar gerados ainda
-        const profile = data as any;
-
-        setUserData({
-          id: profile.id,
-          name: profile.name || "Usuário",
-          role: (profile.role as AppRole) || "vendedor", 
-          phone: profile.phone || null,
-          email: user?.email
-        });
+      if (!data) {
+        setUserData(null);
+        setSubscription(null);
+        return;
       }
-    } catch (error) {
-      console.error("Erro inesperado ao buscar perfil:", error);
+
+      const profile = data as any;
+
+      const merged: UserData = {
+        id: profile.id,
+        name: profile.name || "Usuário",
+        role: (profile.role as AppRole) || "vendedor",
+        phone: profile.phone || null,
+        email: userEmail,
+        company_id: profile.company_id ?? null,
+      };
+
+      setUserData(merged);
+
+      if (merged.company_id) {
+        await fetchSubscription(merged.company_id);
+      } else {
+        // sem company_id -> bloqueia
+        setSubscription(null);
+        setSubscriptionLoading(false);
+      }
+    } catch (e) {
+      console.error("Erro inesperado ao buscar perfil:", e);
+      setUserData(null);
+      setSubscription(null);
+      setSubscriptionLoading(false);
     } finally {
       setLoading(false);
     }
   };
 
   useEffect(() => {
-    // 1. Verifica sessão atual ao carregar a página
     const initAuth = async () => {
-        setLoading(true);
-        const { data: { session } } = await supabase.auth.getSession();
-        
-        setSession(session);
-        setUser(session?.user ?? null);
-        
-        if (session?.user) {
-            await fetchUserData(session.user.id);
-        } else {
-            setLoading(false);
-        }
+      setLoading(true);
+      setSubscriptionLoading(true);
+
+      const { data } = await supabase.auth.getSession();
+      const sess = data.session ?? null;
+
+      setSession(sess);
+      setUser(sess?.user ?? null);
+
+      if (sess?.user) {
+        await fetchUserData(sess.user.id, sess.user.email ?? undefined);
+      } else {
+        setUserData(null);
+        setSubscription(null);
+        setSubscriptionLoading(false);
+        setLoading(false);
+      }
     };
 
     initAuth();
 
-    // 2. Escuta mudanças na autenticação (login, logout, refresh)
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      async (_event, session) => {
-        setSession(session);
-        setUser(session?.user ?? null);
-        
-        if (session?.user) {
-          // Se acabou de logar, busca os dados do perfil atualizados
-          await fetchUserData(session.user.id);
-        } else {
-          setUserData(null);
-          setLoading(false);
-        }
-      }
-    );
+    const { data: listener } = supabase.auth.onAuthStateChange(async (_event, sess) => {
+      setSession(sess);
+      setUser(sess?.user ?? null);
 
-    return () => subscription.unsubscribe();
+      if (sess?.user) {
+        await fetchUserData(sess.user.id, sess.user.email ?? undefined);
+      } else {
+        setUserData(null);
+        setSubscription(null);
+        setSubscriptionLoading(false);
+        setLoading(false);
+      }
+    });
+
+    return () => listener.subscription.unsubscribe();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const signIn = async (email: string, password: string) => {
     try {
-      const { data, error } = await supabase.auth.signInWithPassword({
-        email,
-        password,
-      });
-
+      const { data, error } = await supabase.auth.signInWithPassword({ email, password });
       if (error) throw error;
 
-      // Força busca dos dados após login bem sucedido
       if (data.user) {
-          await fetchUserData(data.user.id);
+        await fetchUserData(data.user.id, data.user.email ?? undefined);
       }
 
       return { error: null };
@@ -130,23 +240,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     data: { name: string; phone?: string; role?: AppRole }
   ) => {
     try {
-        const { data: authData, error } = await supabase.auth.signUp({
-            email,
-            password,
-            options: {
-                data: {
-                    name: data.name,
-                    phone: data.phone,
-                    role: data.role // Passa o cargo nos metadados também
-                },
-            },
-        });
+      const { data: authData, error } = await supabase.auth.signUp({
+        email,
+        password,
+        options: {
+          data: {
+            name: data.name,
+            phone: data.phone,
+            role: data.role,
+          },
+        },
+      });
 
-        if (error) throw error;
-        
-        return { error: null, data: authData };
+      if (error) throw error;
+      return { error: null, data: authData };
     } catch (error: any) {
-        return { error };
+      return { error };
     }
   };
 
@@ -155,27 +264,34 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setSession(null);
     setUser(null);
     setUserData(null);
-    // Redirecionamento corrigido para /login (antes estava /auth)
-    window.location.href = "/login"; 
+    setSubscription(null);
+    setSubscriptionLoading(false);
+    setLoading(false);
+    window.location.href = "/login";
   };
 
-  const value = {
+  const value: AuthContextType = {
     session,
     user,
     userData,
-    role: userData?.role ?? null, 
+    role: userData?.role ?? null,
+
     loading,
+
+    subscription,
+    subscriptionLoading,
+    canUseApp,
+
+    isSuperAdmin,
+
     isAdmin: userData?.role === "admin",
+
     signIn,
     signUp,
     signOut,
   };
 
-  return (
-    <AuthContext.Provider value={value}>
-      {!loading && children}
-    </AuthContext.Provider>
-  );
+  return <AuthContext.Provider value={value}>{!loading && children}</AuthContext.Provider>;
 }
 
 export function useAuth() {
