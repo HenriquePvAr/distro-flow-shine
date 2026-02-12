@@ -78,19 +78,6 @@ function calcNewEndDate(currentEnd: string | null, addDays: number) {
   return out.toISOString();
 }
 
-// ✅ extrai mensagem do erro da Edge Function (quando ela retorna JSON {error:"..."})
-function extractFunctionsErrorMessage(error: any): string {
-  try {
-    const body = error?.context?.body;
-    if (body) {
-      const parsed = typeof body === "string" ? JSON.parse(body) : body;
-      if (parsed?.error) return parsed.error;
-      return typeof body === "string" ? body : JSON.stringify(body);
-    }
-  } catch {}
-  return error?.message || "Edge Function returned a non-2xx status code";
-}
-
 export default function AdminMaster() {
   const [loading, setLoading] = useState(true);
   const [companies, setCompanies] = useState<CompanyData[]>([]);
@@ -163,7 +150,7 @@ export default function AdminMaster() {
     setLoading(false);
   }
 
-  // ✅ logs completos ao criar empresa
+  // ✅ LÓGICA DE CRIAÇÃO OTIMIZADA
   async function handleCreateCompany() {
     if (!newCompany.name || !newCompany.email || !newCompany.password) {
       toast({
@@ -176,17 +163,6 @@ export default function AdminMaster() {
 
     setCreating(true);
     try {
-      const { data: sessionData, error: sessErr } =
-        await supabase.auth.getSession();
-      if (sessErr) throw sessErr;
-
-      const token = sessionData.session?.access_token;
-
-      console.log("[CreateCompany] session exists:", !!sessionData.session);
-      console.log("[CreateCompany] token exists:", !!token);
-
-      if (!token) throw new Error("Sem access_token. Faça logout e login.");
-
       const payload = {
         companyName: newCompany.name,
         adminEmail: newCompany.email,
@@ -194,42 +170,60 @@ export default function AdminMaster() {
         daysGiven: Number(newCompany.days),
       };
 
-      console.log("[CreateCompany] payload:", payload);
+      console.log("[CreateCompany] Enviando payload:", payload);
 
+      // ✅ CHAMADA SIMPLIFICADA
+      // O Supabase JS Client já injeta o token do usuário logado automaticamente.
+      // Não passamos headers manuais para evitar conflito (erro 401).
       const { data, error } = await supabase.functions.invoke(
         "admin-create-tenant",
         {
           body: payload,
-          headers: { Authorization: `Bearer ${token}` },
         }
       );
 
-      console.log("[CreateCompany] returned data:", data);
-      console.log("[CreateCompany] returned error:", error);
-
       if (error) {
-        const msg = extractFunctionsErrorMessage(error);
-        console.error("[CreateCompany] EDGE ERROR FULL:", error);
-        console.error("[CreateCompany] EDGE ERROR MSG:", msg);
+        console.error("[CreateCompany] Invoke Error Raw:", error);
+        
+        let msg = error.message || "Erro desconhecido ao chamar função.";
+        
+        // Tenta extrair a mensagem JSON real da Edge Function
+        if (error.name === 'FunctionsHttpError' && error.context) {
+           try {
+             // O corpo da resposta de erro precisa ser lido assincronamente
+             const errorBody = await error.context.json();
+             console.error("[CreateCompany] Error Body JSON:", errorBody);
+             if (errorBody && errorBody.error) {
+               msg = errorBody.error;
+             }
+           } catch (parseErr) {
+             console.log("Não foi possível ler JSON do erro:", parseErr);
+           }
+        }
+        
         throw new Error(msg);
       }
 
+      // Verificação extra caso a função retorne 200 mas com campo de erro no body (raro, mas possível)
       if ((data as any)?.error) throw new Error((data as any).error);
+
+      console.log("[CreateCompany] Sucesso:", data);
 
       toast({
         title: "Sucesso!",
-        description: `Empresa ${data?.companyId ?? ""} criada. Login: ${newCompany.email}`,
+        description: `Empresa criada! ID: ${data?.companyId ?? ""}`,
         className: "bg-green-600 text-white border-none",
       });
 
       setIsCreateOpen(false);
       setNewCompany({ name: "", email: "", password: "mudar123", days: 30 });
       await fetchCompanies();
+
     } catch (e: any) {
-      console.error("[CreateCompany] ERRO FINAL:", e);
+      console.error("[CreateCompany] CATCH FINAL:", e);
       toast({
         title: "Falha ao criar",
-        description: e?.message || "Verifique o console (F12) para detalhes.",
+        description: e?.message || "Erro inesperado.",
         variant: "destructive",
       });
     } finally {

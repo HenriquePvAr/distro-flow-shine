@@ -2,8 +2,8 @@ import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { BrowserRouter, Routes, Route } from "react-router-dom";
-import { AuthProvider } from "@/hooks/useAuth";
+import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { AuthProvider, useAuth } from "@/hooks/useAuth";
 import { AppLayout } from "@/components/layout/AppLayout";
 import ProtectedRoute from "@/components/ProtectedRoute";
 
@@ -19,13 +19,23 @@ import Performance from "./pages/Performance";
 import Fechamento from "./pages/Fechamento";
 import Funcionarios from "./pages/Funcionarios";
 import Assinatura from "./pages/Assinatura";
-import AdminMaster from "./pages/AdminMaster"; // ✅ [NOVO] Importação do Painel Master
+import AdminMaster from "./pages/AdminMaster";
 import Login from "./pages/Login";
 import Cadastro from "./pages/Cadastro";
 import RedefinirSenha from "./pages/RedefinirSenha";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
+
+/**
+ * Componente para decidir qual página mostrar na rota raiz "/"
+ * Se for admin -> Dashboard
+ * Se for vendedor -> Redireciona para o PDV
+ */
+function HomeRoute() {
+  const { isAdmin } = useAuth();
+  return isAdmin ? <Dashboard /> : <Navigate to="/pdv" replace />;
+}
 
 const App = () => (
   <QueryClientProvider client={queryClient}>
@@ -40,17 +50,18 @@ const App = () => (
             <Route path="/cadastro" element={<Cadastro />} />
             <Route path="/redefinir-senha" element={<RedefinirSenha />} />
 
-            {/* --- Rotas Protegidas (Exige Login) --- */}
+            {/* --- Rotas Protegidas (Exige Login e Assinatura Ativa) --- */}
             <Route
               path="/"
               element={
                 <ProtectedRoute>
                   <AppLayout>
-                    <Dashboard />
+                    <HomeRoute />
                   </AppLayout>
                 </ProtectedRoute>
               }
             />
+            
             <Route
               path="/pdv"
               element={
@@ -61,6 +72,7 @@ const App = () => (
                 </ProtectedRoute>
               }
             />
+            
             <Route
               path="/estoque"
               element={
@@ -71,6 +83,7 @@ const App = () => (
                 </ProtectedRoute>
               }
             />
+            
             <Route
               path="/catalogo"
               element={
@@ -81,6 +94,7 @@ const App = () => (
                 </ProtectedRoute>
               }
             />
+            
             <Route
               path="/clientes"
               element={
@@ -91,6 +105,7 @@ const App = () => (
                 </ProtectedRoute>
               }
             />
+            
             <Route
               path="/historico"
               element={
@@ -101,6 +116,7 @@ const App = () => (
                 </ProtectedRoute>
               }
             />
+            
             <Route
               path="/despesas"
               element={
@@ -111,6 +127,7 @@ const App = () => (
                 </ProtectedRoute>
               }
             />
+            
             <Route
               path="/performance"
               element={
@@ -121,6 +138,7 @@ const App = () => (
                 </ProtectedRoute>
               }
             />
+            
             <Route
               path="/fechamento"
               element={
@@ -155,8 +173,7 @@ const App = () => (
               }
             />
 
-            {/* ✅ [NOVO] Rota Secreta do Super Admin */}
-            {/* Não usamos o AppLayout aqui para ter mais espaço na tela */}
+            {/* --- Rota Secreta do Super Admin --- */}
             <Route
               path="/admin-master"
               element={

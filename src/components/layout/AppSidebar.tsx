@@ -12,7 +12,7 @@ import {
   Trophy,
   Calculator,
   UserCircle,
-  CreditCard, // ✅ NOVO (Assinatura)
+  CreditCard,
 } from "lucide-react";
 import {
   Sidebar,
@@ -34,9 +34,9 @@ export function AppSidebar() {
   const location = useLocation();
   const { signOut, isAdmin, userData } = useAuth();
 
-  // MENU PRINCIPAL
+  // ✅ MENU COMUM (O que Vendedores e Admins veem)
+  // Dashboard removido daqui para não aparecer para vendedores
   const menuItems = [
-    { title: "Dashboard", url: "/", icon: LayoutDashboard },
     { title: "Vendas (PDV)", url: "/pdv", icon: ShoppingCart },
     { title: "Catálogo", url: "/catalogo", icon: BookOpen },
     { title: "Estoque", url: "/estoque", icon: Package },
@@ -44,10 +44,14 @@ export function AppSidebar() {
     { title: "Histórico", url: "/historico", icon: History },
   ];
 
-  // MENU ADMIN
+  // ✅ MENU EXCLUSIVO DE ADMIN
   if (isAdmin) {
+    // 1. Adiciona o Dashboard no INÍCIO da lista
+    menuItems.unshift({ title: "Dashboard", url: "/", icon: LayoutDashboard });
+
+    // 2. Adiciona as ferramentas de gestão no FINAL da lista
     menuItems.push(
-      { title: "Assinatura", url: "/assinatura", icon: CreditCard }, // ⭐ NOVO
+      { title: "Assinatura", url: "/assinatura", icon: CreditCard },
       { title: "Despesas", url: "/despesas", icon: Receipt },
       { title: "Performance", url: "/performance", icon: Trophy },
       { title: "Fechamento", url: "/fechamento", icon: Calculator },
@@ -55,6 +59,7 @@ export function AppSidebar() {
     );
   }
 
+  // Lógica para iniciais e nome do usuário
   const initials =
     userData?.name
       ?.split(" ")
@@ -111,7 +116,7 @@ export function AppSidebar() {
         </div>
       </SidebarHeader>
 
-      {/* MENU */}
+      {/* MENU DINÂMICO */}
       <SidebarContent>
         <SidebarGroup>
           <SidebarGroupLabel>Menu Principal</SidebarGroupLabel>

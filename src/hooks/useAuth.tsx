@@ -42,12 +42,8 @@ interface AuthContextType {
   subscription: SubscriptionData | null;
   subscriptionLoading: boolean;
 
-  // ✅ regra final
   canUseApp: boolean;
-
-  // ✅ bypass
   isSuperAdmin: boolean;
-
   isAdmin: boolean;
 
   signIn: (email: string, password: string) => Promise<{ error: any }>;
@@ -64,11 +60,8 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 // ✅ SEU EMAIL MESTRE
 const SUPER_ADMIN_EMAIL = "henriquepaiva2808@gmail.com";
 
-// ✅ Regra oficial: quando o app deve ser liberado?
 function calcCanUseApp(sub: SubscriptionData | null): boolean {
-  // 🔒 se não existe assinatura -> BLOQUEIA (pra só deixar /assinatura)
   if (!sub) return false;
-
   if (sub.status !== "active") return false;
   if (!sub.current_period_end) return false;
 
@@ -79,9 +72,8 @@ function calcCanUseApp(sub: SubscriptionData | null): boolean {
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
   const [user, setUser] = useState<User | null>(null);
-
   const [userData, setUserData] = useState<UserData | null>(null);
-
+  
   const [loading, setLoading] = useState(true);
 
   const [subscription, setSubscription] = useState<SubscriptionData | null>(null);
@@ -93,7 +85,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [user?.email]);
 
   const canUseApp = useMemo(() => {
-    // ✅ super admin nunca bloqueia
     if (isSuperAdmin) return true;
     return calcCanUseApp(subscription);
   }, [subscription, isSuperAdmin]);
@@ -110,15 +101,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       if (error) {
         console.error("Erro ao buscar assinatura:", error);
-        setSubscription(null); // vai bloquear (canUseApp=false) para não liberar indevidamente
+        setSubscription(null);
         return;
       }
-
       setSubscription((data ?? null) as SubscriptionData | null);
     } catch (e) {
       console.error("Erro inesperado ao buscar assinatura:", e);
       setSubscription(null);
     } finally {
+      // ✅ GARANTE QUE O LOADING DA ASSINATURA TERMINA
       setSubscriptionLoading(false);
     }
   };
@@ -135,16 +126,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         .eq("id", userId)
         .maybeSingle();
 
-      if (error) {
-        console.error("Erro ao buscar perfil:", error);
-        setUserData(null);
-        setSubscription(null); // sem profile -> bloqueia por segurança
-        return;
-      }
-
-      if (!data) {
+      // 🔴 SE DER ERRO OU NÃO ACHAR PERFIL (USUÁRIO DELETADO)
+      if (error || !data) {
+        console.warn("Perfil não encontrado (usuário pode ter sido deletado). Fazendo logout...");
+        
+        // Limpa tudo para evitar loop e tela branca
         setUserData(null);
         setSubscription(null);
+        setSubscriptionLoading(false); // ✅ CORREÇÃO CRUCIAL
+        
+        // Força logout se o perfil não existe mais
+        await supabase.auth.signOut();
+        setSession(null);
+        setUser(null);
         return;
       }
 
@@ -164,7 +158,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (merged.company_id) {
         await fetchSubscription(merged.company_id);
       } else {
-        // sem company_id -> bloqueia
         setSubscription(null);
         setSubscriptionLoading(false);
       }
@@ -223,11 +216,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       const { data, error } = await supabase.auth.signInWithPassword({ email, password });
       if (error) throw error;
-
       if (data.user) {
         await fetchUserData(data.user.id, data.user.email ?? undefined);
       }
-
       return { error: null };
     } catch (error: any) {
       return { error };
@@ -251,7 +242,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           },
         },
       });
-
       if (error) throw error;
       return { error: null, data: authData };
     } catch (error: any) {
@@ -275,17 +265,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     user,
     userData,
     role: userData?.role ?? null,
-
     loading,
-
     subscription,
     subscriptionLoading,
     canUseApp,
-
     isSuperAdmin,
-
     isAdmin: userData?.role === "admin",
-
     signIn,
     signUp,
     signOut,

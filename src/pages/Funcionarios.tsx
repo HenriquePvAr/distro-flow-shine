@@ -14,7 +14,7 @@ import {
   UserCog,
   AlertTriangle,
 } from "lucide-react";
-import { useAuth, AppRole } from "@/hooks/useAuth"; // Removido Profile que causava erro
+import { useAuth, AppRole } from "@/hooks/useAuth"; 
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -57,6 +57,10 @@ import {
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
 
+// ✅ ID FIXO DA EMPRESA PRINCIPAL
+// Garante que todo funcionário criado aqui entre na empresa correta
+const MAIN_COMPANY_ID = "3dc76d55-2ea8-48da-9dbf-ffae7ede260d";
+
 interface Employee {
   id: string;
   name: string;
@@ -98,7 +102,9 @@ export default function Funcionarios() {
   const fetchEmployees = async () => {
     setIsLoading(true);
     try {
-      // 1. Busca perfis (removemos o filtro .eq('active') do banco para evitar crash se a coluna não existir)
+      // 1. Busca perfis 
+      // O RLS do banco já deve filtrar apenas os da empresa do usuário logado,
+      // mas como garantimos que todos estão na mesma empresa, vai funcionar.
       const { data: profiles, error: profilesError } = await (
         supabase.from("profiles") as any
       )
@@ -107,13 +113,12 @@ export default function Funcionarios() {
 
       if (profilesError) throw profilesError;
 
-      // 2. Busca cargos (com tratamento de erro silencioso para não travar a tela)
+      // 2. Busca cargos 
       const { data: roles } = await supabase.from("user_roles").select("*");
 
-      // 3. Formata e filtra no Javascript (mais seguro)
+      // 3. Formata e filtra 
       const formatted: Employee[] = (profiles || [])
         .map((p: any) => {
-          // Tenta achar role na tabela de roles OU usa a do perfil
           const roleEntry = roles?.find((r: any) => r.user_id === p.id);
           const finalRole =
             (roleEntry?.role as AppRole) || (p.role as AppRole) || "vendedor";
@@ -126,7 +131,6 @@ export default function Funcionarios() {
             active: p.active,
           };
         })
-        // Filtra aqui: mostra se active for true ou se active for nulo/undefined (para compatibilidade)
         .filter((p) => p.active !== false);
 
       setEmployees(formatted);
@@ -148,11 +152,17 @@ export default function Funcionarios() {
       newEmployee.password.trim() === "" ? "123456" : newEmployee.password;
 
     try {
+      // 1. Cria usuário no Auth do Supabase
       const { data: authData, error: authError } = await supabase.auth.signUp({
         email: newEmployee.email,
         password: finalPassword,
         options: {
-          data: { name: newEmployee.name, phone: newEmployee.phone },
+          data: { 
+            name: newEmployee.name, 
+            phone: newEmployee.phone,
+            // ✅ FORÇA EMPRESA NOS METADADOS (Trigger do banco usa isso)
+            company_id: MAIN_COMPANY_ID 
+          },
         },
       });
 
@@ -167,18 +177,20 @@ export default function Funcionarios() {
       const userId = authData.user?.id;
 
       if (userId) {
+        // Pequeno delay para garantir que a trigger do banco rodou (se houver)
         await new Promise((resolve) => setTimeout(resolve, 1500));
 
-        // Cria perfil
+        // 2. Garante/Atualiza o perfil com o ID da empresa correto
         await (supabase.from("profiles") as any).upsert({
           id: userId,
           name: newEmployee.name,
           phone: newEmployee.phone,
           role: newEmployee.role,
           active: true,
+          company_id: MAIN_COMPANY_ID // <--- LINHA CRUCIAL
         });
 
-        // Cria role
+        // 3. Cria a role (permissão)
         await supabase
             .from("user_roles")
             .upsert(
@@ -186,6 +198,7 @@ export default function Funcionarios() {
             { onConflict: "user_id" }
             );
 
+        // 4. Se for vendedor, adiciona na tabela sellers (para comissões, etc)
         if (newEmployee.role === "vendedor") {
           await (supabase.from("sellers") as any).upsert(
             { name: newEmployee.name },
@@ -228,8 +241,6 @@ export default function Funcionarios() {
     if (!editData) return;
 
     try {
-      // 1. Atualiza a tabela PROFILES
-      // Usamos 'as any' porque seu types.ts local pode não ter 'role' ainda
       const { error: profileError } = await (supabase.from("profiles") as any)
         .update({
           name: editData.name,
@@ -240,7 +251,6 @@ export default function Funcionarios() {
 
       if (profileError) throw profileError;
 
-      // 2. Atualiza a tabela USER_ROLES (AQUI QUE ESTAVA FALHANDO SILENCIOSAMENTE)
       const { error: roleError } = await supabase
         .from("user_roles")
         .upsert(
@@ -248,13 +258,12 @@ export default function Funcionarios() {
           { onConflict: "user_id" }
         );
 
-      if (roleError) throw roleError; // Agora pegamos o erro se não tiver permissão!
+      if (roleError) throw roleError;
 
       toast.success("Cargo atualizado com sucesso!");
       setEditingId(null);
       setEditData(null);
       
-      // Recarrega a lista para confirmar visualmente
       await fetchEmployees(); 
       
     } catch (error: any) {
@@ -268,6 +277,7 @@ export default function Funcionarios() {
     if (!employeeToDelete) return;
 
     try {
+      // Chama RPC para arquivar (mudar email para liberar o original)
       const { error: rpcError } = await (supabase.rpc as any)("archive_user", {
         target_user_id: employeeToDelete.id,
       });

@@ -7,20 +7,39 @@ import { Loader2, Mail, Lock, User, ArrowLeft, Eye, EyeOff } from "lucide-react"
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
-import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardFooter,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import {
+  Form,
+  FormControl,
+  FormField,
+  FormItem,
+  FormLabel,
+  FormMessage,
+} from "@/components/ui/form";
 import { toast } from "sonner";
 
-// Esquema de validação (Garante que os dados essenciais estão certos)
-const cadastroSchema = z.object({
-  name: z.string().min(3, "Nome deve ter no mínimo 3 caracteres"),
-  email: z.string().email("E-mail inválido"),
-  password: z.string().min(6, "A senha deve ter no mínimo 6 caracteres"),
-  confirmPassword: z.string(),
-}).refine((data) => data.password === data.confirmPassword, {
-  message: "As senhas não coincidem",
-  path: ["confirmPassword"],
-});
+// ✅ ID da empresa padrão
+const DEFAULT_COMPANY_ID = "3dc76d55-2ea8-48da-9dbf-ffae7ede260d";
+
+// Esquema de validação
+const cadastroSchema = z
+  .object({
+    name: z.string().min(3, "Nome deve ter no mínimo 3 caracteres"),
+    email: z.string().email("E-mail inválido"),
+    password: z.string().min(6, "A senha deve ter no mínimo 6 caracteres"),
+    confirmPassword: z.string(),
+  })
+  .refine((data) => data.password === data.confirmPassword, {
+    message: "As senhas não coincidem",
+    path: ["confirmPassword"],
+  });
 
 type CadastroFormData = z.infer<typeof cadastroSchema>;
 
@@ -41,35 +60,48 @@ export default function Cadastro() {
 
   const onSubmit = async (data: CadastroFormData) => {
     setIsLoading(true);
+
     try {
-      // 1. Cria o usuário no Supabase
+      // ✅ evita signup com sessão velha presa
+      // (se você quiser manter sessão, pode remover)
+      await supabase.auth.signOut();
+
+      const email = data.email.trim().toLowerCase();
+
+      const payload = {
+        name: data.name.trim(),
+        company_id: DEFAULT_COMPANY_ID, // ✅ garante vínculo na empresa padrão
+        role: "vendedor", // ✅ opcional
+      };
+
+      console.log("[Cadastro] payload metadata:", payload);
+
       const { data: authData, error } = await supabase.auth.signUp({
-        email: data.email,
+        email,
         password: data.password,
         options: {
-          data: {
-            name: data.name,
-            // Cargo e Comissão são definidos automaticamente pelo banco como padrão
-          },
+          data: payload,
         },
       });
 
+      console.log("[Cadastro] returned authData:", authData);
+      console.log("[Cadastro] returned error:", error);
+
       if (error) throw error;
 
-      // 2. Verifica se logou direto ou precisa confirmar email
+      // Se logou direto ou precisa confirmar email
       if (authData.session) {
         toast.success("Conta criada com sucesso!");
         navigate("/");
       } else {
-        toast.success("Cadastro realizado!", { 
-          description: "Se necessário, verifique seu e-mail." 
+        toast.success("Cadastro realizado!", {
+          description: "Se necessário, verifique seu e-mail para confirmar.",
         });
         navigate("/login");
       }
-
     } catch (error: any) {
-      console.error("Erro no cadastro:", error);
-      toast.error(error.message || "Erro ao criar conta. Tente novamente.");
+      console.error("[Cadastro] Erro no cadastro:", error);
+      toast.error(error?.message || "Erro ao criar conta. Tente novamente.");
     } finally {
       setIsLoading(false);
     }
@@ -80,15 +112,20 @@ export default function Cadastro() {
       <Card className="w-full max-w-md shadow-lg border-0 sm:border">
         <CardHeader className="space-y-1">
           <div className="flex items-center mb-4">
-            <Button variant="ghost" size="sm" className="p-0 h-auto hover:bg-transparent text-muted-foreground" onClick={() => navigate("/login")}>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="p-0 h-auto hover:bg-transparent text-muted-foreground"
+              onClick={() => navigate("/login")}
+            >
               <ArrowLeft className="mr-2 h-4 w-4" />
               Voltar
             </Button>
           </div>
-          
-          {/* LOGO AQUI */}
+
+          {/* LOGO */}
           <div className="mx-auto w-24 h-24 mb-2 flex items-center justify-center">
-             <img src="/logo.png" alt="Logo" className="w-full h-full object-contain" />
+            <img src="/logo.png" alt="Logo" className="w-full h-full object-contain" />
           </div>
 
           <CardTitle className="text-2xl font-bold text-center">Crie sua conta</CardTitle>
@@ -96,10 +133,10 @@ export default function Cadastro() {
             Preencha os dados essenciais para começar
           </CardDescription>
         </CardHeader>
+
         <CardContent>
           <Form {...form}>
             <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
-              
               {/* Nome */}
               <FormField
                 control={form.control}
@@ -117,7 +154,7 @@ export default function Cadastro() {
                   </FormItem>
                 )}
               />
-              
+
               {/* Email */}
               <FormField
                 control={form.control}
@@ -146,11 +183,11 @@ export default function Cadastro() {
                     <FormControl>
                       <div className="relative">
                         <Lock className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
-                        <Input 
-                          type={showPassword ? "text" : "password"} 
-                          className="pl-9 pr-10 h-11" 
-                          placeholder="******" 
-                          {...field} 
+                        <Input
+                          type={showPassword ? "text" : "password"}
+                          className="pl-9 pr-10 h-11"
+                          placeholder="******"
+                          {...field}
                         />
                         <button
                           type="button"
@@ -176,11 +213,11 @@ export default function Cadastro() {
                     <FormControl>
                       <div className="relative">
                         <Lock className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
-                        <Input 
-                          type={showPassword ? "text" : "password"} 
-                          className="pl-9 h-11" 
-                          placeholder="******" 
-                          {...field} 
+                        <Input
+                          type={showPassword ? "text" : "password"}
+                          className="pl-9 h-11"
+                          placeholder="******"
+                          {...field}
                         />
                       </div>
                     </FormControl>
@@ -202,6 +239,7 @@ export default function Cadastro() {
             </form>
           </Form>
         </CardContent>
+
         <CardFooter className="flex justify-center pb-8">
           <div className="text-sm text-muted-foreground">
             Já tem uma conta?{" "}
