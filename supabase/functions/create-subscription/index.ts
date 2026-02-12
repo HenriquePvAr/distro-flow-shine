@@ -1,180 +1,141 @@
-// supabase/functions/create-subscription/index.ts
-import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
+import { serve } from "https://deno.land/std@0.168.0/http/server.ts"
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2"
 
-const ASAAS_TOKEN = Deno.env.get("ASAAS_ACCESS_TOKEN");
-const ASAAS_URL = "https://api.asaas.com/v3";
-
-// ✅ CORS
 const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers":
-    "authorization, x-client-info, apikey, content-type",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-};
-
-function json(data: unknown, status = 200) {
-  return new Response(JSON.stringify(data), {
-    status,
-    headers: { ...corsHeaders, "Content-Type": "application/json" },
-  });
-}
-
-function addDaysYMD(days: number) {
-  const d = new Date();
-  d.setDate(d.getDate() + days);
-  const yyyy = d.getFullYear();
-  const mm = String(d.getMonth() + 1).padStart(2, "0");
-  const dd = String(d.getDate()).padStart(2, "0");
-  return `${yyyy}-${mm}-${dd}`;
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
 serve(async (req) => {
-  // ✅ Preflight
-  if (req.method === "OPTIONS") {
-    return new Response("ok", { headers: corsHeaders });
+  // 1. Handle CORS preflight request
+  if (req.method === 'OPTIONS') {
+    return new Response(null, { headers: corsHeaders })
   }
 
   try {
-    if (req.method !== "POST") {
-      return json({ error: "Use POST" }, 405);
+    // Recebe os dados do Front-end
+    const { companyId, plan, price, cpfCnpj } = await req.json()
+    
+    // Pega as chaves do ambiente
+    const ASAAS_API_KEY = Deno.env.get('ASAAS_ACCESS_TOKEN')
+    const SUPABASE_URL = Deno.env.get('SUPABASE_URL')
+    const SUPABASE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')
+
+    // Validações Básicas
+    if (!ASAAS_API_KEY || !SUPABASE_URL || !SUPABASE_KEY) {
+      throw new Error('Chaves de API (Asaas ou Supabase) não configuradas no servidor.')
+    }
+    if (!companyId) throw new Error('companyId é obrigatório')
+    if (!cpfCnpj) throw new Error('CPF/CNPJ é obrigatório para emitir cobrança')
+
+    console.log(`Processando assinatura. Empresa: ${companyId}, CPF: ${cpfCnpj}`)
+
+    // 2. SALVAR O CPF NO BANCO DE DADOS (Supabase)
+    // Isso garante que o CPF fica salvo para a próxima vez
+    const supabase = createClient(SUPABASE_URL, SUPABASE_KEY)
+    
+    const { error: dbError } = await supabase
+      .from('company_subscriptions')
+      .update({ cpf_cnpj: cpfCnpj }) // Salva o CPF na coluna nova
+      .eq('company_id', companyId)
+
+    if (dbError) {
+      console.error('Erro ao salvar CPF no banco:', dbError)
+      // Não vamos travar o processo se der erro aqui, mas logamos o aviso
+    } else {
+      console.log('CPF salvo no banco com sucesso.')
     }
 
-    if (!ASAAS_TOKEN) {
-      return json(
-        {
-          error:
-            "Missing secret ASAAS_ACCESS_TOKEN. Configure em: Supabase Dashboard > Edge Functions > Secrets",
-        },
-        500
-      );
+    // 3. COMUNICAÇÃO COM O ASAAS
+    const headers = {
+      'access_token': ASAAS_API_KEY,
+      'Content-Type': 'application/json'
     }
 
-    // Body
-    const body = await req.json().catch(() => null);
-    const companyId = body?.companyId;
-    const price = body?.price;
-    const cycle = String(body?.cycle ?? "MONTHLY");
+    // 3.1 Buscar cliente existente
+    const searchResponse = await fetch(
+      `https://www.asaas.com/api/v3/customers?externalReference=${companyId}`,
+      { headers }
+    )
+    const searchData = await searchResponse.json()
+    let customerId = searchData.data?.[0]?.id
 
-    if (!companyId) return json({ error: "companyId é obrigatório" }, 400);
-
-    const value = Number(price ?? 120);
-    if (!Number.isFinite(value) || value <= 0) {
-      return json({ error: "price inválido" }, 400);
-    }
-
-    // ✅ Header correto do Asaas: access_token (não Bearer)
-    const asaasHeaders: HeadersInit = {
-      "Content-Type": "application/json",
-      access_token: ASAAS_TOKEN,
-    };
-
-    // 1) Buscar customer por externalReference
-    const searchRes = await fetch(
-      `${ASAAS_URL}/customers?externalReference=${encodeURIComponent(
-        String(companyId)
-      )}`,
-      { headers: asaasHeaders }
-    );
-
-    const searchJson = await searchRes.json().catch(() => ({}));
-
-    if (!searchRes.ok) {
-      return json(
-        {
-          error: "Falha ao buscar customer no Asaas",
-          status: searchRes.status,
-          details: searchJson,
-        },
-        400
-      );
-    }
-
-    let customerId: string | null = searchJson?.data?.[0]?.id ?? null;
-
-    // 2) Criar customer se não existir
+    // 3.2 Criar ou Atualizar Cliente
     if (!customerId) {
-      const customerRes = await fetch(`${ASAAS_URL}/customers`, {
-        method: "POST",
-        headers: asaasHeaders,
+      // --- CRIAR NOVO ---
+      console.log('Criando novo cliente no Asaas...')
+      const createRes = await fetch('https://www.asaas.com/api/v3/customers', {
+        method: 'POST',
+        headers,
         body: JSON.stringify({
           name: `Empresa ${companyId}`,
-          externalReference: String(companyId),
-        }),
-      });
-
-      const customerJson = await customerRes.json().catch(() => ({}));
-
-      if (!customerRes.ok || !customerJson?.id) {
-        return json(
-          {
-            error: "Falha ao criar customer no Asaas",
-            status: customerRes.status,
-            details: customerJson,
-          },
-          400
-        );
+          externalReference: companyId,
+          cpfCnpj: cpfCnpj // Envia o CPF
+        })
+      })
+      const createData = await createRes.json()
+      
+      if (createData.errors) {
+        throw new Error(`Erro Asaas (Criar Cliente): ${createData.errors[0].description}`)
       }
+      customerId = createData.id
 
-      customerId = customerJson.id;
+    } else {
+      // --- ATUALIZAR EXISTENTE ---
+      // Importante: Se o cliente já existia mas estava sem CPF, isso corrige o erro.
+      console.log(`Atualizando cliente ${customerId} com CPF...`)
+      await fetch(`https://www.asaas.com/api/v3/customers/${customerId}`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ cpfCnpj: cpfCnpj })
+      })
     }
 
-    // 3) Criar cobrança (payment link)
-    // ⚠️ Isso cria UMA cobrança. Para recorrência real, depois usamos /subscriptions.
-    const dueDate = addDaysYMD(1); // amanhã
-
-    const paymentRes = await fetch(`${ASAAS_URL}/payments`, {
-      method: "POST",
-      headers: asaasHeaders,
+    // 4. CRIAR A COBRANÇA (Pagamento)
+    const billingType = "UNDEFINED" // Permite Boleto, Pix ou Cartão
+    const dueDate = new Date()
+    dueDate.setDate(dueDate.getDate() + 3) // Vencimento para 3 dias
+    
+    const paymentRes = await fetch('https://www.asaas.com/api/v3/payments', {
+      method: 'POST',
+      headers,
       body: JSON.stringify({
         customer: customerId,
-        billingType: "UNDEFINED", // Asaas deixa o pagador escolher (pix/boleto/cartão) se sua conta permitir
-        value,
-        dueDate,
-        description: `Assinatura ${cycle} - SaaS`,
-        externalReference: String(companyId),
+        billingType: billingType,
+        value: price,
+        dueDate: dueDate.toISOString().split('T')[0],
+        description: `Assinatura ${plan || 'Mensal'} - Sistema Distro`,
+        externalReference: `sub_${companyId}_${Date.now()}` // ID único para essa transação
+      })
+    })
+
+    const paymentData = await paymentRes.json()
+
+    if (paymentData.errors) {
+      console.error('Erro Asaas Pagamento:', paymentData.errors)
+      throw new Error(`Erro Asaas (Pagamento): ${paymentData.errors[0].description}`)
+    }
+
+    // 5. RETORNAR SUCESSO
+    return new Response(
+      JSON.stringify({ 
+        paymentUrl: paymentData.invoiceUrl || paymentData.bankSlipUrl,
+        paymentId: paymentData.id 
       }),
-    });
+      { 
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        status: 200 
+      }
+    )
 
-    const paymentJson = await paymentRes.json().catch(() => ({}));
-
-    if (!paymentRes.ok) {
-      return json(
-        {
-          error: "Falha ao criar cobrança no Asaas",
-          status: paymentRes.status,
-          details: paymentJson,
-        },
-        400
-      );
-    }
-
-    const paymentUrl = paymentJson?.invoiceUrl || paymentJson?.bankSlipUrl || null;
-
-    if (!paymentUrl) {
-      return json(
-        {
-          error: "Cobrança criada mas não veio invoiceUrl/bankSlipUrl",
-          details: paymentJson,
-        },
-        400
-      );
-    }
-
-    return json(
-      {
-        paymentUrl,
-        asaas: {
-          paymentId: paymentJson?.id ?? null,
-          customerId,
-          dueDate,
-        },
-      },
-      200
-    );
-  } catch (err: any) {
-    return json(
-      { error: err?.message || "Erro interno", details: String(err) },
-      500
-    );
+  } catch (error: any) {
+    console.error('Erro Edge Function:', error.message)
+    return new Response(
+      JSON.stringify({ error: error.message }),
+      { 
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        status: 400 // Bad Request
+      }
+    )
   }
-});
+})

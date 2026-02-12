@@ -32,6 +32,8 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Separator } from "@/components/ui/separator";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 
 import { format } from "date-fns";
 import { ptBR } from "date-fns/locale";
@@ -45,6 +47,7 @@ type CompanySubscription = {
   current_period_end: string | null;
   manual_override: boolean;
   blocked_reason: string | null;
+  cpf_cnpj?: string | null; // Adicionado para receber o CPF do banco
 };
 
 const PRICE = 120;
@@ -155,6 +158,9 @@ export default function Assinatura() {
   const [refreshing, setRefreshing] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
+  // Novo estado para controlar o CPF digitado
+  const [cpfCnpj, setCpfCnpj] = useState("");
+
   const [companyId, setCompanyId] = useState<string | null>(null);
   const [sub, setSub] = useState<CompanySubscription | null>(null);
 
@@ -193,15 +199,23 @@ export default function Assinatura() {
 
       setCompanyId(profile.company_id);
 
+      // Busca dados da assinatura + CPF salvo
       const { data: subRows, error: sErr } = await supabase
         .from("company_subscriptions")
-        .select("company_id,plan,status,current_period_end,manual_override,blocked_reason")
+        .select("*, cpf_cnpj") // Incluindo cpf_cnpj na busca
         .eq("company_id", profile.company_id)
         .limit(1);
 
       if (sErr) throw sErr;
 
-      setSub((subRows?.[0] as CompanySubscription) || null);
+      const subscription = (subRows?.[0] as CompanySubscription) || null;
+      setSub(subscription);
+
+      // Se existir CPF salvo no banco, preenche o campo automaticamente
+      if (subscription?.cpf_cnpj) {
+        setCpfCnpj(subscription.cpf_cnpj);
+      }
+
     } catch (e: any) {
       console.error(e);
       setErrorMsg(e?.message || "Erro ao carregar assinatura.");
@@ -213,6 +227,16 @@ export default function Assinatura() {
 
   async function handleSubscribe() {
     if (!companyId) return;
+
+    // Remove caracteres não numéricos para validação
+    const cleanCpf = cpfCnpj.replace(/\D/g, "");
+    
+    // Validação simples de tamanho (CPF 11 ou CNPJ 14)
+    if (cleanCpf.length < 11) {
+      setErrorMsg("Por favor, digite um CPF ou CNPJ válido para emitir a cobrança.");
+      return;
+    }
+
     setErrorMsg(null);
     setCreating(true);
 
@@ -224,15 +248,23 @@ export default function Assinatura() {
       if (!token) throw new Error("Sessão expirada. Faça login novamente.");
 
       const { data, error } = await supabase.functions.invoke("create-subscription", {
-        body: { companyId, price: PRICE, cycle: "MONTHLY" },
+        body: { 
+          companyId, 
+          price: PRICE, 
+          cycle: "MONTHLY",
+          cpfCnpj: cleanCpf // Envia o CPF limpo para a Edge Function
+        },
         headers: { Authorization: `Bearer ${token}` },
       });
 
       if (error) throw error;
+      if (data?.error) throw new Error(data.error); // Trata erro retornado pela API
       if (!data?.paymentUrl) throw new Error("Não foi possível gerar o link de pagamento.");
 
+      // Sucesso: Abre link e recarrega dados
       window.open(data.paymentUrl, "_blank", "noopener,noreferrer");
       await loadCompanyAndSubscription(false);
+      
     } catch (e: any) {
       console.error(e);
       setErrorMsg(e?.message || "Erro ao gerar pagamento.");
@@ -376,8 +408,10 @@ export default function Assinatura() {
             </div>
 
             <div className="w-full lg:w-[420px] space-y-3">
-              <Card className="border-border/60 bg-background/70">
-                <CardContent className="p-4 space-y-3">
+              <Card className="border-border/60 bg-background/70 shadow-sm backdrop-blur-sm">
+                <CardContent className="p-5 space-y-4">
+                  
+                  {/* Status Display */}
                   <div className="flex items-center justify-between">
                     <p className="text-sm font-semibold text-foreground">Status da empresa</p>
                     <Badge variant={statusBadgeVariant(currentStatus)} className="gap-1">
@@ -385,17 +419,35 @@ export default function Assinatura() {
                       {statusLabel(currentStatus)}
                     </Badge>
                   </div>
-
                   <p className="text-sm text-muted-foreground">{statusShortDescription(currentStatus)}</p>
 
                   <Separator />
 
-                  <div className="flex flex-col sm:flex-row gap-2">
-                    <Button onClick={handleSubscribe} disabled={creating || !canPay} className="w-full">
+                  {/* CPF Input Field */}
+                  <div className="space-y-2">
+                    <Label htmlFor="cpf" className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                      CPF/CNPJ do Pagador
+                    </Label>
+                    <Input 
+                      id="cpf"
+                      placeholder="000.000.000-00" 
+                      value={cpfCnpj}
+                      onChange={(e) => setCpfCnpj(e.target.value)}
+                      disabled={creating || loading}
+                      className="bg-background/80"
+                    />
+                    <p className="text-[10px] text-muted-foreground">
+                      Obrigatório para emissão. Ficará salvo como padrão.
+                    </p>
+                  </div>
+
+                  {/* Action Buttons */}
+                  <div className="flex flex-col sm:flex-row gap-2 pt-2">
+                    <Button onClick={handleSubscribe} disabled={creating || !canPay} className="w-full shadow-md">
                       {creating ? (
                         <>
                           <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                          Gerando link...
+                          Gerando...
                         </>
                       ) : (
                         <>
@@ -409,10 +461,10 @@ export default function Assinatura() {
                       variant="outline"
                       onClick={() => loadCompanyAndSubscription(false)}
                       disabled={refreshing}
-                      className="w-full"
+                      className="w-full sm:w-auto"
+                      title="Verificar status atualizado"
                     >
-                      <RefreshCcw className="h-4 w-4 mr-2" />
-                      Verificar
+                      <RefreshCcw className={`h-4 w-4 ${refreshing ? "animate-spin" : ""}`} />
                     </Button>
                   </div>
                 </CardContent>
@@ -462,7 +514,7 @@ export default function Assinatura() {
                   <p className="text-sm font-semibold">1) Gerar link</p>
                 </div>
                 <p className="mt-2 text-xs text-muted-foreground">
-                  Clique em <strong>{primaryCtaLabel}</strong> e pague no Asaas.
+                  Informe o CPF/CNPJ, clique em <strong>{primaryCtaLabel}</strong> e pague no Asaas.
                 </p>
               </div>
 
