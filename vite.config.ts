@@ -7,8 +7,14 @@ export default defineConfig(({ mode }) => {
   const isDev = mode === "development";
 
   return {
-    // ✅ garante paths corretos no deploy (Vercel / Capacitor / SPA)
-    base: "/",
+    /**
+     * ✅ FUNDAMENTAL para Capacitor (file://)
+     * - Garante que assets sejam carregados com caminho relativo
+     * - Evita tela branca ao reabrir o app em uma rota diferente
+     *
+     * Obs: No Vercel também funciona ok.
+     */
+    base: "./",
 
     server: {
       host: "::",
@@ -26,17 +32,17 @@ export default defineConfig(({ mode }) => {
       },
     },
 
-    // ✅ build mais estável (principalmente em WebView/Android)
+    // ✅ build mais estável em WebView/Android
     build: {
       target: "es2018",
       sourcemap: isDev,
-      // evita algumas tretas de preload em webview
+
+      // evita tretas de preload em webview
       modulePreload: {
         polyfill: false,
       },
     },
 
-    // ✅ em preview/proxy, ajuda a evitar comportamento estranho
     preview: {
       port: 8080,
     },
