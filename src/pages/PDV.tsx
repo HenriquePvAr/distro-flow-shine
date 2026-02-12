@@ -80,7 +80,6 @@ const safeNumber = (v: any) => {
 
 const parseBRNumber = (v: string) => {
   if (!v) return 0;
-  // mantém compatível com input number (mas trata se vier com vírgula)
   return safeNumber(String(v).replace(",", "."));
 };
 
@@ -104,7 +103,9 @@ export default function PDV() {
   const [showInfo, setShowInfo] = useState(true);
 
   // Conexão
-  const [isOnline, setIsOnline] = useState(typeof navigator !== "undefined" ? navigator.onLine : true);
+  const [isOnline, setIsOnline] = useState(
+    typeof navigator !== "undefined" ? navigator.onLine : true
+  );
   const [offlineSalesCount, setOfflineSalesCount] = useState(0);
 
   // Seleção
@@ -125,7 +126,7 @@ export default function PDV() {
   } | null>(null);
 
   // --------------------------
-  // Debounce da busca (melhora performance)
+  // Debounce da busca
   // --------------------------
   useEffect(() => {
     const t = setTimeout(() => setDebouncedSearch(search.trim().toLowerCase()), 200);
@@ -248,7 +249,7 @@ export default function PDV() {
   };
 
   // --------------------------
-  // Estoque necessário para um item (considera caixa)
+  // Estoque necessário (considera caixa)
   // --------------------------
   const getStockNeeded = (item: Pick<CartItem, "quantity" | "saleMode" | "qtyPerBox">) => {
     if (item.saleMode === "caixa" && item.qtyPerBox) return item.quantity * item.qtyPerBox;
@@ -287,7 +288,11 @@ export default function PDV() {
       if (idx >= 0) {
         const current = prev[idx];
         const nextQty = current.quantity + (initialMode === "kg" ? 0.1 : 1);
-        const stockNeeded = getStockNeeded({ quantity: nextQty, saleMode: initialMode, qtyPerBox: current.qtyPerBox });
+        const stockNeeded = getStockNeeded({
+          quantity: nextQty,
+          saleMode: initialMode,
+          qtyPerBox: current.qtyPerBox,
+        });
 
         if (stockNeeded > product.stock) {
           toast.error(`Estoque insuficiente! Disponível: ${product.stock}`);
@@ -299,14 +304,21 @@ export default function PDV() {
         return updated;
       }
 
-      // valida caixa se default fosse caixa (não é), mas mantém coerência geral
-      const stockNeeded = getStockNeeded({ quantity: 1, saleMode: initialMode, qtyPerBox: product.qtyPerBox });
+      const stockNeeded = getStockNeeded({
+        quantity: 1,
+        saleMode: initialMode,
+        qtyPerBox: product.qtyPerBox,
+      });
+
       if (stockNeeded > product.stock) {
         toast.error(`Estoque insuficiente! Disponível: ${product.stock}`);
         return prev;
       }
 
-      return [...prev, { ...product, quantity: initialMode === "kg" ? 0.1 : 1, saleMode: initialMode }];
+      return [
+        ...prev,
+        { ...product, quantity: initialMode === "kg" ? 0.1 : 1, saleMode: initialMode },
+      ];
     });
   };
 
@@ -333,7 +345,6 @@ export default function PDV() {
     );
   };
 
-  // Troca modo e MESCLA itens se já existir o mesmo produto no novo modo
   const updateSaleMode = (id: string, oldMode: CartItem["saleMode"], newMode: CartItem["saleMode"]) => {
     setCart((prev) => {
       const currentIndex = prev.findIndex((i) => i.id === id && i.saleMode === oldMode);
@@ -341,34 +352,28 @@ export default function PDV() {
 
       const current = prev[currentIndex];
 
-      // valida caixa
       if (newMode === "caixa" && (!current.sellsByBox || !current.qtyPerBox)) {
         toast.error("Este produto não está configurado para venda por caixa.");
         return prev;
       }
 
-      // quantidade inicial por modo
       const baseQty = newMode === "kg" ? 0.1 : 1;
 
-      // valida estoque mínimo (1 caixa pode exigir mais unidades)
       const stockNeeded = getStockNeeded({ quantity: baseQty, saleMode: newMode, qtyPerBox: current.qtyPerBox });
       if (stockNeeded > current.stock) {
         toast.error("Não há estoque suficiente para esse modo.");
         return prev;
       }
 
-      // se já existe item com novo modo, mescla
       const otherIndex = prev.findIndex((i) => i.id === id && i.saleMode === newMode);
       const updated = [...prev];
 
-      // remove o atual
       updated.splice(currentIndex, 1);
 
       if (otherIndex >= 0) {
         const other = updated.find((i) => i.id === id && i.saleMode === newMode);
         if (!other) return prev;
 
-        // soma quantidades (com validação de estoque)
         const sumQty = other.quantity + baseQty;
         const need = getStockNeeded({ quantity: sumQty, saleMode: newMode, qtyPerBox: other.qtyPerBox });
         if (need > other.stock) {
@@ -382,7 +387,6 @@ export default function PDV() {
         });
       }
 
-      // adiciona item no novo modo
       return [...updated, { ...current, saleMode: newMode, quantity: baseQty }];
     });
   };
@@ -406,7 +410,6 @@ export default function PDV() {
   const handleAddPayment = () => {
     if (!currentMethod) return toast.error("Selecione o método.");
     const amount = parseBRNumber(currentAmount);
-
     if (!Number.isFinite(amount) || amount <= 0) return toast.error("Valor inválido.");
 
     setPayments((prev) => [...prev, { method: currentMethod, amount }]);
@@ -423,7 +426,7 @@ export default function PDV() {
   };
 
   // --------------------------
-  // Offline queue helpers
+  // Offline queue
   // --------------------------
   const pushOfflineSale = (payload: any) => {
     const currentQueue = JSON.parse(localStorage.getItem("offline_queue") || "[]");
@@ -432,9 +435,6 @@ export default function PDV() {
     setOfflineSalesCount(currentQueue.length);
   };
 
-  // --------------------------
-  // Sincronizar offline
-  // --------------------------
   const handleSyncOfflineSales = async () => {
     setProcessing(true);
     try {
@@ -459,7 +459,6 @@ export default function PDV() {
         });
         if (finError) throw finError;
 
-        // baixa de estoque
         for (const item of sale.items as CartItem[]) {
           const { data: currentProd, error: pErr } = await supabase
             .from("products")
@@ -472,11 +471,7 @@ export default function PDV() {
           const qtyToDeduct = getStockNeeded(item);
           const newStock = safeNumber(currentProd?.stock) - qtyToDeduct;
 
-          const { error: upErr } = await supabase
-            .from("products")
-            .update({ stock: newStock })
-            .eq("id", item.id);
-
+          const { error: upErr } = await supabase.from("products").update({ stock: newStock }).eq("id", item.id);
           if (upErr) throw upErr;
         }
       }
@@ -497,12 +492,7 @@ export default function PDV() {
   // Finalizar UI
   // --------------------------
   const finalizeUI = (customer: Person | undefined, total: number, change: number, items: CartItem[]) => {
-    setLastSaleData({
-      total,
-      change,
-      customer,
-      items: [...items],
-    });
+    setLastSaleData({ total, change, customer, items: [...items] });
     setShowSuccessModal(true);
 
     setCart([]);
@@ -541,7 +531,6 @@ export default function PDV() {
 
     const fullDescription = `Venda: ${itemsDesc} | Pag: ${paymentDesc}${changeDesc} | Vend: ${sellerName}`;
 
-    // prepara payload offline (usado também como fallback)
     const offlinePayload = {
       financial: {
         type: "receivable",
@@ -556,16 +545,13 @@ export default function PDV() {
       items: [...cart],
     };
 
-    // OFFLINE direto
     if (!isOnline) {
       pushOfflineSale(offlinePayload);
 
-      // baixa estoque local (pra UI bater com o que vendeu)
       setProducts((prev) =>
         prev.map((p) => {
           const sold = cart.filter((c) => c.id === p.id);
           if (sold.length === 0) return p;
-
           const totalDeduct = sold.reduce((acc, it) => acc + getStockNeeded(it), 0);
           return { ...p, stock: p.stock - totalDeduct };
         })
@@ -577,25 +563,16 @@ export default function PDV() {
       return;
     }
 
-    // ONLINE
     try {
-      // valida e baixa estoque no banco (com validação por item)
       for (const item of cart) {
         const qtyToDeduct = getStockNeeded(item);
-        if (qtyToDeduct > item.stock) {
-          throw new Error(`Estoque insuficiente para ${item.name}.`);
-        }
+        if (qtyToDeduct > item.stock) throw new Error(`Estoque insuficiente para ${item.name}.`);
 
         const newStock = item.stock - qtyToDeduct;
-        const { error: stockError } = await supabase
-          .from("products")
-          .update({ stock: newStock })
-          .eq("id", item.id);
-
+        const { error: stockError } = await supabase.from("products").update({ stock: newStock }).eq("id", item.id);
         if (stockError) throw stockError;
       }
 
-      // lança financeiro
       const { error: financialError } = await supabase.from("financial_entries").insert({
         type: "receivable",
         description: fullDescription,
@@ -609,7 +586,6 @@ export default function PDV() {
 
       if (financialError) throw financialError;
 
-      // baixa estoque local também (evita “voltar” no grid até reload)
       setProducts((prev) =>
         prev.map((p) => {
           const sold = cart.filter((c) => c.id === p.id);
@@ -623,14 +599,11 @@ export default function PDV() {
       await loadData();
     } catch (error: any) {
       console.error(error);
-
-      // FALLBACK: salva offline e finaliza (não perde venda)
       toast.error("Erro na venda online. Salvando offline...", { description: error?.message });
 
       setIsOnline(false);
       pushOfflineSale(offlinePayload);
 
-      // baixa estoque local
       setProducts((prev) =>
         prev.map((p) => {
           const sold = cart.filter((c) => c.id === p.id);
@@ -666,9 +639,7 @@ export default function PDV() {
       });
 
       text += `\n*TOTAL: ${formatCurrency(lastSaleData.total)}*\n`;
-
       if (lastSaleData.change > 0) text += `Troco: ${formatCurrency(lastSaleData.change)}\n`;
-
       text += `\nObrigado pela preferência!`;
 
       const message = encodeURIComponent(text);
@@ -683,7 +654,6 @@ export default function PDV() {
   // --------------------------
   const filteredProducts = useMemo(() => {
     if (!debouncedSearch) return products;
-
     return products.filter((p) => {
       const name = (p.name || "").toLowerCase();
       const sku = (p.sku || "").toLowerCase();
@@ -695,86 +665,92 @@ export default function PDV() {
   // Render
   // --------------------------
   return (
-    <div className="space-y-6 h-[calc(100vh-100px)] flex flex-col overflow-y-auto pb-10">
-      {/* Header com Status Offline/Online */}
-      <div className="flex items-center justify-between px-1">
-        <div className="flex items-center gap-3">
-          <div className="p-2 rounded-lg bg-primary/10">
-            <ShoppingCart className="h-6 w-6 text-primary" />
+    <div className="h-[calc(100vh-100px)] flex flex-col min-h-0 p-4 md:p-6 pb-24">
+      {/* HEADER FIXO / STICKY */}
+      <div className="sticky top-0 z-20 bg-background/90 backdrop-blur border-b -mx-4 md:-mx-6 px-4 md:px-6 py-3">
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex items-start gap-3 min-w-0">
+            <div className="p-2 rounded-lg bg-primary/10 shrink-0">
+              <ShoppingCart className="h-5 w-5 sm:h-6 sm:w-6 text-primary" />
+            </div>
+
+            <div className="min-w-0">
+              <h1 className="text-lg sm:text-2xl font-semibold text-foreground flex items-center gap-2 truncate">
+                PDV
+                {!showInfo && (
+                  <Button variant="ghost" size="icon" onClick={handleShowInfo} className="h-8 w-8">
+                    <Info className="h-4 w-4" />
+                  </Button>
+                )}
+              </h1>
+
+              <div className="flex flex-wrap items-center gap-2 mt-1">
+                {isOnline ? (
+                  <Badge variant="outline" className="text-emerald-600 bg-emerald-50 border-emerald-200">
+                    <Wifi className="h-3 w-3 mr-1" /> Online
+                  </Badge>
+                ) : (
+                  <Badge variant="destructive">
+                    <WifiOff className="h-3 w-3 mr-1" /> Offline
+                  </Badge>
+                )}
+
+                {offlineSalesCount > 0 && isOnline && (
+                  <Button
+                    size="sm"
+                    onClick={handleSyncOfflineSales}
+                    disabled={processing}
+                    className="h-7 text-xs bg-blue-600 hover:bg-blue-700 animate-pulse"
+                  >
+                    <RefreshCw className={`h-3 w-3 mr-1 ${processing ? "animate-spin" : ""}`} />
+                    Sync ({offlineSalesCount})
+                  </Button>
+                )}
+
+                {offlineSalesCount > 0 && !isOnline && (
+                  <Badge variant="secondary" className="text-xs">
+                    {offlineSalesCount} pendentes
+                  </Badge>
+                )}
+
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 text-xs"
+                  onClick={loadData}
+                  disabled={processing}
+                >
+                  <RefreshCw className={`h-3 w-3 mr-1 ${loading ? "animate-spin" : ""}`} />
+                  Recarregar
+                </Button>
+              </div>
+            </div>
           </div>
 
-          <div>
-            <h1 className="text-2xl font-semibold text-foreground flex items-center gap-2">
-              PDV
-              {!showInfo && (
-                <Button variant="ghost" size="icon" onClick={handleShowInfo}>
-                  <Info className="h-4 w-4" />
-                </Button>
-              )}
-            </h1>
-
-            <div className="flex items-center gap-2">
-              {isOnline ? (
-                <Badge
-                  variant="outline"
-                  className="text-emerald-600 bg-emerald-50 border-emerald-200"
-                >
-                  <Wifi className="h-3 w-3 mr-1" /> Online
-                </Badge>
-              ) : (
-                <Badge variant="destructive">
-                  <WifiOff className="h-3 w-3 mr-1" /> Offline
-                </Badge>
-              )}
-
-              {offlineSalesCount > 0 && isOnline && (
-                <Button
-                  size="sm"
-                  onClick={handleSyncOfflineSales}
-                  disabled={processing}
-                  className="h-6 text-xs bg-blue-600 hover:bg-blue-700 animate-pulse"
-                >
-                  <RefreshCw className={`h-3 w-3 mr-1 ${processing ? "animate-spin" : ""}`} />
-                  Sincronizar ({offlineSalesCount})
-                </Button>
-              )}
-
-              {offlineSalesCount > 0 && !isOnline && (
-                <Badge variant="secondary" className="text-xs">
-                  {offlineSalesCount} pendentes
-                </Badge>
-              )}
-
-              <Button variant="outline" size="sm" className="h-6 text-xs" onClick={loadData} disabled={processing}>
-                <RefreshCw className={`h-3 w-3 mr-1 ${loading ? "animate-spin" : ""}`} />
-                Recarregar
-              </Button>
-            </div>
+          {/* TOTAL MINI NO MOBILE */}
+          <div className="sm:hidden flex flex-col items-end gap-1">
+            <span className="text-[10px] text-muted-foreground">Total</span>
+            <span className="font-bold">{formatCurrency(cartTotal)}</span>
+            {cart.length > 0 && (
+              <Badge variant="secondary" className="text-[11px]">
+                {cart.length} itens
+              </Badge>
+            )}
           </div>
         </div>
       </div>
 
       {showInfo && (
-        <Alert className="bg-blue-50/50 border-blue-200 text-blue-800 relative pr-10 shadow-sm mb-2 mx-1 animate-in fade-in slide-in-from-top-2">
+        <Alert className="bg-blue-50/50 border-blue-200 text-blue-800 relative pr-10 shadow-sm mt-4">
           <Info className="h-4 w-4 text-blue-600" />
           <AlertTitle className="text-blue-700 font-semibold">Guia do PDV</AlertTitle>
           <AlertDescription className="text-blue-700/80 text-sm mt-1">
             <ul className="list-disc list-inside space-y-1">
-              <li>
-                <strong>Modo Offline:</strong> salva vendas no navegador se a internet cair.
-              </li>
-              <li>
-                <strong>Pagamento Múltiplo:</strong> adicione várias formas de pagamento.
-              </li>
-              <li>
-                <strong>Troco Automático:</strong> se pagar a mais, mostra o troco.
-              </li>
-              <li>
-                <strong>Produtos KG:</strong> use valores como 0.350 (350g).
-              </li>
-              <li>
-                <strong>Venda por Caixa:</strong> valida estoque usando (qtd × itens/caixa).
-              </li>
+              <li><strong>Offline:</strong> salva vendas localmente se a internet cair.</li>
+              <li><strong>Pagamento múltiplo:</strong> pode adicionar várias formas.</li>
+              <li><strong>Troco:</strong> se pagar a mais, calcula automático.</li>
+              <li><strong>KG:</strong> use 0.350 (350g).</li>
+              <li><strong>Caixa:</strong> desconta (qtd × itens/caixa) do estoque.</li>
             </ul>
           </AlertDescription>
           <Button
@@ -788,79 +764,107 @@ export default function PDV() {
         </Alert>
       )}
 
-      <div className="grid gap-6 lg:grid-cols-3 flex-1 min-h-0">
+      {/* LAYOUT RESPONSIVO */}
+      <div className="grid gap-4 lg:grid-cols-3 flex-1 min-h-0 mt-4">
         {/* PRODUTOS */}
-        <div className="lg:col-span-2 flex flex-col gap-4 h-full min-h-0">
+        <div className="lg:col-span-2 flex flex-col min-h-0">
           <div className="relative">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
             <Input
-              placeholder="Buscar produto..."
+              placeholder="Buscar por nome ou SKU..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              className="pl-10 h-12 text-lg"
+              className="pl-10 h-12 text-base sm:text-lg"
               autoFocus
             />
           </div>
 
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 overflow-y-auto pr-2 pb-20 content-start">
-            {loading ? (
-              <div className="col-span-full text-center py-10 text-muted-foreground">
-                Carregando produtos...
-              </div>
-            ) : (
-              filteredProducts.map((product) => (
-                <Card
-                  key={product.id}
-                  className={`cursor-pointer transition-all hover:shadow-md hover:border-primary/50 group ${
-                    product.stock <= 0 ? "opacity-60 grayscale bg-muted" : ""
-                  }`}
-                  onClick={() => handleAddToCart(product)}
-                >
-                  <CardContent className="p-4 flex flex-col justify-between h-full">
-                    <div>
-                      <div className="flex justify-between items-start gap-2 mb-2">
-                        <Badge
-                          variant={product.stock <= 5 ? "destructive" : "secondary"}
-                          className="text-[10px] h-5"
-                        >
-                          {product.stock.toFixed(product.sellsByKg ? 3 : 0)}{" "}
-                          {product.sellsByKg ? "kg" : "un"}
-                        </Badge>
-                        {product.sellsByBox && (
-                          <Badge variant="outline" className="text-[10px] h-5">
-                            Cx
-                          </Badge>
-                        )}
-                      </div>
+          {/* CARDS MELHORES NO MOBILE */}
+          <div className="mt-4 overflow-y-auto min-h-0 pr-1">
+            <div className="grid gap-2 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 pb-28">
+              {loading ? (
+                <div className="col-span-full text-center py-10 text-muted-foreground">
+                  Carregando produtos...
+                </div>
+              ) : (
+                filteredProducts.map((product) => {
+                  const isOut = product.stock <= 0;
+                  const isLow = product.stock > 0 && product.stock <= 5;
 
-                      <h3 className="font-medium text-sm line-clamp-2 mb-1 group-hover:text-primary transition-colors">
-                        {product.name}
-                      </h3>
-                    </div>
+                  return (
+                    <Card
+                      key={product.id}
+                      className={`group border shadow-sm transition-all ${
+                        isOut ? "opacity-60 grayscale bg-muted" : "hover:border-primary/50 hover:shadow-md"
+                      }`}
+                    >
+                      <CardContent className="p-3 sm:p-4">
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2 mb-1">
+                              <Badge
+                                variant={isOut ? "secondary" : isLow ? "destructive" : "secondary"}
+                                className="text-[10px]"
+                              >
+                                {product.stock.toFixed(product.sellsByKg ? 3 : 0)}{" "}
+                                {product.sellsByKg ? "kg" : "un"}
+                              </Badge>
 
-                    <div className="mt-3">
-                      <p className="text-lg font-bold text-emerald-600">
-                        {formatCurrency(product.salePrice)}
-                        {product.sellsByKg && (
-                          <span className="text-xs font-normal text-muted-foreground">/kg</span>
-                        )}
-                      </p>
-                    </div>
-                  </CardContent>
-                </Card>
-              ))
-            )}
+                              {product.sellsByBox && (
+                                <Badge variant="outline" className="text-[10px]">
+                                  Cx
+                                </Badge>
+                              )}
 
-            {!loading && filteredProducts.length === 0 && (
-              <div className="col-span-full text-center py-10 text-muted-foreground">
-                {products.length === 0 ? "Nenhum produto carregado." : "Nenhum produto encontrado na busca."}
-              </div>
-            )}
+                              {product.sku && (
+                                <span className="text-[10px] text-muted-foreground font-mono truncate">
+                                  {product.sku}
+                                </span>
+                              )}
+                            </div>
+
+                            <h3 className="font-semibold text-base leading-snug line-clamp-2">
+                              {product.name}
+                            </h3>
+                          </div>
+                        </div>
+
+                        <div className="flex items-end justify-between gap-2 mt-3">
+                          <div>
+                            <p className="text-xl font-bold text-emerald-600 leading-none">
+                              {formatCurrency(product.salePrice)}
+                            </p>
+                            {product.sellsByKg && (
+                              <p className="text-[11px] text-muted-foreground mt-1">preço por kg</p>
+                            )}
+                          </div>
+
+                          <Button
+                            className="h-10 px-3"
+                            disabled={isOut}
+                            onClick={() => handleAddToCart(product)}
+                          >
+                            <Plus className="h-4 w-4 mr-1" />
+                            Add
+                          </Button>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  );
+                })
+              )}
+
+              {!loading && filteredProducts.length === 0 && (
+                <div className="col-span-full text-center py-10 text-muted-foreground">
+                  {products.length === 0 ? "Nenhum produto carregado." : "Nenhum produto encontrado na busca."}
+                </div>
+              )}
+            </div>
           </div>
         </div>
 
-        {/* CARRINHO */}
-        <Card className="flex flex-col h-full border-l shadow-xl lg:rounded-none lg:border-y-0 lg:border-r-0 min-h-0">
+        {/* CARRINHO (DESKTOP) */}
+        <Card className="hidden lg:flex flex-col h-full min-h-0 border-l shadow-xl lg:rounded-none lg:border-y-0 lg:border-r-0">
           <CardHeader className="pb-3 border-b bg-muted/30">
             <CardTitle className="flex items-center justify-between">
               <span className="flex items-center gap-2">
@@ -872,7 +876,7 @@ export default function PDV() {
 
           <CardContent className="flex-1 overflow-y-auto p-0 bg-background/50 min-h-[150px]">
             {cart.length === 0 ? (
-              <div className="flex flex-col items-center justify-center h-full text-muted-foreground/50 gap-2">
+              <div className="flex flex-col items-center justify-center h-full text-muted-foreground/60 gap-2">
                 <ShoppingCart className="h-12 w-12" />
                 <p>Vazio</p>
               </div>
@@ -892,7 +896,7 @@ export default function PDV() {
                         </span>
                       </div>
 
-                      <div className="flex items-center justify-between">
+                      <div className="flex items-center justify-between gap-2">
                         <div className="flex items-center gap-1 bg-muted rounded-md p-0.5">
                           <Button
                             size="icon"
@@ -983,7 +987,7 @@ export default function PDV() {
             )}
           </CardContent>
 
-          {/* PAGAMENTO */}
+          {/* PAGAMENTO (DESKTOP) */}
           <div className="p-4 bg-background border-t space-y-4 shadow-inner">
             <div className="grid grid-cols-2 gap-2">
               <Select value={selectedCustomerId} onValueChange={setSelectedCustomerId}>
@@ -1031,10 +1035,7 @@ export default function PDV() {
                   >
                     {p.method}:{" "}
                     <span className="font-mono text-emerald-700">{formatCurrency(p.amount)}</span>
-                    <X
-                      className="h-3 w-3 cursor-pointer hover:text-destructive ml-1"
-                      onClick={() => removePayment(i)}
-                    />
+                    <X className="h-3 w-3 cursor-pointer hover:text-destructive ml-1" onClick={() => removePayment(i)} />
                   </Badge>
                 ))}
               </div>
@@ -1083,12 +1084,7 @@ export default function PDV() {
 
                 <div className="flex gap-1 h-14 items-end">
                   {remainingAmount > 0 && (
-                    <Button
-                      size="icon"
-                      variant="outline"
-                      className="h-14 w-14 border-slate-300"
-                      onClick={handleFillRemaining}
-                    >
+                    <Button size="icon" variant="outline" className="h-14 w-14 border-slate-300" onClick={handleFillRemaining}>
                       <Calculator className="h-6 w-6 text-slate-600" />
                     </Button>
                   )}
@@ -1144,6 +1140,39 @@ export default function PDV() {
             </Button>
           </div>
         </Card>
+      </div>
+
+      {/* BARRA FIXA NO MOBILE (TOTAL + FINALIZAR) */}
+      <div className="lg:hidden fixed bottom-0 left-0 right-0 z-30 bg-background border-t p-3 shadow-2xl">
+        <div className="flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <div className="text-[11px] text-muted-foreground">Total</div>
+            <div className="text-lg font-bold truncate">{formatCurrency(cartTotal)}</div>
+            {balance > 0.01 ? (
+              <div className="text-[12px] font-semibold text-destructive truncate">
+                Falta: {formatCurrency(balance)}
+              </div>
+            ) : changeAmount > 0.01 ? (
+              <div className="text-[12px] font-semibold text-blue-600 truncate">
+                Troco: {formatCurrency(changeAmount)}
+              </div>
+            ) : cart.length > 0 ? (
+              <div className="text-[12px] font-semibold text-emerald-600 truncate">Quitado</div>
+            ) : (
+              <div className="text-[12px] text-muted-foreground truncate">Adicione itens</div>
+            )}
+          </div>
+
+          <Button
+            className={`h-12 px-4 text-base font-bold ${
+              balance <= 0.01 && cart.length > 0 ? "bg-emerald-600 hover:bg-emerald-700" : ""
+            }`}
+            disabled={cart.length === 0 || balance > 0.01 || processing}
+            onClick={handleFinalizeSale}
+          >
+            {processing ? "..." : "Finalizar"}
+          </Button>
+        </div>
       </div>
 
       {/* MODAL SUCESSO */}

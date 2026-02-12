@@ -5,15 +5,14 @@ import {
   ArrowDownCircle,
   ArrowUpCircle,
   CheckCircle,
-  AlertTriangle,
   Search,
   TrendingUp,
-  DollarSign,
   Calendar as CalendarIcon,
   Info,
   X,
   Repeat,
-  Wallet
+  Wallet,
+  FileText,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -39,21 +38,26 @@ import {
   DialogHeader,
   DialogTitle,
   DialogTrigger,
-  DialogDescription
 } from "@/components/ui/dialog";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+  CardDescription,
+} from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Progress } from "@/components/ui/progress";
-import { 
-  format, 
-  subMonths, 
-  startOfMonth, 
-  endOfMonth, 
-  startOfYear, 
-  endOfYear, 
+import {
+  format,
+  subMonths,
+  startOfMonth,
+  endOfMonth,
+  startOfYear,
+  endOfYear,
   isWithinInterval,
-  parseISO
+  parseISO,
 } from "date-fns";
 import { ptBR } from "date-fns/locale";
 import { cn } from "@/lib/utils";
@@ -67,7 +71,7 @@ import {
   CartesianGrid,
   Tooltip,
   ResponsiveContainer,
-  Legend
+  Legend,
 } from "recharts";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Switch } from "@/components/ui/switch";
@@ -89,7 +93,7 @@ interface FinancialEntry {
 
 // --- UTILS ---
 const formatCurrency = (v: number) =>
-  v.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+  (v || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 
 const statusLabel: Record<string, string> = {
   pending: "Pendente",
@@ -98,7 +102,10 @@ const statusLabel: Record<string, string> = {
   overdue: "Vencido",
 };
 
-const statusVariant: Record<string, "default" | "secondary" | "destructive" | "outline"> = {
+const statusVariant: Record<
+  string,
+  "default" | "secondary" | "destructive" | "outline"
+> = {
   pending: "outline",
   partial: "secondary",
   paid: "default",
@@ -106,13 +113,12 @@ const statusVariant: Record<string, "default" | "secondary" | "destructive" | "o
 };
 
 export default function Despesas() {
-  // --- ESTADOS ---
   const [entries, setEntries] = useState<FinancialEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [showInfo, setShowInfo] = useState(true);
 
   // Filtros de Data
-  const [dateFilter, setDateFilter] = useState("this-month"); // this-month, last-month, last-3, this-year, all
+  const [dateFilter, setDateFilter] = useState("this-month");
 
   // Dialogs e Inputs
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -121,7 +127,7 @@ export default function Despesas() {
   const [payAmount, setPayAmount] = useState("");
   const [searchTerm, setSearchTerm] = useState("");
 
-  // Formulário
+  // Form
   const [formType, setFormType] = useState<"receivable" | "payable">("payable");
   const [description, setDescription] = useState("");
   const [totalAmount, setTotalAmount] = useState("");
@@ -129,7 +135,6 @@ export default function Despesas() {
   const [entityName, setEntityName] = useState("");
   const [isRecurring, setIsRecurring] = useState(false);
 
-  // --- EFEITOS ---
   useEffect(() => {
     const isHidden = localStorage.getItem("hide_financial_info");
     if (isHidden === "true") setShowInfo(false);
@@ -146,21 +151,18 @@ export default function Despesas() {
     localStorage.removeItem("hide_financial_info");
   };
 
-  // Buscar dados (Traz tudo, filtramos no front para ser rápido na troca de filtros)
   const fetchEntries = async () => {
     setLoading(true);
     const { data, error } = await supabase
       .from("financial_entries")
       .select("*")
       .order("due_date", { ascending: true });
-    
-    if (!error && data) {
-      setEntries(data as FinancialEntry[]);
-    }
+
+    if (!error && data) setEntries(data as FinancialEntry[]);
     setLoading(false);
   };
 
-  // --- FILTRAGEM INTELIGENTE ---
+  // --- FILTRO POR DATA ---
   const getFilteredEntriesByDate = () => {
     const now = new Date();
     let start: Date | null = null;
@@ -171,11 +173,12 @@ export default function Despesas() {
         start = startOfMonth(now);
         end = endOfMonth(now);
         break;
-      case "last-month":
+      case "last-month": {
         const lastMonth = subMonths(now, 1);
         start = startOfMonth(lastMonth);
         end = endOfMonth(lastMonth);
         break;
+      }
       case "last-3":
         start = subMonths(now, 3);
         end = now;
@@ -185,64 +188,66 @@ export default function Despesas() {
         end = endOfYear(now);
         break;
       case "all":
-        return entries; // Retorna tudo sem filtrar data
+        return entries;
     }
 
     if (start && end) {
-      return entries.filter(e => {
-        const d = parseISO(e.due_date); // Garante que a string vire data
-        return isWithinInterval(d, { start, end: end! });
+      return entries.filter((e) => {
+        const d = parseISO(e.due_date);
+        return isWithinInterval(d, { start, end });
       });
     }
     return entries;
   };
 
-  const dateFilteredEntries = useMemo(() => getFilteredEntriesByDate(), [entries, dateFilter]);
+  const dateFilteredEntries = useMemo(
+    () => getFilteredEntriesByDate(),
+    [entries, dateFilter]
+  );
 
-  // Filtro de Texto (Busca) aplicado sobre o filtro de data
-  // AQUI ESTAVA O ERRO: Renomeei para finalFilteredEntries e esqueci de usar lá embaixo
+  // --- FILTRO DE TEXTO ---
   const finalFilteredEntries = useMemo(() => {
-    return dateFilteredEntries.filter(e => {
-      const searchLower = searchTerm.toLowerCase();
-      return e.description.toLowerCase().includes(searchLower) || 
-             (e.entity_name && e.entity_name.toLowerCase().includes(searchLower));
+    const s = searchTerm.trim().toLowerCase();
+    if (!s) return dateFilteredEntries;
+    return dateFilteredEntries.filter((e) => {
+      return (
+        e.description.toLowerCase().includes(s) ||
+        (e.entity_name && e.entity_name.toLowerCase().includes(s))
+      );
     });
   }, [dateFilteredEntries, searchTerm]);
 
   // --- ACTIONS ---
-
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
     const amount = parseFloat(totalAmount);
-    
+
     if (!description || isNaN(amount) || amount <= 0) {
       toast.error("Preencha a descrição e um valor válido.");
       return;
     }
 
-    const entriesToCreate = [];
+    const entriesToCreate: any[] = [];
     const loopCount = isRecurring ? 12 : 1;
 
     for (let i = 0; i < loopCount; i++) {
       const entryDate = new Date(dueDate);
       entryDate.setMonth(entryDate.getMonth() + i);
 
-      const entryDesc = isRecurring 
-        ? `${description} (${i + 1}/12)` 
-        : description;
+      const entryDesc = isRecurring ? `${description} (${i + 1}/12)` : description;
 
       entriesToCreate.push({
         type: formType,
         description: entryDesc,
         total_amount: amount,
+        paid_amount: 0,
         due_date: entryDate.toISOString(),
-        entity_name: entityName.trim() === "" ? null : entityName,
-        status: "pending"
+        entity_name: entityName.trim() === "" ? null : entityName.trim(),
+        status: "pending",
       });
     }
 
     const { error } = await supabase.from("financial_entries").insert(entriesToCreate);
-
     if (error) {
       toast.error("Erro ao salvar.");
       return;
@@ -257,13 +262,13 @@ export default function Despesas() {
   const handlePay = async () => {
     if (!selectedEntry) return;
     const amount = parseFloat(payAmount);
-    
+
     if (isNaN(amount) || amount <= 0) {
       toast.error("Valor inválido.");
       return;
     }
 
-    const newPaid = selectedEntry.paid_amount + amount;
+    const newPaid = (selectedEntry.paid_amount || 0) + amount;
     const newStatus = newPaid >= selectedEntry.total_amount ? "paid" : "partial";
 
     const { error } = await supabase
@@ -292,48 +297,51 @@ export default function Despesas() {
 
   const openPayDialog = (entry: FinancialEntry) => {
     setSelectedEntry(entry);
-    setPayAmount((entry.total_amount - entry.paid_amount).toFixed(2));
+    setPayAmount((entry.total_amount - (entry.paid_amount || 0)).toFixed(2));
     setPayDialogOpen(true);
   };
 
-  // --- CÁLCULOS (Baseados no Filtro de Data) ---
-
+  // --- SUMMARY ---
   const summary = useMemo(() => {
     const receivable = finalFilteredEntries.filter((e) => e.type === "receivable");
     const payable = finalFilteredEntries.filter((e) => e.type === "payable");
-    
+
+    const paidReceivable = receivable.reduce((acc, e) => acc + (e.paid_amount || 0), 0);
+    const paidPayable = payable.reduce((acc, e) => acc + (e.paid_amount || 0), 0);
+
     return {
       totalReceivable: receivable.reduce((acc, e) => acc + e.total_amount, 0),
       totalPayable: payable.reduce((acc, e) => acc + e.total_amount, 0),
-      paidReceivable: receivable.reduce((acc, e) => acc + e.paid_amount, 0),
-      paidPayable: payable.reduce((acc, e) => acc + e.paid_amount, 0),
-      balance: receivable.reduce((acc, e) => acc + e.paid_amount, 0) - payable.reduce((acc, e) => acc + e.paid_amount, 0)
+      paidReceivable,
+      paidPayable,
+      balance: paidReceivable - paidPayable,
     };
   }, [finalFilteredEntries]);
 
-  // Meta de Sobrevivência
   const breakEven = useMemo(() => {
     const revenue = summary.totalReceivable;
     const costs = summary.totalPayable;
     const progress = costs > 0 ? (revenue / costs) * 100 : 100;
-    
+
     return {
       costs,
       revenue,
       progress: Math.min(progress, 100),
       isProfitable: revenue > costs,
-      gap: costs - revenue
+      gap: costs - revenue,
     };
   }, [summary]);
 
-  // Dados do Gráfico
   const chartData = useMemo(() => {
-    const data: Record<string, { name: string; receitas: number; despesas: number }> = {};
-    
-    dateFilteredEntries.forEach(entry => {
+    const data: Record<
+      string,
+      { name: string; receitas: number; despesas: number }
+    > = {};
+
+    dateFilteredEntries.forEach((entry) => {
       const date = parseISO(entry.due_date);
       const key = format(date, "MMM yyyy", { locale: ptBR });
-      
+
       if (!data[key]) data[key] = { name: key, receitas: 0, despesas: 0 };
 
       if (entry.type === "receivable") data[key].receitas += entry.total_amount;
@@ -343,14 +351,16 @@ export default function Despesas() {
     return Object.values(data);
   }, [dateFilteredEntries]);
 
+  const isOverdue = (entry: FinancialEntry) =>
+    entry.status !== "paid" && new Date(entry.due_date) < new Date();
+
   return (
     <div className="space-y-6 animate-in fade-in duration-500">
-      
-      {/* --- CABEÇALHO --- */}
+      {/* CABEÇALHO (RESPONSIVO) */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight text-foreground flex items-center gap-2">
-            <Wallet className="h-8 w-8 text-primary" />
+          <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-foreground flex items-center gap-2">
+            <Wallet className="h-7 w-7 sm:h-8 sm:w-8 text-primary" />
             Central Financeira
           </h1>
           <p className="text-muted-foreground">
@@ -358,10 +368,9 @@ export default function Despesas() {
           </p>
         </div>
 
-        <div className="flex items-center gap-2">
-          {/* SELETOR DE PERÍODO */}
+        <div className="grid grid-cols-2 sm:flex items-center gap-2 w-full md:w-auto">
           <Select value={dateFilter} onValueChange={setDateFilter}>
-            <SelectTrigger className="w-[180px] bg-background">
+            <SelectTrigger className="w-full sm:w-[180px] bg-background h-12">
               <CalendarIcon className="mr-2 h-4 w-4" />
               <SelectValue placeholder="Período" />
             </SelectTrigger>
@@ -376,47 +385,74 @@ export default function Despesas() {
 
           <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
             <DialogTrigger asChild>
-              <Button className="shadow-md bg-primary hover:bg-primary/90">
+              <Button className="w-full sm:w-auto shadow-md bg-primary hover:bg-primary/90 h-12">
                 <Plus className="h-4 w-4 mr-2" />
-                Novo Lançamento
+                Novo
               </Button>
             </DialogTrigger>
+
             <DialogContent className="max-w-md">
               <DialogHeader>
                 <DialogTitle>Novo Lançamento Financeiro</DialogTitle>
               </DialogHeader>
+
               <form onSubmit={handleCreate} className="space-y-4 pt-4">
-                
-                <div className="grid grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div className="space-y-2">
                     <Label>Tipo</Label>
                     <Select value={formType} onValueChange={(v: any) => setFormType(v)}>
-                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectTrigger className="h-11">
+                        <SelectValue />
+                      </SelectTrigger>
                       <SelectContent>
                         <SelectItem value="payable">Saída (Despesa)</SelectItem>
                         <SelectItem value="receivable">Entrada (Receita)</SelectItem>
                       </SelectContent>
                     </Select>
                   </div>
+
                   <div className="space-y-2">
                     <Label>Valor (R$)</Label>
-                    <Input type="number" step="0.01" placeholder="0,00" value={totalAmount} onChange={(e) => setTotalAmount(e.target.value)} className="font-mono font-medium" />
+                    <Input
+                      type="number"
+                      step="0.01"
+                      placeholder="0,00"
+                      value={totalAmount}
+                      onChange={(e) => setTotalAmount(e.target.value)}
+                      className="font-mono font-medium h-11"
+                    />
                   </div>
                 </div>
 
                 <div className="space-y-2">
                   <Label>Descrição</Label>
-                  <Input placeholder="Ex: Aluguel, Venda Balcão..." value={description} onChange={(e) => setDescription(e.target.value)} required />
+                  <Input
+                    placeholder="Ex: Aluguel, Venda Balcão..."
+                    value={description}
+                    onChange={(e) => setDescription(e.target.value)}
+                    required
+                    className="h-11"
+                  />
                 </div>
 
-                <div className="grid grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div className="space-y-2">
                     <Label>{formType === "receivable" ? "Cliente" : "Fornecedor"} (Opcional)</Label>
-                    <Input placeholder="Nome..." value={entityName} onChange={(e) => setEntityName(e.target.value)} />
+                    <Input
+                      placeholder="Nome..."
+                      value={entityName}
+                      onChange={(e) => setEntityName(e.target.value)}
+                      className="h-11"
+                    />
                   </div>
                   <div className="space-y-2">
                     <Label>Vencimento</Label>
-                    <Input type="date" value={format(dueDate, "yyyy-MM-dd")} onChange={(e) => setDueDate(new Date(e.target.value))} />
+                    <Input
+                      type="date"
+                      value={format(dueDate, "yyyy-MM-dd")}
+                      onChange={(e) => setDueDate(new Date(e.target.value))}
+                      className="h-11"
+                    />
                   </div>
                 </div>
 
@@ -424,65 +460,100 @@ export default function Despesas() {
                   <div className="space-y-0.5">
                     <Label className="text-base flex items-center gap-2">
                       <Repeat className="h-4 w-4 text-primary" />
-                      {formType === 'payable' ? 'Despesa Fixa?' : 'Receita Recorrente?'}
+                      {formType === "payable" ? "Despesa Fixa?" : "Receita Recorrente?"}
                     </Label>
                     <p className="text-xs text-muted-foreground">Repetir por 12 meses.</p>
                   </div>
                   <Switch checked={isRecurring} onCheckedChange={setIsRecurring} />
                 </div>
 
-                <Button type="submit" className="w-full mt-2 font-bold">Salvar</Button>
+                <Button type="submit" className="w-full mt-2 font-bold h-11">
+                  Salvar
+                </Button>
               </form>
             </DialogContent>
           </Dialog>
         </div>
       </div>
 
-      {/* --- ALERTA DE AJUDA --- */}
-      {showInfo && (
+      {/* ALERTA DE AJUDA */}
+      {showInfo ? (
         <Alert className="bg-blue-50/50 border-blue-200 text-blue-800 relative pr-10 animate-in slide-in-from-top-2 fade-in shadow-sm">
           <Info className="h-4 w-4 text-blue-600" />
-          <AlertTitle className="text-blue-700 font-semibold">Como funciona a Meta de Sobrevivência?</AlertTitle>
+          <AlertTitle className="text-blue-700 font-semibold">
+            Como funciona a Meta de Sobrevivência?
+          </AlertTitle>
           <AlertDescription className="text-blue-700/80 text-sm mt-1">
-            <p className="mb-1">Este indicador mostra quanto da sua <strong>Receita (Vendas)</strong> está cobrindo as suas <strong>Despesas (Contas)</strong> no período selecionado.</p>
+            <p className="mb-1">
+              Mostra quanto da sua <strong>Receita</strong> cobre as suas{" "}
+              <strong>Despesas</strong> no período.
+            </p>
             <ul className="list-disc list-inside space-y-1 ml-1">
-              <li><strong>Cálculo:</strong> (Total a Receber) ÷ (Total a Pagar) x 100.</li>
-              <li><strong>Objetivo:</strong> Chegar a 100% para pagar todas as contas. O que passar de 100% é <strong>Lucro</strong>.</li>
-              <li><strong>Importante:</strong> Lance todas as contas e certifique-se de que as vendas do PDV estão sendo salvas no Financeiro.</li>
+              <li>
+                <strong>Cálculo:</strong> (Total a Receber) ÷ (Total a Pagar) x 100.
+              </li>
+              <li>
+                <strong>Objetivo:</strong> 100% para pagar todas as contas.
+              </li>
+              <li>
+                <strong>Importante:</strong> lance contas e confirme vendas do PDV no financeiro.
+              </li>
             </ul>
           </AlertDescription>
-          <Button variant="ghost" size="icon" className="absolute top-2 right-2 text-blue-400 hover:text-blue-700" onClick={handleCloseInfo}>
+
+          <Button
+            variant="ghost"
+            size="icon"
+            className="absolute top-2 right-2 text-blue-400 hover:text-blue-700"
+            onClick={handleCloseInfo}
+          >
             <X className="h-4 w-4" />
           </Button>
         </Alert>
+      ) : (
+        <div className="flex justify-end">
+          <Button variant="outline" size="sm" onClick={handleShowInfo}>
+            Mostrar dica
+          </Button>
+        </div>
       )}
 
-      {/* --- META DE SOBREVIVÊNCIA (BREAK-EVEN) --- */}
-      <Card className="border-2 border-primary/10 shadow-md bg-gradient-to-br from-background to-muted/20 overflow-hidden">
-        <div className={cn("absolute top-0 left-0 w-1 h-full", breakEven.isProfitable ? "bg-emerald-500" : "bg-amber-500")} />
+      {/* BREAK-EVEN */}
+      <Card className="border-2 border-primary/10 shadow-md bg-gradient-to-br from-background to-muted/20 overflow-hidden relative">
+        <div
+          className={cn(
+            "absolute top-0 left-0 w-1 h-full",
+            breakEven.isProfitable ? "bg-emerald-500" : "bg-amber-500"
+          )}
+        />
         <CardHeader className="pb-2">
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-3">
             <div>
-              <CardTitle className="flex items-center gap-2 text-xl">
-                <TrendingUp className="h-5 w-5 text-primary" /> 
+              <CardTitle className="flex items-center gap-2 text-lg sm:text-xl">
+                <TrendingUp className="h-5 w-5 text-primary" />
                 Resultado do Período
               </CardTitle>
-              <CardDescription>
-                Balanço entre Receitas e Despesas.
-              </CardDescription>
+              <CardDescription>Balanço entre Receitas e Despesas.</CardDescription>
             </div>
+
             {breakEven.isProfitable ? (
-              <Badge className="bg-emerald-500 text-base px-3 py-1">Lucro! 🚀</Badge>
+              <Badge className="bg-emerald-500 text-sm sm:text-base px-3 py-1">
+                Lucro! 🚀
+              </Badge>
             ) : (
-              <Badge variant="outline" className="text-base px-3 py-1 border-amber-500 text-amber-600 bg-amber-50">
+              <Badge
+                variant="outline"
+                className="text-sm sm:text-base px-3 py-1 border-amber-500 text-amber-600 bg-amber-50"
+              >
                 Déficit: {formatCurrency(breakEven.gap)} ⚠️
               </Badge>
             )}
           </div>
         </CardHeader>
+
         <CardContent>
           <div className="space-y-3">
-            <div className="flex justify-between text-sm font-medium">
+            <div className="flex flex-col sm:flex-row sm:justify-between gap-1 text-sm font-medium">
               <span className="flex items-center gap-1 text-emerald-600">
                 <ArrowUpCircle className="h-4 w-4" /> Receitas: {formatCurrency(breakEven.revenue)}
               </span>
@@ -490,21 +561,19 @@ export default function Despesas() {
                 <ArrowDownCircle className="h-4 w-4" /> Despesas: {formatCurrency(breakEven.costs)}
               </span>
             </div>
-            
-            <div className="relative pt-1">
-              <Progress value={breakEven.progress} className="h-4 w-full bg-gray-200" />
-            </div>
+
+            <Progress value={breakEven.progress} className="h-4 w-full" />
 
             <p className="text-sm text-center text-muted-foreground">
-              {breakEven.progress < 100 
-                ? `As receitas cobrem ${breakEven.progress.toFixed(1)}% das despesas neste período.` 
+              {breakEven.progress < 100
+                ? `As receitas cobrem ${breakEven.progress.toFixed(1)}% das despesas neste período.`
                 : "Receitas superaram as despesas!"}
             </p>
           </div>
         </CardContent>
       </Card>
 
-      {/* --- CARDS DE TOTAIS (KPIs) --- */}
+      {/* KPIs */}
       <div className="grid gap-4 md:grid-cols-3">
         <Card>
           <CardHeader className="flex flex-row items-center justify-between pb-2">
@@ -512,13 +581,18 @@ export default function Despesas() {
             <Landmark className="h-4 w-4 text-primary" />
           </CardHeader>
           <CardContent>
-            <div className={cn("text-2xl font-bold", summary.balance >= 0 ? "text-primary" : "text-destructive")}>
+            <div
+              className={cn(
+                "text-2xl font-bold",
+                summary.balance >= 0 ? "text-primary" : "text-destructive"
+              )}
+            >
               {formatCurrency(summary.balance)}
             </div>
-            <p className="text-xs text-muted-foreground">Total Pago - Total Recebido</p>
+            <p className="text-xs text-muted-foreground">Total Recebido - Total Pago</p>
           </CardContent>
         </Card>
-        
+
         <Card>
           <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-sm font-medium">A Pagar (Pendente)</CardTitle>
@@ -546,49 +620,140 @@ export default function Despesas() {
         </Card>
       </div>
 
-      {/* --- GRÁFICO E TABELA --- */}
+      {/* GRÁFICO + LANÇAMENTOS */}
       <div className="grid gap-4 md:grid-cols-7">
-        
-        {/* Gráfico */}
         <Card className="md:col-span-4 shadow-sm">
           <CardHeader>
             <CardTitle>Histórico Visual</CardTitle>
             <CardDescription>Evolução financeira no período</CardDescription>
           </CardHeader>
           <CardContent className="pl-0">
-            <div className="h-[300px] w-full">
+            <div className="h-[260px] sm:h-[300px] w-full">
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={chartData}>
                   <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                  <XAxis dataKey="name" stroke="#888888" fontSize={12} tickLine={false} axisLine={false} />
-                  <YAxis stroke="#888888" fontSize={12} tickLine={false} axisLine={false} tickFormatter={(value) => `R$${value}`} />
-                  <Tooltip 
-                    cursor={{ fill: 'transparent' }}
+                  <XAxis
+                    dataKey="name"
+                    fontSize={12}
+                    tickLine={false}
+                    axisLine={false}
+                  />
+                  <YAxis
+                    fontSize={12}
+                    tickLine={false}
+                    axisLine={false}
+                    tickFormatter={(value) => `R$${value}`}
+                  />
+                  <Tooltip
+                    cursor={{ fill: "transparent" }}
                     formatter={(value: number) => formatCurrency(value)}
-                    contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }}
+                    contentStyle={{
+                      borderRadius: "8px",
+                      border: "none",
+                      boxShadow: "0 4px 12px rgba(0,0,0,0.1)",
+                    }}
                   />
                   <Legend />
-                  <Bar dataKey="receitas" name="Entradas" fill="#10b981" radius={[4, 4, 0, 0]} barSize={20} />
-                  <Bar dataKey="despesas" name="Saídas" fill="#ef4444" radius={[4, 4, 0, 0]} barSize={20} />
+                  <Bar dataKey="receitas" name="Entradas" fill="#10b981" radius={[4, 4, 0, 0]} barSize={18} />
+                  <Bar dataKey="despesas" name="Saídas" fill="#ef4444" radius={[4, 4, 0, 0]} barSize={18} />
                 </BarChart>
               </ResponsiveContainer>
             </div>
           </CardContent>
         </Card>
 
-        {/* Tabela */}
+        {/* Desktop: tabela / Mobile: cards */}
         <Card className="md:col-span-3 shadow-sm flex flex-col">
           <CardHeader>
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between gap-2">
               <CardTitle>Lançamentos</CardTitle>
-              <div className="relative w-32">
+              <div className="relative w-40">
                 <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
-                <Input placeholder="Buscar..." className="pl-8 h-9" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} />
+                <Input
+                  placeholder="Buscar..."
+                  className="pl-8 h-9"
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                />
               </div>
             </div>
           </CardHeader>
+
           <CardContent className="flex-1 overflow-hidden p-0">
-            <div className="h-[300px] overflow-auto">
+            {/* MOBILE CARDS */}
+            <div className="sm:hidden p-4 space-y-3">
+              {finalFilteredEntries.length === 0 ? (
+                <div className="text-center text-muted-foreground py-8">
+                  Nada encontrado no período.
+                </div>
+              ) : (
+                finalFilteredEntries.slice(0, 30).map((entry) => {
+                  const falta = entry.total_amount - (entry.paid_amount || 0);
+                  return (
+                    <Card key={entry.id} className="border shadow-sm">
+                      <CardContent className="p-4 space-y-2">
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <p className="font-semibold truncate">{entry.description}</p>
+                            <p className="text-xs text-muted-foreground mt-1">
+                              {format(parseISO(entry.due_date), "dd/MM/yyyy")} •{" "}
+                              {entry.type === "receivable" ? "Entrada" : "Saída"}
+                              {entry.entity_name ? ` • ${entry.entity_name}` : ""}
+                            </p>
+                          </div>
+
+                          <div className="text-right shrink-0">
+                            <p
+                              className={cn(
+                                "font-bold",
+                                entry.type === "receivable"
+                                  ? "text-emerald-600"
+                                  : "text-destructive"
+                              )}
+                            >
+                              {entry.type === "receivable" ? "+" : "-"}{" "}
+                              {formatCurrency(entry.total_amount)}
+                            </p>
+                            <p className="text-[11px] text-muted-foreground">
+                              Falta: {formatCurrency(falta)}
+                            </p>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center justify-between">
+                          <Badge
+                            variant={isOverdue(entry) ? "destructive" : statusVariant[entry.status]}
+                          >
+                            {isOverdue(entry) ? "Atrasado" : statusLabel[entry.status] || entry.status}
+                          </Badge>
+
+                          {entry.status !== "paid" ? (
+                            <Button
+                              size="sm"
+                              onClick={() => openPayDialog(entry)}
+                              className="h-10"
+                            >
+                              <CheckCircle className="h-4 w-4 mr-2" />
+                              Baixar
+                            </Button>
+                          ) : (
+                            <span className="text-xs text-muted-foreground">OK</span>
+                          )}
+                        </div>
+                      </CardContent>
+                    </Card>
+                  );
+                })
+              )}
+              {finalFilteredEntries.length > 30 && (
+                <div className="text-xs text-muted-foreground text-center">
+                  Mostrando 30 de {finalFilteredEntries.length}.
+                </div>
+              )}
+            </div>
+
+            {/* DESKTOP TABLE */}
+            <div className="hidden sm:block h-[300px] overflow-auto">
               <Table>
                 <TableHeader>
                   <TableRow>
@@ -600,22 +765,43 @@ export default function Despesas() {
                 </TableHeader>
                 <TableBody>
                   {finalFilteredEntries.length === 0 ? (
-                    <TableRow><TableCell colSpan={4} className="text-center text-muted-foreground py-8">Nada encontrado no período.</TableCell></TableRow>
+                    <TableRow>
+                      <TableCell colSpan={4} className="text-center text-muted-foreground py-8">
+                        Nada encontrado no período.
+                      </TableCell>
+                    </TableRow>
                   ) : (
                     finalFilteredEntries.map((entry) => (
                       <TableRow key={entry.id}>
-                        <TableCell className="text-xs text-muted-foreground">{format(parseISO(entry.due_date), "dd/MM")}</TableCell>
+                        <TableCell className="text-xs text-muted-foreground">
+                          {format(parseISO(entry.due_date), "dd/MM")}
+                        </TableCell>
                         <TableCell>
-                          <div className="font-medium truncate max-w-[100px]" title={entry.description}>{entry.description}</div>
+                          <div className="font-medium truncate max-w-[140px]" title={entry.description}>
+                            {entry.description}
+                          </div>
                         </TableCell>
                         <TableCell className="text-right">
-                          <div className={cn("font-medium", entry.type === 'receivable' ? 'text-emerald-600' : 'text-destructive')}>
-                            {entry.type === 'receivable' ? '+' : '-'} {formatCurrency(entry.total_amount)}
+                          <div
+                            className={cn(
+                              "font-medium",
+                              entry.type === "receivable"
+                                ? "text-emerald-600"
+                                : "text-destructive"
+                            )}
+                          >
+                            {entry.type === "receivable" ? "+" : "-"}{" "}
+                            {formatCurrency(entry.total_amount)}
                           </div>
                         </TableCell>
                         <TableCell>
                           {entry.status !== "paid" && (
-                            <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => openPayDialog(entry)}>
+                            <Button
+                              size="icon"
+                              variant="ghost"
+                              className="h-7 w-7"
+                              onClick={() => openPayDialog(entry)}
+                            >
                               <CheckCircle className="h-4 w-4 text-primary" />
                             </Button>
                           )}
@@ -630,97 +816,180 @@ export default function Despesas() {
         </Card>
       </div>
 
-      {/* --- ABAS: A PAGAR / A RECEBER --- */}
+      {/* ABAS */}
       <Tabs defaultValue="payable" className="w-full">
         <div className="flex items-center justify-between mb-4">
-          <TabsList>
-            <TabsTrigger value="payable" className="w-[150px]">Contas a Pagar</TabsTrigger>
-            <TabsTrigger value="receivable" className="w-[150px]">Contas a Receber</TabsTrigger>
+          <TabsList className="w-full sm:w-auto">
+            <TabsTrigger value="payable" className="flex-1 sm:w-[160px]">
+              Contas a Pagar
+            </TabsTrigger>
+            <TabsTrigger value="receivable" className="flex-1 sm:w-[160px]">
+              Contas a Receber
+            </TabsTrigger>
           </TabsList>
         </div>
 
-        {["payable", "receivable"].map((tabValue) => (
-          <TabsContent key={tabValue} value={tabValue} className="mt-0">
-            <Card>
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Vencimento</TableHead>
-                    <TableHead>Descrição</TableHead>
-                    <TableHead>{tabValue === "receivable" ? "Cliente" : "Fornecedor"}</TableHead>
-                    <TableHead className="text-right">Valor Total</TableHead>
-                    <TableHead className="text-right">Falta Pagar</TableHead>
-                    <TableHead>Status</TableHead>
-                    <TableHead className="text-right">Ação</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {/* CORREÇÃO: Usando finalFilteredEntries aqui */}
-                  {finalFilteredEntries
-                    .filter(e => e.type === tabValue)
-                    .map((entry) => {
-                      const isOverdue = entry.status !== "paid" && new Date(entry.due_date) < new Date();
+        {(["payable", "receivable"] as const).map((tabValue) => {
+          const list = finalFilteredEntries.filter((e) => e.type === tabValue);
+
+          return (
+            <TabsContent key={tabValue} value={tabValue} className="mt-0">
+              <Card className="overflow-hidden">
+                {/* MOBILE CARDS */}
+                <div className="sm:hidden p-4 space-y-3">
+                  {list.length === 0 ? (
+                    <div className="text-center py-10 text-muted-foreground">
+                      Nenhum lançamento encontrado.
+                    </div>
+                  ) : (
+                    list.map((entry) => {
+                      const falta = entry.total_amount - (entry.paid_amount || 0);
                       return (
-                        <TableRow key={entry.id}>
-                          <TableCell className={cn(isOverdue && "text-destructive font-bold")}>
-                            {format(new Date(entry.due_date), "dd/MM/yyyy")}
-                          </TableCell>
-                          <TableCell className="font-medium">{entry.description}</TableCell>
-                          <TableCell>{entry.entity_name || "-"}</TableCell>
-                          <TableCell className="text-right">{formatCurrency(entry.total_amount)}</TableCell>
-                          <TableCell className="text-right font-mono font-medium">
-                            {formatCurrency(entry.total_amount - entry.paid_amount)}
-                          </TableCell>
-                          <TableCell>
-                            <Badge variant={isOverdue ? "destructive" : statusVariant[entry.status]}>
-                              {isOverdue ? "Atrasado" : statusLabel[entry.status]}
-                            </Badge>
-                          </TableCell>
-                          <TableCell className="text-right">
-                            {entry.status !== "paid" && (
-                              <Button variant="outline" size="sm" onClick={() => openPayDialog(entry)}>
-                                Baixar
-                              </Button>
-                            )}
+                        <Card key={entry.id} className="border shadow-sm">
+                          <CardContent className="p-4 space-y-2">
+                            <div className="flex items-start justify-between gap-2">
+                              <div className="min-w-0">
+                                <p className="font-semibold truncate">{entry.description}</p>
+                                <p
+                                  className={cn(
+                                    "text-xs mt-1",
+                                    isOverdue(entry) ? "text-destructive font-semibold" : "text-muted-foreground"
+                                  )}
+                                >
+                                  Venc: {format(parseISO(entry.due_date), "dd/MM/yyyy")}
+                                </p>
+                                <p className="text-xs text-muted-foreground">
+                                  {tabValue === "receivable" ? "Cliente" : "Fornecedor"}:{" "}
+                                  {entry.entity_name || "-"}
+                                </p>
+                              </div>
+
+                              <div className="text-right shrink-0">
+                                <p className="font-bold">{formatCurrency(entry.total_amount)}</p>
+                                <p className="text-[11px] text-muted-foreground">
+                                  Falta: {formatCurrency(falta)}
+                                </p>
+                              </div>
+                            </div>
+
+                            <div className="flex items-center justify-between">
+                              <Badge
+                                variant={isOverdue(entry) ? "destructive" : statusVariant[entry.status]}
+                              >
+                                {isOverdue(entry) ? "Atrasado" : statusLabel[entry.status] || entry.status}
+                              </Badge>
+
+                              {entry.status !== "paid" ? (
+                                <Button size="sm" variant="outline" onClick={() => openPayDialog(entry)} className="h-10">
+                                  <CheckCircle className="h-4 w-4 mr-2" />
+                                  Baixar
+                                </Button>
+                              ) : (
+                                <Badge className="bg-emerald-100 text-emerald-800">Pago</Badge>
+                              )}
+                            </div>
+                          </CardContent>
+                        </Card>
+                      );
+                    })
+                  )}
+                </div>
+
+                {/* DESKTOP TABLE */}
+                <div className="hidden sm:block">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Vencimento</TableHead>
+                        <TableHead>Descrição</TableHead>
+                        <TableHead>{tabValue === "receivable" ? "Cliente" : "Fornecedor"}</TableHead>
+                        <TableHead className="text-right">Valor Total</TableHead>
+                        <TableHead className="text-right">Falta</TableHead>
+                        <TableHead>Status</TableHead>
+                        <TableHead className="text-right">Ação</TableHead>
+                      </TableRow>
+                    </TableHeader>
+
+                    <TableBody>
+                      {list.map((entry) => {
+                        const overdue = isOverdue(entry);
+                        return (
+                          <TableRow key={entry.id}>
+                            <TableCell className={cn(overdue && "text-destructive font-bold")}>
+                              {format(parseISO(entry.due_date), "dd/MM/yyyy")}
+                            </TableCell>
+                            <TableCell className="font-medium">{entry.description}</TableCell>
+                            <TableCell>{entry.entity_name || "-"}</TableCell>
+                            <TableCell className="text-right">{formatCurrency(entry.total_amount)}</TableCell>
+                            <TableCell className="text-right font-mono font-medium">
+                              {formatCurrency(entry.total_amount - (entry.paid_amount || 0))}
+                            </TableCell>
+                            <TableCell>
+                              <Badge variant={overdue ? "destructive" : statusVariant[entry.status]}>
+                                {overdue ? "Atrasado" : statusLabel[entry.status] || entry.status}
+                              </Badge>
+                            </TableCell>
+                            <TableCell className="text-right">
+                              {entry.status !== "paid" && (
+                                <Button variant="outline" size="sm" onClick={() => openPayDialog(entry)}>
+                                  Baixar
+                                </Button>
+                              )}
+                            </TableCell>
+                          </TableRow>
+                        );
+                      })}
+
+                      {list.length === 0 && (
+                        <TableRow>
+                          <TableCell colSpan={7} className="text-center py-8 text-muted-foreground">
+                            Nenhum lançamento encontrado.
                           </TableCell>
                         </TableRow>
-                      );
-                    })}
-                  {finalFilteredEntries.filter(e => e.type === tabValue).length === 0 && (
-                    <TableRow>
-                      <TableCell colSpan={7} className="text-center py-8 text-muted-foreground">
-                        Nenhum lançamento encontrado.
-                      </TableCell>
-                    </TableRow>
-                  )}
-                </TableBody>
-              </Table>
-            </Card>
-          </TabsContent>
-        ))}
+                      )}
+                    </TableBody>
+                  </Table>
+                </div>
+              </Card>
+            </TabsContent>
+          );
+        })}
       </Tabs>
 
-      {/* --- DIALOG DE BAIXA --- */}
+      {/* DIALOG BAIXA */}
       <Dialog open={payDialogOpen} onOpenChange={setPayDialogOpen}>
         <DialogContent className="max-w-sm">
           <DialogHeader>
             <DialogTitle>Registrar Pagamento/Baixa</DialogTitle>
             <CardDescription>Confirme o valor.</CardDescription>
           </DialogHeader>
+
           {selectedEntry && (
             <div className="space-y-4 pt-2">
               <div className="p-3 bg-muted rounded-md text-sm border">
-                <p><strong>{selectedEntry.description}</strong></p>
-                <div className="flex justify-between mt-1">
+                <p className="font-semibold">{selectedEntry.description}</p>
+                <div className="flex justify-between mt-2 text-xs text-muted-foreground">
                   <span>Total: {formatCurrency(selectedEntry.total_amount)}</span>
-                  <span className="text-primary font-bold">Falta: {formatCurrency(selectedEntry.total_amount - selectedEntry.paid_amount)}</span>
+                  <span className="text-primary font-bold">
+                    Falta: {formatCurrency(selectedEntry.total_amount - (selectedEntry.paid_amount || 0))}
+                  </span>
                 </div>
               </div>
+
               <div className="space-y-2">
                 <Label>Valor a Baixar (R$)</Label>
-                <Input type="number" value={payAmount} onChange={e => setPayAmount(e.target.value)} placeholder="0,00" />
+                <Input
+                  type="number"
+                  value={payAmount}
+                  onChange={(e) => setPayAmount(e.target.value)}
+                  placeholder="0,00"
+                  className="h-11"
+                />
               </div>
-              <Button onClick={handlePay} className="w-full">Confirmar</Button>
+
+              <Button onClick={handlePay} className="w-full h-11">
+                Confirmar
+              </Button>
             </div>
           )}
         </DialogContent>

@@ -1,39 +1,33 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { useForm } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
+import { z } from "zod";
+import * as XLSX from "xlsx";
 import {
-  History,
+  Users,
+  Plus,
   Search,
-  Filter,
-  MessageCircle,
-  Calendar,
-  Eye,
-  XCircle,
-  Package,
-  User,
-  CreditCard,
-  Copy,
+  Edit,
+  Trash2,
+  Phone,
+  MapPin,
   Loader2,
-  Hash,
   FileText,
-  AlertTriangle,
+  MessageCircle,
+  Copy,
+  Upload,
+  Filter,
+  X,
+  CheckCircle2,
   Download,
-  RefreshCcw,
-  Boxes,
 } from "lucide-react";
-import { useAuth } from "@/hooks/useAuth";
-import { Input } from "@/components/ui/input";
+import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import {
   Table,
   TableBody,
@@ -43,12 +37,14 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import {
-  Sheet,
-  SheetContent,
-  SheetDescription,
-  SheetHeader,
-  SheetTitle,
-} from "@/components/ui/sheet";
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -59,1118 +55,1017 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Calendar as CalendarComponent } from "@/components/ui/calendar";
-import { Separator } from "@/components/ui/separator";
 import {
-  format,
-  isWithinInterval,
-  startOfDay,
-  endOfDay,
-  parseISO,
-  isValid,
-} from "date-fns";
-import { ptBR } from "date-fns/locale";
-import { cn } from "@/lib/utils";
-import { DateRange } from "react-day-picker";
+  Form,
+  FormControl,
+  FormField,
+  FormItem,
+  FormLabel,
+  FormMessage,
+} from "@/components/ui/form";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { toast } from "sonner";
-import { supabase } from "@/integrations/supabase/client";
 
-// =====================
-// TIPAGEM
-// =====================
-type SaleStatus = "paid" | "cancelled" | "pending";
-
-interface Sale {
+// --- TIPAGEM ---
+interface Customer {
   id: string;
+  name: string;
+  document: string | null;
+  phone: string | null;
+  address: string | null;
+  city: string | null;
+  status: string;
   created_at: string;
-  description: string;
-  total_amount: number;
-  status: SaleStatus;
-  entity_name: string;
-
-  // Virtuais extraídos
-  seller_name?: string;
-  payment_method?: string;
-  items_count?: number;
 }
 
-type ParsedItem = {
-  name: string;
-  sku?: string;
-  qty: number;
-  unit?: string; // "un" | "kg" | etc
-  price?: number; // unit price
-  total?: number; // line total
+// --- UTILS ---
+const onlyDigits = (v: string) => (v || "").replace(/\D/g, "");
+const normalizeNullable = (v: string | undefined | null) => {
+  const t = (v ?? "").trim();
+  return t.length ? t : null;
 };
 
-const formatCurrency = (value: number) =>
-  (value || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
-
-const safeParseDate = (iso: string) => {
-  try {
-    const d = parseISO(iso);
-    if (!isValid(d)) return null;
-    return d;
-  } catch {
-    return null;
+const formatPhone = (value: string) => {
+  if (!value) return "";
+  const numbers = onlyDigits(value).slice(0, 11);
+  if (numbers.length <= 10) {
+    return numbers.replace(/(\d{2})(\d{4})(\d{0,4})/, "($1) $2-$3").trim();
   }
+  return numbers.replace(/(\d{2})(\d{5})(\d{0,4})/, "($1) $2-$3").trim();
 };
 
-const formatDate = (dateString: string) => {
-  const d = safeParseDate(dateString);
-  if (!d) return "-";
-  return format(d, "dd/MM/yyyy");
+const formatDocument = (value: string) => {
+  if (!value) return "";
+  const numbers = onlyDigits(value).slice(0, 14);
+  if (numbers.length <= 11) {
+    return numbers
+      .replace(/(\d{3})(\d{3})(\d{3})(\d{0,2})/, "$1.$2.$3-$4")
+      .trim();
+  }
+  return numbers
+    .replace(/(\d{2})(\d{3})(\d{3})(\d{4})(\d{0,2})/, "$1.$2.$3/$4-$5")
+    .trim();
 };
 
-const formatTime = (dateString: string) => {
-  const d = safeParseDate(dateString);
-  if (!d) return "-";
-  return format(d, "HH:mm");
-};
-
-const copyToClipboard = async (text: string, okMsg = "Copiado!") => {
+const copyToClipboard = async (text: string) => {
   try {
     await navigator.clipboard.writeText(text);
-    toast.success(okMsg);
+    toast.success("Copiado!");
   } catch {
     toast.error("Não foi possível copiar.");
   }
 };
 
-const onlyDigits = (v: string) => (v || "").replace(/\D/g, "");
-
-// =====================
-// PARSERS (description)
-// =====================
-const parseFromDescription = (desc?: string) => {
-  const d = desc || "";
-
-  const seller =
-    d.match(/Vend:\s*([^|\n]+)/i)?.[1]?.trim() ||
-    d.match(/Vendedor:\s*([^|\n]+)/i)?.[1]?.trim() ||
-    "";
-
-  const payment =
-    d.match(/Pgto:\s*([^|\n]+)/i)?.[1]?.trim() ||
-    d.match(/Pagamento:\s*([^|\n]+)/i)?.[1]?.trim() ||
-    "";
-
-  const itemsCountRaw =
-    d.match(/Itens:\s*(\d+)/i)?.[1] ||
-    d.match(/Qtd\s*Itens:\s*(\d+)/i)?.[1] ||
-    "";
-
-  const items_count = itemsCountRaw ? Number(itemsCountRaw) : undefined;
-
-  return {
-    seller_name: seller || undefined,
-    payment_method: payment || undefined,
-    items_count: Number.isFinite(items_count as number) ? items_count : undefined,
-  };
+const openWhatsApp = (phone: string, name?: string) => {
+  const clean = onlyDigits(phone);
+  if (clean.length < 10) return toast.error("Telefone inválido.");
+  const msg = encodeURIComponent(`Olá ${name || ""}!`);
+  window.open(`https://wa.me/55${clean}?text=${msg}`, "_blank");
 };
 
-const extractItemsBlock = (desc: string) => {
-  const d = desc || "";
-  const idx = d.toLowerCase().indexOf("itens:");
-  if (idx === -1) return "";
-  const block = d.slice(idx);
+// --- SCHEMA ---
+const customerSchema = z.object({
+  name: z.string().min(2, "Nome é obrigatório (min 2 letras)").max(100),
 
-  const cutAt =
-    block.toLowerCase().indexOf("total:") !== -1
-      ? block.toLowerCase().indexOf("total:")
-      : block.toLowerCase().indexOf("pagamento:") !== -1
-      ? block.toLowerCase().indexOf("pagamento:")
-      : block.toLowerCase().indexOf("pgto:") !== -1
-      ? block.toLowerCase().indexOf("pgto:")
-      : -1;
+  document: z
+    .string()
+    .optional()
+    .or(z.literal(""))
+    .refine((v) => {
+      const d = onlyDigits(v || "");
+      return d.length === 0 || d.length === 11 || d.length === 14;
+    }, "CPF/CNPJ inválido (precisa ter 11 ou 14 dígitos)."),
 
-  return cutAt > 0 ? block.slice(0, cutAt) : block;
+  phone: z
+    .string()
+    .optional()
+    .or(z.literal(""))
+    .refine((v) => {
+      const d = onlyDigits(v || "");
+      return d.length === 0 || (d.length >= 10 && d.length <= 11);
+    }, "Telefone inválido (DDD + número)."),
+
+  address: z.string().optional().or(z.literal("")),
+  city: z.string().optional().or(z.literal("")),
+  status: z.enum(["ativo", "inativo"]).default("ativo"),
+});
+
+type CustomerFormData = z.infer<typeof customerSchema>;
+
+// --- IMPORT ---
+type ImportRow = {
+  name: string;
+  document?: string;
+  phone?: string;
+  address?: string;
+  city?: string;
+  status?: "ativo" | "inativo";
 };
 
-const parseMoney = (v: string) => {
-  const raw = (v || "").replace(/[^\d,.-]/g, "").trim();
-  if (!raw) return undefined;
-
-  const normalized =
-    raw.includes(",") && raw.includes(".")
-      ? raw.replace(/\./g, "").replace(",", ".")
-      : raw.includes(",")
-      ? raw.replace(",", ".")
-      : raw;
-
-  const n = Number(normalized);
-  return Number.isFinite(n) ? n : undefined;
-};
-
-const parseItemsFromDescription = (desc: string): ParsedItem[] => {
-  const block = extractItemsBlock(desc);
-  if (!block) return [];
-
-  const raw = block.replace(/Itens:\s*/i, "").trim();
-  if (!raw) return [];
-
-  const parts = raw
-    .split(/\n|;/g)
-    .map((p) => p.trim())
-    .filter(Boolean);
-
-  const items: ParsedItem[] = [];
-
-  for (const p of parts) {
-    const sku = p.match(/SKU:\s*([A-Za-z0-9_-]+)/i)?.[1]?.trim();
-    const name =
-      p.match(/Nome:\s*([^|]+)/i)?.[1]?.trim() ||
-      p.match(/Produto:\s*([^|]+)/i)?.[1]?.trim() ||
-      "";
-
-    const qtyRaw =
-      p.match(/Qtd:\s*([\d.,]+)/i)?.[1] || p.match(/x\s*([\d.,]+)/i)?.[1] || "";
-    const qty = qtyRaw ? Number((qtyRaw || "0").replace(",", ".")) : NaN;
-
-    const unit = p.match(/Un:\s*([A-Za-z]+)/i)?.[1]?.trim();
-    const priceRaw =
-      p.match(/Preço:\s*([^|]+)/i)?.[1] || p.match(/Unit:\s*([^|]+)/i)?.[1] || "";
-    const price = priceRaw ? parseMoney(priceRaw) : undefined;
-
-    const totalRaw = p.match(/Total:\s*([^|]+)/i)?.[1] || "";
-    const total = totalRaw ? parseMoney(totalRaw) : undefined;
-
-    const simpleSku = sku || p.match(/^([A-Za-z0-9_-]{3,})\s*-\s*/)?.[1]?.trim();
-    const simpleName =
-      name ||
-      p.match(/-\s*(.*?)\s*(x|\(|$)/i)?.[1]?.trim() ||
-      p.replace(/^[A-Za-z0-9_-]+\s*-\s*/i, "").trim();
-
-    const simpleQty =
-      Number.isFinite(qty)
-        ? qty
-        : (() => {
-            const m = p.match(/x\s*([\d.,]+)/i)?.[1];
-            if (!m) return NaN;
-            const n = Number(m.replace(",", "."));
-            return Number.isFinite(n) ? n : NaN;
-          })();
-
-    const simplePrice =
-      price ??
-      (() => {
-        const m = p.match(/\(\s*(R\$)?\s*([\d.,]+)\s*\)/i)?.[2];
-        return m ? parseMoney(m) : undefined;
-      })();
-
-    const finalQty = Number.isFinite(simpleQty) ? simpleQty : 1;
-
-    if (!simpleName || simpleName.length < 2) continue;
-
-    items.push({
-      sku: simpleSku || undefined,
-      name: simpleName,
-      qty: finalQty,
-      unit: unit || undefined,
-      price: simplePrice,
-      total,
-    });
+const getVal = (obj: any, keys: string[]) => {
+  const lower = Object.keys(obj || {}).reduce<Record<string, any>>((acc, k) => {
+    acc[k.toLowerCase().trim()] = obj[k];
+    return acc;
+  }, {});
+  for (const k of keys) {
+    const v = lower[k.toLowerCase()];
+    if (v !== undefined && v !== null) return String(v).trim();
   }
-
-  return items;
+  return "";
 };
 
-// =====================
-// STATUS UI
-// =====================
-const statusLabel = (s: SaleStatus) => {
-  if (s === "paid") return "Concluída";
-  if (s === "cancelled") return "Cancelada";
-  return "Pendente";
-};
+export default function Clientes() {
+  const [customers, setCustomers] = useState<Customer[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
 
-const statusBadge = (s: SaleStatus) => {
-  if (s === "paid") {
-    return (
-      <Badge className="bg-emerald-100 text-emerald-800 hover:bg-emerald-200">
-        Concluída
-      </Badge>
-    );
-  }
-  if (s === "cancelled") return <Badge variant="destructive">Cancelada</Badge>;
-  return (
-    <Badge variant="secondary" className="bg-amber-100 text-amber-800">
-      Pendente
-    </Badge>
-  );
-};
+  const [isDialogOpen, setIsDialogOpen] = useState(false);
+  const [editingCustomer, setEditingCustomer] = useState<Customer | null>(null);
+  const [deleteCustomer, setDeleteCustomer] = useState<Customer | null>(null);
 
-// =====================
-// EXPORT (CSV/XLSX)
-// =====================
-const downloadBlob = (blob: Blob, filename: string) => {
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
-};
-
-const toCsv = (rows: Record<string, any>[]) => {
-  if (!rows.length) return "";
-  const headers = Object.keys(rows[0]);
-
-  const escape = (v: any) => {
-    const s = String(v ?? "");
-    if (s.includes('"') || s.includes(",") || s.includes("\n")) {
-      return `"${s.replace(/"/g, '""')}"`;
-    }
-    return s;
-  };
-
-  const lines = [
-    headers.join(","),
-    ...rows.map((r) => headers.map((h) => escape(r[h])).join(",")),
-  ];
-
-  return lines.join("\n");
-};
-
-// =====================
-// COMPONENTE
-// =====================
-export default function Historico() {
-  const { isAdmin, profile } = useAuth();
-
-  const [sales, setSales] = useState<Sale[]>([]);
-  const [loading, setLoading] = useState(true);
-
-  const [search, setSearch] = useState("");
+  const [searchTerm, setSearchTerm] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
-  const [statusFilter, setStatusFilter] = useState<"all" | SaleStatus>("all");
-  const [dateRange, setDateRange] = useState<DateRange | undefined>(undefined);
 
-  const [selectedSale, setSelectedSale] = useState<Sale | null>(null);
-  const [isSheetOpen, setIsSheetOpen] = useState(false);
+  const [statusFilter, setStatusFilter] = useState<"all" | "ativo" | "inativo">("all");
 
-  const [isCancelDialogOpen, setIsCancelDialogOpen] = useState(false);
-  const [cancelReason, setCancelReason] = useState("");
-  const [cancelOperator, setCancelOperator] = useState(profile?.name || "");
-  const [cancelling, setCancelling] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
+  const [importRows, setImportRows] = useState<ImportRow[]>([]);
+  const [importing, setImporting] = useState(false);
 
-  const [restocking, setRestocking] = useState(false);
+  const form = useForm<CustomerFormData>({
+    resolver: zodResolver(customerSchema),
+    defaultValues: {
+      name: "",
+      document: "",
+      phone: "",
+      address: "",
+      city: "",
+      status: "ativo",
+    },
+  });
 
   useEffect(() => {
-    const t = setTimeout(() => setDebouncedSearch(search.trim().toLowerCase()), 250);
+    const t = setTimeout(() => setDebouncedSearch(searchTerm.trim().toLowerCase()), 200);
     return () => clearTimeout(t);
-  }, [search]);
+  }, [searchTerm]);
 
   useEffect(() => {
-    fetchSales();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    fetchCustomers();
   }, []);
 
-  const fetchSales = async () => {
-    setLoading(true);
+  const fetchCustomers = async () => {
+    setIsLoading(true);
     try {
-      const { data, error } = await supabase
-        .from("financial_entries")
-        .select("*")
-        .eq("type", "receivable")
-        .ilike("reference", "PDV%")
-        .order("created_at", { ascending: false });
-
+      const { data, error } = await supabase.from("customers").select("*").order("name");
       if (error) throw error;
-
-      const mapped: Sale[] = (data || []).map((row: any) => {
-        const parsed = parseFromDescription(row.description);
-        return {
-          id: String(row.id),
-          created_at: String(row.created_at || ""),
-          description: String(row.description || ""),
-          total_amount: Number(row.total_amount || 0),
-          status: (row.status as SaleStatus) || "paid",
-          entity_name: String(row.entity_name || "Cliente Avulso"),
-          ...parsed,
-        };
-      });
-
-      setSales(mapped);
-    } catch (e) {
-      console.error(e);
-      toast.error("Erro ao carregar histórico de vendas.");
+      setCustomers((data as Customer[]) || []);
+    } catch (error) {
+      console.error("Erro ao buscar clientes:", error);
+      toast.error("Erro ao carregar lista de clientes");
     } finally {
-      setLoading(false);
+      setIsLoading(false);
     }
   };
 
-  const filteredSales = useMemo(() => {
+  const openNewDialog = () => {
+    setEditingCustomer(null);
+    form.reset({
+      name: "",
+      document: "",
+      phone: "",
+      address: "",
+      city: "",
+      status: "ativo",
+    });
+    setIsDialogOpen(true);
+  };
+
+  const openEditDialog = (customer: Customer) => {
+    setEditingCustomer(customer);
+    form.reset({
+      name: customer.name,
+      document: customer.document || "",
+      phone: customer.phone || "",
+      address: customer.address || "",
+      city: customer.city || "",
+      status: (customer.status as "ativo" | "inativo") || "ativo",
+    });
+    setIsDialogOpen(true);
+  };
+
+  const onSubmit = async (data: CustomerFormData) => {
+    try {
+      const payload = {
+        name: data.name.trim(),
+        document: normalizeNullable(data.document),
+        phone: normalizeNullable(data.phone),
+        address: normalizeNullable(data.address),
+        city: normalizeNullable(data.city),
+        status: data.status,
+      };
+
+      if (editingCustomer) {
+        const { error } = await supabase.from("customers").update(payload).eq("id", editingCustomer.id);
+        if (error) throw error;
+        toast.success("Cliente atualizado com sucesso!");
+      } else {
+        const { error } = await supabase.from("customers").insert(payload);
+        if (error) throw error;
+        toast.success("Cliente cadastrado com sucesso!");
+      }
+
+      setIsDialogOpen(false);
+      setEditingCustomer(null);
+      await fetchCustomers();
+    } catch (error: any) {
+      console.error("Erro ao salvar cliente:", error);
+      toast.error("Erro ao salvar: " + (error.message || "Verifique os dados"));
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!deleteCustomer) return;
+
+    try {
+      const { error } = await supabase.from("customers").delete().eq("id", deleteCustomer.id);
+      if (error) throw error;
+
+      toast.success("Cliente excluído!");
+      setDeleteCustomer(null);
+      await fetchCustomers();
+    } catch (error) {
+      console.error("Erro ao excluir cliente:", error);
+      toast.error("Não foi possível excluir o cliente.");
+    }
+  };
+
+  const filteredCustomers = useMemo(() => {
     const s = debouncedSearch;
 
-    return sales.filter((sale) => {
-      const matchesSearch =
-        !s ||
-        sale.id.toLowerCase().includes(s) ||
-        (sale.entity_name || "").toLowerCase().includes(s) ||
-        (sale.description || "").toLowerCase().includes(s) ||
-        (sale.seller_name || "").toLowerCase().includes(s) ||
-        (sale.payment_method || "").toLowerCase().includes(s);
+    const base =
+      statusFilter === "all"
+        ? customers
+        : customers.filter((c) => c.status === statusFilter);
 
-      const matchesStatus = statusFilter === "all" ? true : sale.status === statusFilter;
+    if (!s) return base;
 
-      let matchesDate = true;
-      if (dateRange?.from) {
-        const saleDate = safeParseDate(sale.created_at);
-        if (!saleDate) return false;
-        const from = startOfDay(dateRange.from);
-        const to = dateRange.to ? endOfDay(dateRange.to) : endOfDay(dateRange.from);
-        matchesDate = isWithinInterval(saleDate, { start: from, end: to });
-      }
+    return base.filter((c) => {
+      const name = (c.name || "").toLowerCase();
+      const city = (c.city || "").toLowerCase();
+      const phone = (c.phone || "").toLowerCase();
+      const doc = (c.document || "").toLowerCase();
 
-      return matchesSearch && matchesStatus && matchesDate;
-    });
-  }, [sales, debouncedSearch, statusFilter, dateRange]);
-
-  const paidSales = useMemo(
-    () => filteredSales.filter((s) => s.status === "paid"),
-    [filteredSales]
-  );
-
-  const totalRevenue = useMemo(
-    () => paidSales.reduce((sum, s) => sum + Number(s.total_amount || 0), 0),
-    [paidSales]
-  );
-
-  const cancelledCount = useMemo(
-    () => filteredSales.filter((s) => s.status === "cancelled").length,
-    [filteredSales]
-  );
-
-  const pendingCount = useMemo(
-    () => filteredSales.filter((s) => s.status === "pending").length,
-    [filteredSales]
-  );
-
-  const ticketAvg = paidSales.length > 0 ? totalRevenue / paidSales.length : 0;
-
-  const hasActiveFilters = !!debouncedSearch || statusFilter !== "all" || !!dateRange;
-
-  const clearFilters = () => {
-    setSearch("");
-    setStatusFilter("all");
-    setDateRange(undefined);
-  };
-
-  const openSaleDetails = (sale: Sale) => {
-    setSelectedSale(sale);
-    setIsSheetOpen(true);
-  };
-
-  const openCancelDialog = () => {
-    if (!selectedSale) return;
-    if (selectedSale.status === "cancelled") return toast.info("Essa venda já está cancelada.");
-    setCancelReason("");
-    setCancelOperator(profile?.name || "");
-    setIsCancelDialogOpen(true);
-  };
-
-  const handleCancelSale = async () => {
-    if (!selectedSale) return;
-
-    if (!cancelReason.trim() || !cancelOperator.trim()) {
-      toast.error("Preencha o motivo e o operador.");
-      return;
-    }
-
-    setCancelling(true);
-    try {
-      const appended = `\n[CANCELADO por ${cancelOperator.trim()}: ${cancelReason.trim()}]`;
-
-      const { error } = await supabase
-        .from("financial_entries")
-        .update({
-          status: "cancelled",
-          description: `${selectedSale.description}${appended}`,
-        })
-        .eq("id", selectedSale.id);
-
-      if (error) throw error;
-
-      toast.success("Venda cancelada!");
-      setIsCancelDialogOpen(false);
-      setIsSheetOpen(false);
-      setSelectedSale(null);
-      await fetchSales();
-    } catch (e: any) {
-      console.error(e);
-      toast.error("Erro ao cancelar", { description: e?.message || "" });
-    } finally {
-      setCancelling(false);
-    }
-  };
-
-  const handleSendWhatsApp = async (sale: Sale) => {
-    try {
-      const customerName = (sale.entity_name || "").trim();
-      if (!customerName) return toast.error("Cliente inválido.");
-
-      const { data, error } = await supabase
-        .from("customers")
-        .select("phone")
-        .eq("name", customerName)
-        .maybeSingle();
-
-      if (error) throw error;
-
-      const phone = onlyDigits(data?.phone || "");
-      if (!phone || phone.length < 10) {
-        toast.info("Cliente sem WhatsApp cadastrado.");
-        return;
-      }
-
-      const msg = encodeURIComponent(
-        `Olá ${customerName}! Segue o resumo da sua compra:\n\n${sale.description}\n\nTotal: ${formatCurrency(
-          sale.total_amount
-        )}`
+      return (
+        name.includes(s) ||
+        city.includes(s) ||
+        phone.includes(s) ||
+        doc.includes(s) ||
+        onlyDigits(phone).includes(onlyDigits(s)) ||
+        onlyDigits(doc).includes(onlyDigits(s))
       );
+    });
+  }, [customers, debouncedSearch, statusFilter]);
 
-      window.open(`https://wa.me/55${phone}?text=${msg}`, "_blank");
-    } catch (e: any) {
-      console.error(e);
-      toast.error("Não foi possível abrir WhatsApp", { description: e?.message || "" });
-    }
-  };
+  const total = customers.length;
+  const active = customers.filter((c) => c.status === "ativo").length;
+  const inactive = customers.filter((c) => c.status === "inativo").length;
 
-  const buildExportRows = () => {
-    return filteredSales.map((s) => ({
-      id: s.id,
-      data: formatDate(s.created_at),
-      hora: formatTime(s.created_at),
-      cliente: s.entity_name,
-      vendedor: s.seller_name || "",
-      pagamento: s.payment_method || "",
-      status: s.status,
-      total: s.total_amount,
-      descricao: s.description,
-    }));
-  };
+  // --- MODELO CSV ---
+  const downloadModeloClientesCSV = () => {
+    const csv =
+      "nome,telefone,documento,endereco,cidade,status\n" +
+      "João da Silva,(92) 99999-9999,000.000.000-00,Rua A 123,Manaus,ativo\n" +
+      "Maria Souza,(92) 98888-8888,00.000.000/0001-00,Rua B 500,Manaus,inativo\n";
 
-  const handleExportCSV = () => {
-    const rows = buildExportRows();
-    if (!rows.length) return toast.info("Nada para exportar.");
-    const csv = toCsv(rows);
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-    const filename = `historico_vendas_${Date.now()}.csv`;
-    downloadBlob(blob, filename);
-    toast.success("CSV gerado!");
+    const url = URL.createObjectURL(blob);
+
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "modelo_clientes.csv";
+    a.click();
+
+    URL.revokeObjectURL(url);
   };
 
-  const handleExportXLSX = async () => {
-    const rows = buildExportRows();
-    if (!rows.length) return toast.info("Nada para exportar.");
-
+  // --- IMPORTAÇÃO ---
+  const handleFileImport = async (file: File) => {
     try {
-      const XLSX = await import("xlsx");
+      const ext = (file.name.split(".").pop() || "").toLowerCase();
 
-      const ws = XLSX.utils.json_to_sheet(rows);
-      const wb = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb, ws, "Historico");
+      if (ext === "csv") {
+        const text = await file.text();
+        const lines = text
+          .split(/\r?\n/)
+          .map((l) => l.trim())
+          .filter(Boolean);
 
-      const ab = XLSX.write(wb, { bookType: "xlsx", type: "array" });
-      const blob = new Blob([ab], {
-        type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      });
-
-      const filename = `historico_vendas_${Date.now()}.xlsx`;
-      downloadBlob(blob, filename);
-      toast.success("XLSX gerado!");
-    } catch (e) {
-      toast.error("Para exportar XLSX, instale: npm i xlsx (CSV funciona sem instalar).");
-    }
-  };
-
-  const itemsFromSelected = useMemo(() => {
-    if (!selectedSale?.description) return [];
-    return parseItemsFromDescription(selectedSale.description);
-  }, [selectedSale]);
-
-  const canRestock = useMemo(() => {
-    if (!itemsFromSelected.length) return false;
-    return itemsFromSelected.some((i) => i.sku && Number.isFinite(i.qty) && i.qty > 0);
-  }, [itemsFromSelected]);
-
-  const handleRestock = async () => {
-    if (!selectedSale) return;
-
-    if (!isAdmin) {
-      toast.error("Apenas admin pode estornar estoque.");
-      return;
-    }
-
-    if (!canRestock) {
-      toast.error("Não dá pra estornar: itens sem SKU/QTD na descrição.");
-      return;
-    }
-
-    setRestocking(true);
-    try {
-      if (selectedSale.status !== "cancelled") {
-        toast.error("Primeiro cancele a venda para estornar o estoque.");
-        return;
-      }
-
-      const lines = itemsFromSelected.filter((i) => i.sku && i.qty > 0);
-
-      for (const line of lines) {
-        const sku = String(line.sku);
-        const qty = Number(line.qty);
-
-        const { data: prod, error: e1 } = await supabase
-          .from("products")
-          .select("id, stock")
-          .eq("sku", sku)
-          .maybeSingle();
-
-        if (e1) throw e1;
-
-        if (!prod?.id) {
-          toast.warning(`SKU não encontrado: ${sku}. Pulei esse item.`);
-          continue;
+        if (lines.length < 2) {
+          toast.error("CSV vazio ou inválido.");
+          return;
         }
 
-        const current = Number(prod.stock || 0);
-        const newStock = current + qty;
+        const header = lines[0].split(",").map((h) => h.trim().toLowerCase());
 
-        const { error: e2 } = await supabase
-          .from("products")
-          .update({ stock: newStock })
-          .eq("id", prod.id);
+        const idx = (name: string) => header.indexOf(name);
 
-        if (e2) throw e2;
+        const rows: ImportRow[] = lines
+          .slice(1)
+          .map((line) => {
+            const cols = line.split(",").map((c) => c.trim());
+            const name = cols[idx("nome")] || cols[idx("name")] || "";
+            const phone = cols[idx("telefone")] || cols[idx("whatsapp")] || cols[idx("phone")] || "";
+            const document =
+              cols[idx("documento")] || cols[idx("cpf")] || cols[idx("cnpj")] || cols[idx("document")] || "";
+            const address = cols[idx("endereco")] || cols[idx("endereço")] || cols[idx("address")] || "";
+            const city = cols[idx("cidade")] || cols[idx("city")] || "";
+            const statusRaw = (cols[idx("status")] || "ativo").toLowerCase();
+
+            const status: "ativo" | "inativo" = statusRaw.includes("in") ? "inativo" : "ativo";
+
+            return {
+              name: name.trim(),
+              document: formatDocument(document),
+              phone: formatPhone(phone),
+              address: address.trim(),
+              city: city.trim(),
+              status,
+            };
+          })
+          .filter((r) => r.name.length >= 2);
+
+        if (rows.length === 0) {
+          toast.error("Nenhuma linha válida encontrada. Verifique a coluna 'nome'.");
+          return;
+        }
+
+        setImportRows(rows);
+        toast.success(`Arquivo lido: ${rows.length} clientes prontos para importar.`);
+        return;
       }
 
-      toast.success("Estorno de estoque concluído!");
+      const ab = await file.arrayBuffer();
+      const wb = XLSX.read(ab, { type: "array" });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const json = XLSX.utils.sheet_to_json(ws, { defval: "" }) as any[];
+
+      const rows: ImportRow[] = json
+        .map((r) => {
+          const name = getVal(r, ["nome", "name"]);
+          const document = getVal(r, ["documento", "cpf", "cnpj", "document"]);
+          const phone = getVal(r, ["telefone", "whatsapp", "phone", "celular"]);
+          const address = getVal(r, ["endereco", "endereço", "address"]);
+          const city = getVal(r, ["cidade", "city"]);
+          const statusRaw = getVal(r, ["status"]).toLowerCase();
+
+          const status: "ativo" | "inativo" = statusRaw.includes("in") ? "inativo" : "ativo";
+
+          return {
+            name: name.trim(),
+            document: formatDocument(document),
+            phone: formatPhone(phone),
+            address: address.trim(),
+            city: city.trim(),
+            status,
+          };
+        })
+        .filter((r) => r.name.length >= 2);
+
+      if (rows.length === 0) {
+        toast.error("Nenhuma linha válida encontrada. Verifique a coluna 'nome'.");
+        return;
+      }
+
+      setImportRows(rows);
+      toast.success(`Arquivo lido: ${rows.length} clientes prontos para importar.`);
+    } catch (e) {
+      console.error(e);
+      toast.error("Falha ao ler arquivo. Use CSV/XLSX.");
+    }
+  };
+
+  const handleConfirmImport = async () => {
+    if (importRows.length === 0) return;
+
+    setImporting(true);
+    try {
+      const seen = new Set<string>();
+      const unique = importRows.filter((r) => {
+        const k = `${r.name.toLowerCase()}|${onlyDigits(r.phone || "")}|${onlyDigits(r.document || "")}`;
+        if (seen.has(k)) return false;
+        seen.add(k);
+        return true;
+      });
+
+      const payload = unique.map((r) => ({
+        name: r.name.trim(),
+        document: normalizeNullable(r.document),
+        phone: normalizeNullable(r.phone),
+        address: normalizeNullable(r.address),
+        city: normalizeNullable(r.city),
+        status: r.status || "ativo",
+      }));
+
+      const { error } = await supabase.from("customers").insert(payload);
+      if (error) throw error;
+
+      toast.success(`Importação concluída: ${payload.length} clientes cadastrados!`);
+      setImportRows([]);
+      setImportOpen(false);
+      await fetchCustomers();
     } catch (e: any) {
       console.error(e);
-      toast.error("Erro ao estornar estoque", { description: e?.message || "" });
+      toast.error("Erro ao importar: " + (e.message || "Verifique os dados"));
     } finally {
-      setRestocking(false);
+      setImporting(false);
     }
   };
 
   return (
     <div className="space-y-6 animate-in fade-in duration-500">
-      {/* Header */}
+      {/* HEADER */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-3">
           <div className="p-2 rounded-lg bg-primary/10">
-            <History className="h-6 w-6 text-primary" />
+            <Users className="h-6 w-6 text-primary" />
           </div>
           <div>
-            <h1 className="text-2xl font-semibold text-foreground">Histórico de Vendas</h1>
-            <p className="text-sm text-muted-foreground">
-              Registro de vendas do PDV (filtros, export e ações)
-            </p>
+            <h1 className="text-xl sm:text-2xl font-semibold text-foreground">Clientes</h1>
+            <p className="text-sm text-muted-foreground">Gerencie sua base de clientes</p>
           </div>
         </div>
 
-        <div className="flex flex-col sm:flex-row gap-2">
-          <Button
-            variant="outline"
-            onClick={fetchSales}
-            className="w-full sm:w-auto"
-            disabled={loading}
-            title="Atualizar"
-          >
-            <RefreshCcw className="h-4 w-4 mr-2" />
-            Atualizar
-          </Button>
-
-          <Popover>
-            <PopoverTrigger asChild>
-              <Button className="w-full sm:w-auto" variant="outline">
-                <Download className="h-4 w-4 mr-2" />
-                Exportar
+        <div className="grid grid-cols-2 sm:flex gap-2 w-full sm:w-auto">
+          {/* Importar */}
+          <Dialog open={importOpen} onOpenChange={setImportOpen}>
+            <DialogTrigger asChild>
+              <Button variant="outline" className="w-full sm:w-auto">
+                <Upload className="h-4 w-4 mr-2" />
+                Importar
               </Button>
-            </PopoverTrigger>
-            <PopoverContent align="end" className="w-56 space-y-2">
-              <Button variant="outline" className="w-full justify-start" onClick={handleExportCSV}>
-                <FileText className="h-4 w-4 mr-2" />
-                Exportar CSV
-              </Button>
-              <Button variant="outline" className="w-full justify-start" onClick={handleExportXLSX}>
-                <FileText className="h-4 w-4 mr-2" />
-                Exportar XLSX
-              </Button>
-              <p className="text-xs text-muted-foreground">
-                XLSX precisa de <span className="font-mono">npm i xlsx</span>. CSV funciona sempre.
-              </p>
-            </PopoverContent>
-          </Popover>
-        </div>
-      </div>
+            </DialogTrigger>
 
-      {/* Cards */}
-      <div className="grid gap-4 md:grid-cols-4">
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">
-              Vendas Exibidas
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <p className="text-2xl font-bold">{filteredSales.length}</p>
-            <p className="text-xs text-muted-foreground mt-1">
-              Pagas: <span className="font-semibold">{paidSales.length}</span>
-            </p>
-          </CardContent>
-        </Card>
+            <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+              <DialogHeader>
+                <DialogTitle>Importar Clientes (CSV/XLSX)</DialogTitle>
+                <DialogDescription>
+                  Colunas aceitas: <strong>nome</strong>, telefone/whatsapp, documento/cpf/cnpj,
+                  endereco, cidade, status.
+                </DialogDescription>
+              </DialogHeader>
 
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">
-              Faturamento (Pagas)
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <p className="text-2xl font-bold text-emerald-600">{formatCurrency(totalRevenue)}</p>
-          </CardContent>
-        </Card>
+              <div className="space-y-4">
+                <div className="flex flex-col sm:flex-row gap-2 sm:items-center sm:justify-between">
+                  <Button variant="outline" onClick={downloadModeloClientesCSV} className="w-full sm:w-auto">
+                    <Download className="h-4 w-4 mr-2" />
+                    Baixar modelo (CSV)
+                  </Button>
 
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">
-              Ticket Médio (Pagas)
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <p className="text-2xl font-bold">{formatCurrency(ticketAvg)}</p>
-          </CardContent>
-        </Card>
+                  <Input
+                    className="w-full sm:w-auto"
+                    type="file"
+                    accept=".csv,.xlsx,.xls"
+                    onChange={(e) => {
+                      const f = e.target.files?.[0];
+                      if (f) handleFileImport(f);
+                    }}
+                  />
+                </div>
 
-        <Card className={cancelledCount > 0 ? "border-destructive/30 bg-destructive/5" : ""}>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-destructive">Canceladas</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-1">
-            <p className="text-2xl font-bold text-destructive">{cancelledCount}</p>
-            {pendingCount > 0 && (
-              <p className="text-xs text-muted-foreground">
-                Pendentes: <span className="font-semibold">{pendingCount}</span>
-              </p>
-            )}
-          </CardContent>
-        </Card>
-      </div>
+                {importRows.length > 0 ? (
+                  <div className="rounded-md border overflow-auto max-h-[320px]">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Nome</TableHead>
+                          <TableHead>Telefone</TableHead>
+                          <TableHead>Documento</TableHead>
+                          <TableHead>Cidade</TableHead>
+                          <TableHead>Status</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {importRows.slice(0, 20).map((r, idx) => (
+                          <TableRow key={idx}>
+                            <TableCell className="font-medium">{r.name}</TableCell>
+                            <TableCell>{r.phone || "-"}</TableCell>
+                            <TableCell>{r.document || "-"}</TableCell>
+                            <TableCell>{r.city || "-"}</TableCell>
+                            <TableCell>
+                              <Badge variant={r.status === "ativo" ? "default" : "secondary"}>{r.status}</Badge>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
 
-      {/* Filtros */}
-      <div className="rounded-xl border border-border bg-card shadow-sm p-4">
-        <div className="flex flex-wrap gap-4 items-end">
-          <div className="relative flex-1 min-w-[220px]">
-            <Label className="mb-1 block text-xs">Busca</Label>
-            <div className="relative">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-              <Input
-                placeholder="ID, cliente, vendedor, pagamento..."
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                className="pl-10"
-              />
-            </div>
-          </div>
+                    {importRows.length > 20 && (
+                      <div className="p-2 text-xs text-muted-foreground">Mostrando 20 de {importRows.length}.</div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="text-sm text-muted-foreground">Selecione um arquivo para ver a prévia.</div>
+                )}
 
-          <div className="flex flex-col gap-1">
-            <Label className="text-xs">Período</Label>
-            <Popover>
-              <PopoverTrigger asChild>
-                <Button
-                  variant="outline"
-                  className={cn(
-                    "w-[240px] justify-start text-left font-normal",
-                    !dateRange && "text-muted-foreground"
-                  )}
-                >
-                  <Calendar className="mr-2 h-4 w-4" />
-                  {dateRange?.from ? (
-                    dateRange.to ? (
+                <div className="flex flex-col sm:flex-row justify-end gap-2">
+                  <Button
+                    variant="outline"
+                    onClick={() => {
+                      setImportRows([]);
+                      setImportOpen(false);
+                    }}
+                  >
+                    Fechar
+                  </Button>
+
+                  <Button
+                    onClick={handleConfirmImport}
+                    disabled={importRows.length === 0 || importing}
+                    className="bg-emerald-600 hover:bg-emerald-700"
+                  >
+                    {importing ? (
                       <>
-                        {format(dateRange.from, "dd/MM", { locale: ptBR })} -{" "}
-                        {format(dateRange.to, "dd/MM", { locale: ptBR })}
+                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                        Importando...
                       </>
                     ) : (
-                      format(dateRange.from, "dd/MM/yyyy", { locale: ptBR })
-                    )
-                  ) : (
-                    "Filtrar por data"
-                  )}
-                </Button>
-              </PopoverTrigger>
-              <PopoverContent className="w-auto p-0" align="start">
-                <CalendarComponent
-                  mode="range"
-                  selected={dateRange}
-                  onSelect={setDateRange}
-                  numberOfMonths={2}
-                  initialFocus
-                  className="p-3"
-                />
-              </PopoverContent>
-            </Popover>
-          </div>
+                      <>
+                        <CheckCircle2 className="h-4 w-4 mr-2" />
+                        Confirmar Importação
+                      </>
+                    )}
+                  </Button>
+                </div>
+              </div>
+            </DialogContent>
+          </Dialog>
 
-          <div className="flex flex-col gap-1">
-            <Label className="text-xs">Status</Label>
-            <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v as any)}>
-              <SelectTrigger className="w-[170px]">
-                <Filter className="h-4 w-4 mr-2" />
-                <SelectValue placeholder="Status" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">Todos</SelectItem>
-                <SelectItem value="paid">Concluídas</SelectItem>
-                <SelectItem value="pending">Pendentes</SelectItem>
-                <SelectItem value="cancelled">Canceladas</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
+          {/* Novo Cliente */}
+          <Dialog
+            open={isDialogOpen}
+            onOpenChange={(open) => {
+              setIsDialogOpen(open);
+              if (!open) setEditingCustomer(null);
+            }}
+          >
+            <DialogTrigger asChild>
+              <Button onClick={openNewDialog} className="w-full sm:w-auto">
+                <Plus className="h-4 w-4 mr-2" />
+                Novo Cliente
+              </Button>
+            </DialogTrigger>
 
-          {hasActiveFilters && (
-            <Button variant="ghost" onClick={clearFilters} className="mb-0.5">
-              Limpar
-            </Button>
-          )}
+            <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
+              <DialogHeader>
+                <DialogTitle>{editingCustomer ? "Editar Cliente" : "Novo Cliente"}</DialogTitle>
+                <DialogDescription>Apenas o nome é obrigatório.</DialogDescription>
+              </DialogHeader>
+
+              <Form {...form}>
+                <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
+                  <FormField
+                    control={form.control}
+                    name="name"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Nome Completo *</FormLabel>
+                        <FormControl>
+                          <Input placeholder="Ex: João da Silva" {...field} className="h-12 text-base" />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <FormField
+                      control={form.control}
+                      name="document"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>CPF/CNPJ (Opcional)</FormLabel>
+                          <FormControl>
+                            <Input
+                              placeholder="000.000.000-00"
+                              {...field}
+                              className="h-12 text-base"
+                              onChange={(e) => field.onChange(formatDocument(e.target.value))}
+                              maxLength={18}
+                            />
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+
+                    <FormField
+                      control={form.control}
+                      name="phone"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>WhatsApp (Opcional)</FormLabel>
+                          <FormControl>
+                            <Input
+                              placeholder="(00) 00000-0000"
+                              {...field}
+                              className="h-12 text-base"
+                              onChange={(e) => field.onChange(formatPhone(e.target.value))}
+                              maxLength={15}
+                            />
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                  </div>
+
+                  <FormField
+                    control={form.control}
+                    name="address"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Endereço (Opcional)</FormLabel>
+                        <FormControl>
+                          <Input placeholder="Rua, número, bairro" {...field} className="h-12 text-base" />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <FormField
+                      control={form.control}
+                      name="city"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>Cidade (Opcional)</FormLabel>
+                          <FormControl>
+                            <Input placeholder="Ex: Manaus" {...field} className="h-12 text-base" />
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+
+                    <FormField
+                      control={form.control}
+                      name="status"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>Status</FormLabel>
+                          <Select onValueChange={field.onChange} value={field.value}>
+                            <FormControl>
+                              <SelectTrigger className="h-12">
+                                <SelectValue />
+                              </SelectTrigger>
+                            </FormControl>
+                            <SelectContent>
+                              <SelectItem value="ativo">Ativo</SelectItem>
+                              <SelectItem value="inativo">Inativo</SelectItem>
+                            </SelectContent>
+                          </Select>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                  </div>
+
+                  <DialogFooter className="flex flex-col sm:flex-row gap-2 sm:justify-end">
+                    <Button type="button" variant="outline" onClick={() => setIsDialogOpen(false)} className="w-full sm:w-auto">
+                      Cancelar
+                    </Button>
+                    <Button type="submit" className="w-full sm:w-auto">
+                      {editingCustomer ? "Salvar Alterações" : "Cadastrar Cliente"}
+                    </Button>
+                  </DialogFooter>
+                </form>
+              </Form>
+            </DialogContent>
+          </Dialog>
         </div>
       </div>
 
-      {/* Tabela */}
-      <div className="rounded-md border overflow-hidden">
-        {loading ? (
-          <div className="flex justify-center items-center h-40">
-            <Loader2 className="h-8 w-8 animate-spin text-primary" />
-          </div>
-        ) : filteredSales.length === 0 ? (
-          <div className="p-8 text-center text-muted-foreground">
-            Nenhuma venda encontrada com esses filtros.
-          </div>
-        ) : (
-          <Table>
-            <TableHeader>
-              <TableRow className="bg-muted/50">
-                <TableHead>Data</TableHead>
-                <TableHead>Hora</TableHead>
-                <TableHead>Cliente</TableHead>
-                <TableHead>Vendedor</TableHead>
-                <TableHead className="text-center">Status</TableHead>
-                <TableHead className="text-right">Total</TableHead>
-                <TableHead className="text-center">Ações</TableHead>
-              </TableRow>
-            </TableHeader>
+      {/* SUMMARY */}
+      <div className="grid gap-4 md:grid-cols-3">
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium text-muted-foreground">Total de Clientes</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-2xl font-bold">{total}</p>
+          </CardContent>
+        </Card>
 
-            <TableBody>
-              {filteredSales.map((sale) => (
-                <TableRow
-                  key={sale.id}
-                  className="hover:bg-muted/30 cursor-pointer"
-                  onClick={() => openSaleDetails(sale)}
-                >
-                  <TableCell>{formatDate(sale.created_at)}</TableCell>
-                  <TableCell className="text-muted-foreground text-xs">
-                    {formatTime(sale.created_at)}
-                  </TableCell>
-                  <TableCell className="font-medium">{sale.entity_name}</TableCell>
-                  <TableCell className="text-sm text-muted-foreground">
-                    {sale.seller_name || "-"}
-                  </TableCell>
-                  <TableCell className="text-center">{statusBadge(sale.status)}</TableCell>
-                  <TableCell className="text-right font-bold">
-                    {formatCurrency(sale.total_amount)}
-                  </TableCell>
-                  <TableCell className="text-center">
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        openSaleDetails(sale);
-                      }}
-                      title="Ver detalhes"
-                    >
-                      <Eye className="h-4 w-4" />
-                    </Button>
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        )}
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium text-muted-foreground">Clientes Ativos</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-2xl font-bold text-emerald-600">{active}</p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium text-muted-foreground">Inativos</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-2xl font-bold text-muted-foreground">{inactive}</p>
+          </CardContent>
+        </Card>
       </div>
 
-      {/* Sheet Detalhes */}
-      <Sheet
-        open={isSheetOpen}
-        onOpenChange={(open) => {
-          setIsSheetOpen(open);
-          if (!open) setSelectedSale(null);
-        }}
-      >
-        <SheetContent className="w-full sm:max-w-lg overflow-y-auto">
-          {selectedSale && (
+      {/* LISTA */}
+      <Card>
+        <CardHeader className="pb-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="relative w-full sm:max-w-sm">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+              <Input
+                placeholder="Buscar por nome, documento, telefone ou cidade..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="pl-10 h-12"
+              />
+            </div>
+
+            <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto">
+              <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v as any)}>
+                <SelectTrigger className="w-full sm:w-[180px] h-12">
+                  <Filter className="h-4 w-4 mr-2" />
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Todos</SelectItem>
+                  <SelectItem value="ativo">Somente Ativos</SelectItem>
+                  <SelectItem value="inativo">Somente Inativos</SelectItem>
+                </SelectContent>
+              </Select>
+
+              {statusFilter !== "all" && (
+                <Button variant="outline" onClick={() => setStatusFilter("all")} className="h-12">
+                  <X className="h-4 w-4 mr-2" />
+                  Limpar
+                </Button>
+              )}
+            </div>
+          </div>
+        </CardHeader>
+
+        <CardContent>
+          {isLoading ? (
+            <div className="flex flex-col items-center justify-center py-10 text-muted-foreground">
+              <Loader2 className="h-8 w-8 animate-spin mb-2" />
+              <p>Carregando clientes...</p>
+            </div>
+          ) : filteredCustomers.length === 0 ? (
+            <div className="text-center py-10 text-muted-foreground">Nenhum cliente encontrado.</div>
+          ) : (
             <>
-              <SheetHeader>
-                <SheetTitle>Detalhes da Venda</SheetTitle>
-                <SheetDescription>
-                  {formatDate(selectedSale.created_at)} às {formatTime(selectedSale.created_at)} •{" "}
-                  <span className="font-semibold">{statusLabel(selectedSale.status)}</span>
-                </SheetDescription>
-              </SheetHeader>
+              {/* MOBILE: CARDS */}
+              <div className="grid gap-3 sm:hidden">
+                {filteredCustomers.map((c) => (
+                  <Card key={c.id} className="border shadow-sm">
+                    <CardContent className="p-4 space-y-3">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <p className="font-semibold text-base leading-snug truncate">{c.name}</p>
+                          <div className="mt-1 flex flex-wrap items-center gap-2">
+                            <Badge
+                              variant={c.status === "ativo" ? "default" : "secondary"}
+                              className={c.status === "ativo" ? "bg-emerald-600 hover:bg-emerald-700" : ""}
+                            >
+                              {c.status === "ativo" ? "Ativo" : "Inativo"}
+                            </Badge>
 
-              <div className="mt-6 space-y-6">
-                <div className="p-4 bg-muted/30 rounded-lg border space-y-3">
-                  <div className="flex justify-between items-center">
-                    <span className="text-muted-foreground text-sm">Status</span>
-                    {statusBadge(selectedSale.status)}
-                  </div>
-
-                  <div className="flex justify-between items-center">
-                    <span className="text-muted-foreground text-sm flex items-center gap-2">
-                      <User className="h-4 w-4" /> Cliente
-                    </span>
-                    <span className="font-medium text-right">{selectedSale.entity_name}</span>
-                  </div>
-
-                  <div className="flex justify-between items-center">
-                    <span className="text-muted-foreground text-sm flex items-center gap-2">
-                      <Hash className="h-4 w-4" /> ID
-                    </span>
-                    <div className="flex items-center gap-2">
-                      <span className="font-mono text-xs">{selectedSale.id}</span>
-                      <Button
-                        size="icon"
-                        variant="ghost"
-                        className="h-7 w-7"
-                        onClick={() => copyToClipboard(selectedSale.id, "ID copiado!")}
-                        title="Copiar ID"
-                      >
-                        <Copy className="h-4 w-4" />
-                      </Button>
-                    </div>
-                  </div>
-
-                  <Separator />
-
-                  <div className="flex justify-between items-center">
-                    <span className="text-muted-foreground text-sm flex items-center gap-2">
-                      <Package className="h-4 w-4" /> Itens (qtd)
-                    </span>
-
-                    {/* ✅ CORRIGIDO: parênteses ao misturar ?? e || */}
-                    <span className="font-medium">
-                      {((selectedSale.items_count ?? itemsFromSelected.length) || "-")}
-                    </span>
-                  </div>
-
-                  <div className="flex justify-between items-center">
-                    <span className="text-muted-foreground text-sm flex items-center gap-2">
-                      <User className="h-4 w-4" /> Vendedor
-                    </span>
-                    <span className="font-medium">{selectedSale.seller_name ?? "-"}</span>
-                  </div>
-
-                  <div className="flex justify-between items-center">
-                    <span className="text-muted-foreground text-sm flex items-center gap-2">
-                      <CreditCard className="h-4 w-4" /> Pagamento
-                    </span>
-                    <span className="font-medium">{selectedSale.payment_method ?? "-"}</span>
-                  </div>
-
-                  <Separator />
-
-                  <div className="flex justify-between items-center">
-                    <span className="text-lg font-bold">Total</span>
-                    <span className="text-xl font-bold text-emerald-600">
-                      {formatCurrency(selectedSale.total_amount)}
-                    </span>
-                  </div>
-                </div>
-
-                <div className="space-y-2">
-                  <h3 className="font-semibold text-sm flex items-center gap-2">
-                    <Boxes className="h-4 w-4" /> Itens (lidos da descrição)
-                  </h3>
-
-                  {itemsFromSelected.length === 0 ? (
-                    <div className="p-3 border rounded bg-card text-sm text-muted-foreground">
-                      Não consegui identificar os itens na <strong>description</strong>.
-                      <br />
-                      Se você quiser, me manda um exemplo real da string da venda que eu ajusto o parser pra ficar 100%.
-                    </div>
-                  ) : (
-                    <div className="rounded-md border overflow-hidden">
-                      <Table>
-                        <TableHeader>
-                          <TableRow className="bg-muted/50">
-                            <TableHead>SKU</TableHead>
-                            <TableHead>Produto</TableHead>
-                            <TableHead className="text-right">Qtd</TableHead>
-                            <TableHead className="text-right">Preço</TableHead>
-                            <TableHead className="text-right">Total</TableHead>
-                          </TableRow>
-                        </TableHeader>
-                        <TableBody>
-                          {itemsFromSelected.slice(0, 30).map((it, idx) => {
-                            const lineTotal =
-                              it.total ??
-                              (it.price && Number.isFinite(it.qty) ? it.price * it.qty : undefined);
-
-                            return (
-                              <TableRow key={idx}>
-                                <TableCell className="font-mono text-xs">{it.sku || "-"}</TableCell>
-                                <TableCell className="font-medium">{it.name}</TableCell>
-                                <TableCell className="text-right">
-                                  {it.qty} {it.unit || ""}
-                                </TableCell>
-                                <TableCell className="text-right">
-                                  {it.price != null ? formatCurrency(it.price) : "-"}
-                                </TableCell>
-                                <TableCell className="text-right font-medium">
-                                  {lineTotal != null ? formatCurrency(lineTotal) : "-"}
-                                </TableCell>
-                              </TableRow>
-                            );
-                          })}
-                        </TableBody>
-                      </Table>
-
-                      {itemsFromSelected.length > 30 && (
-                        <div className="p-2 text-xs text-muted-foreground">
-                          Mostrando 30 de {itemsFromSelected.length}.
+                            {c.city && (
+                              <span className="text-xs text-muted-foreground flex items-center gap-1">
+                                <MapPin className="h-3 w-3" />
+                                {c.city}
+                              </span>
+                            )}
+                          </div>
                         </div>
-                      )}
-                    </div>
-                  )}
-                </div>
 
-                <div className="space-y-2">
-                  <h3 className="font-semibold text-sm flex items-center gap-2">
-                    <FileText className="h-4 w-4" /> Descrição / Resumo
-                  </h3>
-                  <div className="p-3 bg-card border rounded text-sm text-muted-foreground whitespace-pre-wrap">
-                    {selectedSale.description}
-                  </div>
+                        <div className="flex gap-1 shrink-0">
+                          <Button size="icon" variant="outline" className="h-10 w-10" onClick={() => openEditDialog(c)} title="Editar">
+                            <Edit className="h-4 w-4" />
+                          </Button>
+                          <Button
+                            size="icon"
+                            variant="outline"
+                            className="h-10 w-10 text-destructive"
+                            onClick={() => setDeleteCustomer(c)}
+                            title="Excluir"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </div>
+                      </div>
 
-                  <div className="flex flex-wrap gap-2">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => copyToClipboard(selectedSale.description, "Resumo copiado!")}
-                    >
-                      <Copy className="h-4 w-4 mr-2" />
-                      Copiar resumo
-                    </Button>
+                      {c.phone ? (
+                        <div className="flex items-center justify-between gap-2 bg-muted/30 rounded-lg p-3">
+                          <div className="min-w-0">
+                            <p className="text-xs text-muted-foreground">WhatsApp</p>
+                            <p className="font-medium flex items-center gap-2 truncate">
+                              <Phone className="h-4 w-4 text-emerald-600" />
+                              {c.phone}
+                            </p>
+                          </div>
 
-                    <Button variant="outline" size="sm" onClick={() => handleSendWhatsApp(selectedSale)}>
-                      <MessageCircle className="h-4 w-4 mr-2" />
-                      Enviar WhatsApp
-                    </Button>
-                  </div>
-                </div>
-
-                {isAdmin && (
-                  <div className="space-y-3">
-                    <Separator />
-                    <div className="space-y-2">
-                      <h3 className="font-semibold text-sm flex items-center gap-2">
-                        <AlertTriangle className="h-4 w-4" /> Ações de Admin
-                      </h3>
-
-                      {selectedSale.status !== "cancelled" ? (
-                        <Button variant="destructive" onClick={openCancelDialog} className="w-full">
-                          <XCircle className="h-4 w-4 mr-2" /> Cancelar Venda
-                        </Button>
+                          <div className="flex gap-2 shrink-0">
+                            <Button
+                              size="icon"
+                              variant="outline"
+                              className="h-10 w-10"
+                              onClick={() => copyToClipboard(c.phone!)}
+                              title="Copiar"
+                            >
+                              <Copy className="h-4 w-4" />
+                            </Button>
+                            <Button
+                              size="icon"
+                              className="h-10 w-10 bg-emerald-600 hover:bg-emerald-700"
+                              onClick={() => openWhatsApp(c.phone!, c.name)}
+                              title="WhatsApp"
+                            >
+                              <MessageCircle className="h-4 w-4" />
+                            </Button>
+                          </div>
+                        </div>
                       ) : (
-                        <div className="p-3 border rounded bg-destructive/5 text-sm text-muted-foreground">
-                          Venda já está <strong>cancelada</strong>.
-                        </div>
+                        <div className="text-sm text-muted-foreground">Sem telefone</div>
                       )}
 
-                      <Button
-                        variant="outline"
-                        className="w-full"
-                        disabled={!canRestock || restocking || selectedSale.status !== "cancelled"}
-                        onClick={handleRestock}
-                        title={
-                          selectedSale.status !== "cancelled"
-                            ? "Cancele a venda antes de estornar"
-                            : !canRestock
-                            ? "Precisa SKU + QTD na descrição"
-                            : "Estornar estoque"
-                        }
-                      >
-                        {restocking ? (
-                          <>
-                            <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                            Estornando...
-                          </>
-                        ) : (
-                          <>
-                            <Boxes className="h-4 w-4 mr-2" />
-                            Estornar estoque
-                          </>
-                        )}
-                      </Button>
+                      {c.document ? (
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="min-w-0">
+                            <p className="text-xs text-muted-foreground">Documento</p>
+                            <p className="text-sm font-mono truncate flex items-center gap-2">
+                              <FileText className="h-4 w-4 text-muted-foreground" />
+                              {c.document}
+                            </p>
+                          </div>
+                          <Button
+                            size="icon"
+                            variant="outline"
+                            className="h-10 w-10 shrink-0"
+                            onClick={() => copyToClipboard(c.document!)}
+                            title="Copiar documento"
+                          >
+                            <Copy className="h-4 w-4" />
+                          </Button>
+                        </div>
+                      ) : null}
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
 
-                      <p className="text-xs text-muted-foreground flex gap-2">
-                        <AlertTriangle className="h-4 w-4" />
-                        Estorno só funciona se os itens tiverem <strong>SKU</strong> e <strong>Qtd</strong> na descrição.
-                      </p>
-                    </div>
-                  </div>
-                )}
+              {/* DESKTOP/TABLET: TABELA */}
+              <div className="hidden sm:block rounded-md border overflow-x-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Nome</TableHead>
+                      <TableHead>Documento</TableHead>
+                      <TableHead>Contato</TableHead>
+                      <TableHead>Localização</TableHead>
+                      <TableHead>Status</TableHead>
+                      <TableHead className="text-right">Ações</TableHead>
+                    </TableRow>
+                  </TableHeader>
+
+                  <TableBody>
+                    {filteredCustomers.map((customer) => (
+                      <TableRow key={customer.id}>
+                        <TableCell className="font-medium">{customer.name}</TableCell>
+
+                        <TableCell>
+                          {customer.document ? (
+                            <div className="flex items-center gap-2">
+                              <span className="flex items-center gap-1 text-sm text-muted-foreground">
+                                <FileText className="h-3 w-3" /> {customer.document}
+                              </span>
+                              <Button
+                                size="icon"
+                                variant="ghost"
+                                className="h-7 w-7"
+                                onClick={() => copyToClipboard(customer.document!)}
+                                title="Copiar documento"
+                              >
+                                <Copy className="h-4 w-4" />
+                              </Button>
+                            </div>
+                          ) : (
+                            "-"
+                          )}
+                        </TableCell>
+
+                        <TableCell>
+                          {customer.phone ? (
+                            <div className="flex items-center gap-2">
+                              <span className="flex items-center gap-1 text-sm">
+                                <Phone className="h-3 w-3 text-emerald-600" />
+                                {customer.phone}
+                              </span>
+
+                              <Button
+                                size="icon"
+                                variant="ghost"
+                                className="h-7 w-7"
+                                onClick={() => copyToClipboard(customer.phone!)}
+                                title="Copiar telefone"
+                              >
+                                <Copy className="h-4 w-4" />
+                              </Button>
+
+                              <Button
+                                size="icon"
+                                variant="ghost"
+                                className="h-7 w-7 text-emerald-700"
+                                onClick={() => openWhatsApp(customer.phone!, customer.name)}
+                                title="Abrir WhatsApp"
+                              >
+                                <MessageCircle className="h-4 w-4" />
+                              </Button>
+                            </div>
+                          ) : (
+                            <span className="text-muted-foreground text-xs">-</span>
+                          )}
+                        </TableCell>
+
+                        <TableCell>
+                          {customer.city ? (
+                            <span className="flex items-center gap-1 text-sm">
+                              <MapPin className="h-3 w-3 text-blue-500" />
+                              {customer.city}
+                            </span>
+                          ) : (
+                            <span className="text-muted-foreground text-xs">-</span>
+                          )}
+                        </TableCell>
+
+                        <TableCell>
+                          <Badge
+                            variant={customer.status === "ativo" ? "default" : "secondary"}
+                            className={customer.status === "ativo" ? "bg-emerald-600 hover:bg-emerald-700" : ""}
+                          >
+                            {customer.status === "ativo" ? "Ativo" : "Inativo"}
+                          </Badge>
+                        </TableCell>
+
+                        <TableCell className="text-right">
+                          <div className="flex justify-end gap-1">
+                            <Button size="icon" variant="ghost" onClick={() => openEditDialog(customer)} title="Editar">
+                              <Edit className="h-4 w-4 text-muted-foreground" />
+                            </Button>
+
+                            <Button
+                              size="icon"
+                              variant="ghost"
+                              className="text-destructive hover:text-destructive hover:bg-destructive/10"
+                              onClick={() => setDeleteCustomer(customer)}
+                              title="Excluir"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
               </div>
             </>
           )}
-        </SheetContent>
-      </Sheet>
+        </CardContent>
+      </Card>
 
-      <AlertDialog open={isCancelDialogOpen} onOpenChange={setIsCancelDialogOpen}>
+      {/* DELETE */}
+      <AlertDialog open={!!deleteCustomer} onOpenChange={() => setDeleteCustomer(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Cancelar Venda?</AlertDialogTitle>
+            <AlertDialogTitle>Tem certeza?</AlertDialogTitle>
             <AlertDialogDescription>
-              Isso muda o status no financeiro para <strong>cancelled</strong>.
+              Você está prestes a excluir o cliente <strong>{deleteCustomer?.name}</strong>. Esta ação não pode ser desfeita.
             </AlertDialogDescription>
           </AlertDialogHeader>
-
-          <div className="space-y-4 py-2">
-            <div className="space-y-2">
-              <Label>Operador Responsável</Label>
-              <Input value={cancelOperator} onChange={(e) => setCancelOperator(e.target.value)} />
-            </div>
-            <div className="space-y-2">
-              <Label>Motivo</Label>
-              <Textarea
-                value={cancelReason}
-                onChange={(e) => setCancelReason(e.target.value)}
-                placeholder="Ex: Cliente desistiu, erro de lançamento..."
-              />
-            </div>
-          </div>
-
           <AlertDialogFooter>
-            <AlertDialogCancel disabled={cancelling}>Voltar</AlertDialogCancel>
+            <AlertDialogCancel>Cancelar</AlertDialogCancel>
             <AlertDialogAction
-              onClick={handleCancelSale}
-              disabled={cancelling}
+              onClick={async () => {
+                await handleDelete();
+              }}
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
-              {cancelling ? (
-                <>
-                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                  Cancelando...
-                </>
-              ) : (
-                "Confirmar Cancelamento"
-              )}
+              Sim, Excluir
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

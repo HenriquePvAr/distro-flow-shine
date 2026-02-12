@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useDeferredValue } from "react";
 import {
   Trophy,
   Users,
@@ -12,6 +12,8 @@ import {
   CalendarDays,
   Filter,
   Search,
+  X,
+  RefreshCcw,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -41,8 +43,11 @@ interface Sale {
   id: string;
   total_amount: number;
   entity_name: string; // Cliente
-  description: string; // Contém "Vend: NomeDoVendedor"
+  description: string;
   created_at: string;
+
+  // ✅ pré-processado
+  seller_name: string;
 }
 
 interface SellerStat {
@@ -58,8 +63,8 @@ interface CustomerStat {
   purchaseCount: number;
   lastPurchase: string;
   classification?: "A" | "B" | "C";
-  percentageOfTotal?: number; // % individual
-  cumulativePct?: number; // % acumulado para ABC
+  percentageOfTotal?: number;
+  cumulativePct?: number;
 }
 
 // --- UTILS ---
@@ -81,8 +86,7 @@ const toNumber = (v: any) => {
 // tenta pegar vendedor de "Vend: João" ou "Vendedor: João", até antes do "|" ou fim
 const extractSellerName = (description?: string) => {
   const desc = description || "";
-  const match =
-    desc.match(/Vend:\s*([^|]+)/i) || desc.match(/Vendedor:\s*([^|]+)/i);
+  const match = desc.match(/Vend:\s*([^|]+)/i) || desc.match(/Vendedor:\s*([^|]+)/i);
   const sellerName = match ? match[1].trim() : "";
   return sellerName.length ? sellerName : "Venda Balcão";
 };
@@ -95,75 +99,88 @@ export default function Performance() {
   const [range, setRange] = useState<"7" | "30" | "90" | "all">("30");
   const [sellerFilter, setSellerFilter] = useState<string>("all");
   const [customerSearch, setCustomerSearch] = useState("");
-  const [debouncedCustomerSearch, setDebouncedCustomerSearch] = useState("");
 
-  useEffect(() => {
-    const t = setTimeout(() => {
-      setDebouncedCustomerSearch(customerSearch.trim().toLowerCase());
-    }, 250);
-    return () => clearTimeout(t);
-  }, [customerSearch]);
+  // ✅ deixa digitação suave no mobile (evita travar com listas grandes)
+  const deferredCustomerSearch = useDeferredValue(customerSearch);
 
-  // Carregar Vendas do Banco
-  useEffect(() => {
-    async function fetchSales() {
-      setLoading(true);
-      try {
-        const q = supabase
-          .from("financial_entries")
-          .select("*")
-          .eq("type", "receivable")
-          .ilike("reference", "PDV%")
-          .order("created_at", { ascending: false });
+  // ✅ paginação leve (evita render enorme)
+  const [customerLimit, setCustomerLimit] = useState(20);
+  const [sellerLimit, setSellerLimit] = useState(30);
 
-        // filtro de período
-        if (range !== "all") {
-          const days = Number(range);
-          const from = new Date();
-          from.setDate(from.getDate() - days);
-          q.gte("created_at", from.toISOString());
-        }
+  // ✅ limites seguros de fetch (performance)
+  const FETCH_LIMIT = 3000; // ajuste se precisar (quanto maior, mais pesado)
 
-        const { data, error } = await q;
-        if (error) throw error;
+  const resetPaging = () => {
+    setCustomerLimit(20);
+    setSellerLimit(30);
+  };
 
-        // map defensivo (caso venha coluna diferente / null)
-        const mapped: Sale[] = (data || []).map((s: any) => ({
+  const fetchSales = async () => {
+    setLoading(true);
+    try {
+      // ✅ pega só o que você usa (bem mais leve)
+      let q = supabase
+        .from("financial_entries")
+        .select("id,total_amount,entity_name,description,created_at")
+        .eq("type", "receivable")
+        .ilike("reference", "PDV%")
+        .order("created_at", { ascending: false })
+        .limit(FETCH_LIMIT);
+
+      if (range !== "all") {
+        const days = Number(range);
+        const from = new Date();
+        from.setDate(from.getDate() - days);
+        q = q.gte("created_at", from.toISOString());
+      }
+
+      const { data, error } = await q;
+      if (error) throw error;
+
+      // ✅ pré-processa seller_name UMA vez (regex só aqui)
+      const mapped: Sale[] = (data || []).map((s: any) => {
+        const description = String(s.description || "");
+        return {
           id: String(s.id),
           total_amount: toNumber(s.total_amount),
           entity_name: String(s.entity_name || ""),
-          description: String(s.description || ""),
+          description,
           created_at: String(s.created_at || ""),
-        }));
+          seller_name: extractSellerName(description),
+        };
+      });
 
-        setSales(mapped);
-      } catch (error) {
-        console.error("Erro ao carregar vendas:", error);
-        toast.error("Erro ao carregar dados de performance");
-      } finally {
-        setLoading(false);
-      }
+      setSales(mapped);
+      resetPaging();
+    } catch (error) {
+      console.error("Erro ao carregar vendas:", error);
+      toast.error("Erro ao carregar dados de performance");
+    } finally {
+      setLoading(false);
     }
+  };
 
+  useEffect(() => {
     fetchSales();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [range]);
 
   // lista de vendedores (para filtro)
   const sellersList = useMemo(() => {
     const set = new Set<string>();
-    sales.forEach((s) => set.add(extractSellerName(s.description)));
+    for (const s of sales) set.add(s.seller_name);
     return ["all", ...Array.from(set).sort((a, b) => a.localeCompare(b))];
   }, [sales]);
 
   // vendas filtradas por vendedor (para tudo abaixo)
   const salesFilteredBySeller = useMemo(() => {
     if (sellerFilter === "all") return sales;
-    return sales.filter((s) => extractSellerName(s.description) === sellerFilter);
+    return sales.filter((s) => s.seller_name === sellerFilter);
   }, [sales, sellerFilter]);
 
   // --- KPIs gerais ---
   const totalRevenue = useMemo(() => {
-    return salesFilteredBySeller.reduce((sum, s) => sum + toNumber(s.total_amount), 0);
+    return salesFilteredBySeller.reduce((sum, s) => sum + s.total_amount, 0);
   }, [salesFilteredBySeller]);
 
   const overallTicket = useMemo(() => {
@@ -175,54 +192,50 @@ export default function Performance() {
   const sellerStats = useMemo(() => {
     const statsMap = new Map<string, SellerStat>();
 
-    salesFilteredBySeller.forEach((sale) => {
-      const sellerName = extractSellerName(sale.description);
-
-      const existing = statsMap.get(sellerName);
+    for (const sale of salesFilteredBySeller) {
+      const name = sale.seller_name;
+      const existing = statsMap.get(name);
       if (existing) {
-        existing.totalRevenue += toNumber(sale.total_amount);
+        existing.totalRevenue += sale.total_amount;
         existing.salesCount += 1;
       } else {
-        statsMap.set(sellerName, {
-          name: sellerName,
-          totalRevenue: toNumber(sale.total_amount),
+        statsMap.set(name, {
+          name,
+          totalRevenue: sale.total_amount,
           salesCount: 1,
           averageTicket: 0,
         });
       }
-    });
+    }
 
     const stats = Array.from(statsMap.values()).map((s) => ({
       ...s,
       averageTicket: s.salesCount > 0 ? s.totalRevenue / s.salesCount : 0,
     }));
 
-    return stats.sort((a, b) => b.totalRevenue - a.totalRevenue);
+    stats.sort((a, b) => b.totalRevenue - a.totalRevenue);
+    return stats;
   }, [salesFilteredBySeller]);
 
   const maxRevenue =
-    sellerStats.length > 0
-      ? Math.max(...sellerStats.map((s) => s.totalRevenue))
-      : 1;
+    sellerStats.length > 0 ? Math.max(...sellerStats.map((s) => s.totalRevenue)) : 1;
 
   // --- CURVA ABC DE CLIENTES ---
   const customerStats = useMemo(() => {
     const customerMap = new Map<string, CustomerStat>();
 
-    salesFilteredBySeller.forEach((sale) => {
-      const customerName = sale.entity_name || "Cliente Avulso";
-      // ignora “avulsos”/“balcão” (ajuste aqui se seus nomes mudam)
-      if (
-        customerName.trim().toLowerCase() === "cliente avulso" ||
-        customerName.trim().toLowerCase() === "cliente balcão" ||
-        customerName.trim().toLowerCase() === "cliente balcao"
-      ) {
-        return;
+    for (const sale of salesFilteredBySeller) {
+      const customerName = (sale.entity_name || "Cliente Avulso").trim();
+      const lower = customerName.toLowerCase();
+
+      // ignora “avulsos/balcão”
+      if (lower === "cliente avulso" || lower === "cliente balcão" || lower === "cliente balcao") {
+        continue;
       }
 
       const existing = customerMap.get(customerName);
       if (existing) {
-        existing.totalSpent += toNumber(sale.total_amount);
+        existing.totalSpent += sale.total_amount;
         existing.purchaseCount += 1;
         if (new Date(sale.created_at) > new Date(existing.lastPurchase)) {
           existing.lastPurchase = sale.created_at;
@@ -230,12 +243,12 @@ export default function Performance() {
       } else {
         customerMap.set(customerName, {
           name: customerName,
-          totalSpent: toNumber(sale.total_amount),
+          totalSpent: sale.total_amount,
           purchaseCount: 1,
           lastPurchase: sale.created_at,
         });
       }
-    });
+    }
 
     const customers = Array.from(customerMap.values()).sort(
       (a, b) => b.totalSpent - a.totalSpent
@@ -275,12 +288,23 @@ export default function Performance() {
 
   const identifiedCustomers = customerStats.length;
 
-  // filtro de busca na tabela de clientes
+  // filtro de busca na tabela de clientes (✅ usando deferred)
   const customerStatsFiltered = useMemo(() => {
-    const s = debouncedCustomerSearch;
+    const s = deferredCustomerSearch.trim().toLowerCase();
     if (!s) return customerStats;
     return customerStats.filter((c) => (c.name || "").toLowerCase().includes(s));
-  }, [customerStats, debouncedCustomerSearch]);
+  }, [customerStats, deferredCustomerSearch]);
+
+  // ✅ paginação render (evita travar no mobile)
+  const customerVisible = useMemo(
+    () => customerStatsFiltered.slice(0, customerLimit),
+    [customerStatsFiltered, customerLimit]
+  );
+
+  const sellerVisible = useMemo(
+    () => sellerStats.slice(0, sellerLimit),
+    [sellerStats, sellerLimit]
+  );
 
   const getRankIcon = (index: number) => {
     switch (index) {
@@ -350,7 +374,7 @@ export default function Performance() {
           </Select>
 
           {/* vendedor */}
-          <Select value={sellerFilter} onValueChange={setSellerFilter}>
+          <Select value={sellerFilter} onValueChange={(v) => { setSellerFilter(v); resetPaging(); }}>
             <SelectTrigger className="w-full sm:w-[230px]">
               <Filter className="h-4 w-4 mr-2" />
               <SelectValue placeholder="Vendedor" />
@@ -364,12 +388,18 @@ export default function Performance() {
             </SelectContent>
           </Select>
 
+          <Button variant="outline" onClick={fetchSales} title="Atualizar">
+            <RefreshCcw className="h-4 w-4 mr-2" />
+            Atualizar
+          </Button>
+
           {(range !== "30" || sellerFilter !== "all") && (
             <Button
               variant="outline"
               onClick={() => {
                 setRange("30");
                 setSellerFilter("all");
+                resetPaging();
               }}
             >
               <X className="h-4 w-4 mr-2" />
@@ -461,34 +491,46 @@ export default function Performance() {
                 Nenhuma venda registrada ainda.
               </p>
             ) : (
-              sellerStats.map((stat, index) => (
-                <div
-                  key={stat.name}
-                  className="flex items-center gap-4 p-3 rounded-lg bg-muted/30"
-                >
-                  <div className="flex items-center justify-center w-8">
-                    {getRankIcon(index)}
-                  </div>
-
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center justify-between mb-1 gap-3">
-                      <span className="font-medium truncate">{stat.name}</span>
-                      <span className="text-sm font-bold whitespace-nowrap">
-                        {formatCurrency(stat.totalRevenue)}
-                      </span>
+              <>
+                {sellerVisible.map((stat, index) => (
+                  <div
+                    key={stat.name}
+                    className="flex items-center gap-4 p-3 rounded-lg bg-muted/30"
+                  >
+                    <div className="flex items-center justify-center w-8">
+                      {getRankIcon(index)}
                     </div>
 
-                    <Progress value={(stat.totalRevenue / maxRevenue) * 100} className="h-2" />
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center justify-between mb-1 gap-3">
+                        <span className="font-medium truncate">{stat.name}</span>
+                        <span className="text-sm font-bold whitespace-nowrap">
+                          {formatCurrency(stat.totalRevenue)}
+                        </span>
+                      </div>
 
-                    <div className="flex items-center justify-between mt-2 text-xs text-muted-foreground">
-                      <span>{stat.salesCount} vendas</span>
-                      <span className="whitespace-nowrap">
-                        Ticket médio: {formatCurrency(stat.averageTicket)}
-                      </span>
+                      <Progress value={(stat.totalRevenue / maxRevenue) * 100} className="h-2" />
+
+                      <div className="flex items-center justify-between mt-2 text-xs text-muted-foreground">
+                        <span>{stat.salesCount} vendas</span>
+                        <span className="whitespace-nowrap">
+                          Ticket médio: {formatCurrency(stat.averageTicket)}
+                        </span>
+                      </div>
                     </div>
                   </div>
-                </div>
-              ))
+                ))}
+
+                {sellerStats.length > sellerLimit && (
+                  <Button
+                    variant="outline"
+                    className="w-full"
+                    onClick={() => setSellerLimit((v) => v + 30)}
+                  >
+                    Ver mais vendedores
+                  </Button>
+                )}
+              </>
             )}
           </CardContent>
         </Card>
@@ -512,7 +554,10 @@ export default function Performance() {
                 className="pl-9"
                 placeholder="Buscar cliente pelo nome..."
                 value={customerSearch}
-                onChange={(e) => setCustomerSearch(e.target.value)}
+                onChange={(e) => {
+                  setCustomerSearch(e.target.value);
+                  setCustomerLimit(20); // ✅ reseta paginação ao buscar
+                }}
               />
             </div>
 
@@ -521,66 +566,72 @@ export default function Performance() {
                 Nenhum cliente identificado com compras.
               </p>
             ) : (
-              <div className="rounded-md border overflow-x-auto">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Cliente</TableHead>
-                      <TableHead className="text-center">Classe</TableHead>
-                      <TableHead className="text-center">Compras</TableHead>
-                      <TableHead className="text-right">Total</TableHead>
-                    </TableRow>
-                  </TableHeader>
-
-                  <TableBody>
-                    {customerStatsFiltered.slice(0, 20).map((customer) => (
-                      <TableRow key={customer.name}>
-                        <TableCell>
-                          <div className="space-y-0.5">
-                            <p className="font-medium truncate max-w-[170px] sm:max-w-none">
-                              {customer.name}
-                            </p>
-                            <div className="text-xs text-muted-foreground flex flex-wrap gap-x-2">
-                              <span>
-                                {customer.percentageOfTotal?.toFixed(1)}% do total
-                              </span>
-                              <span>•</span>
-                              <span>
-                                Acum.: {customer.cumulativePct?.toFixed(1)}%
-                              </span>
-                              <span>•</span>
-                              <span>Última: {formatDate(customer.lastPurchase)}</span>
-                            </div>
-                          </div>
-                        </TableCell>
-
-                        <TableCell className="text-center">
-                          <Badge
-                            variant="outline"
-                            className={getClassificationColor(customer.classification || "C")}
-                          >
-                            {customer.classification}
-                          </Badge>
-                        </TableCell>
-
-                        <TableCell className="text-center">
-                          {customer.purchaseCount}
-                        </TableCell>
-
-                        <TableCell className="text-right font-mono font-medium">
-                          {formatCurrency(customer.totalSpent)}
-                        </TableCell>
+              <>
+                <div className="rounded-md border overflow-x-auto">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Cliente</TableHead>
+                        <TableHead className="text-center">Classe</TableHead>
+                        <TableHead className="text-center">Compras</TableHead>
+                        <TableHead className="text-right">Total</TableHead>
                       </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
+                    </TableHeader>
 
-                {customerStatsFiltered.length > 20 && (
-                  <div className="p-2 text-xs text-muted-foreground">
-                    Mostrando 20 de {customerStatsFiltered.length}.
-                  </div>
+                    <TableBody>
+                      {customerVisible.map((customer) => (
+                        <TableRow key={customer.name}>
+                          <TableCell>
+                            <div className="space-y-0.5">
+                              <p className="font-medium truncate max-w-[170px] sm:max-w-none">
+                                {customer.name}
+                              </p>
+                              <div className="text-xs text-muted-foreground flex flex-wrap gap-x-2">
+                                <span>{customer.percentageOfTotal?.toFixed(1)}% do total</span>
+                                <span>•</span>
+                                <span>Acum.: {customer.cumulativePct?.toFixed(1)}%</span>
+                                <span>•</span>
+                                <span>Última: {formatDate(customer.lastPurchase)}</span>
+                              </div>
+                            </div>
+                          </TableCell>
+
+                          <TableCell className="text-center">
+                            <Badge
+                              variant="outline"
+                              className={getClassificationColor(customer.classification || "C")}
+                            >
+                              {customer.classification}
+                            </Badge>
+                          </TableCell>
+
+                          <TableCell className="text-center">
+                            {customer.purchaseCount}
+                          </TableCell>
+
+                          <TableCell className="text-right font-mono font-medium">
+                            {formatCurrency(customer.totalSpent)}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+
+                {customerStatsFiltered.length > customerLimit && (
+                  <Button
+                    variant="outline"
+                    className="w-full"
+                    onClick={() => setCustomerLimit((v) => v + 20)}
+                  >
+                    Ver mais clientes
+                  </Button>
                 )}
-              </div>
+
+                <div className="text-xs text-muted-foreground">
+                  Mostrando {Math.min(customerLimit, customerStatsFiltered.length)} de {customerStatsFiltered.length}.
+                </div>
+              </>
             )}
           </CardContent>
         </Card>
@@ -626,6 +677,14 @@ export default function Performance() {
           </div>
         </CardContent>
       </Card>
+
+      {/* dica: se bater muito dado */}
+      {sales.length >= FETCH_LIMIT && (
+        <div className="text-xs text-muted-foreground">
+          ⚠️ Carreguei só as últimas {FETCH_LIMIT} vendas para manter performance.
+          Se quiser, eu faço paginação no Supabase também (page/offset).
+        </div>
+      )}
     </div>
   );
 }

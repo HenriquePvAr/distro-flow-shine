@@ -81,7 +81,6 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
 
-  // Monitora status online/offline
   useEffect(() => {
     const handleStatusChange = () => setIsOnline(navigator.onLine);
     window.addEventListener("online", handleStatusChange);
@@ -92,7 +91,6 @@ export default function Dashboard() {
     };
   }, []);
 
-  // Intervalo de datas (local)
   const dateRange = useMemo(() => {
     const now = new Date();
     switch (period) {
@@ -105,7 +103,6 @@ export default function Dashboard() {
     }
   }, [period]);
 
-  // Busca dados do Supabase (somente o que precisa do período)
   useEffect(() => {
     let cancelled = false;
 
@@ -119,7 +116,6 @@ export default function Dashboard() {
 
       setLoading(true);
       try {
-        // 1) Financeiro: filtra pelo período já na query (melhor performance)
         const { data: finData, error: finError } = await supabase
           .from("financial_entries")
           .select("id,type,total_amount,due_date,status")
@@ -128,7 +124,6 @@ export default function Dashboard() {
 
         if (finError) throw finError;
 
-        // 2) Produtos
         const { data: prodData, error: prodError } = await supabase
           .from("products")
           .select("id,name,stock,min_stock,cost_price")
@@ -142,9 +137,7 @@ export default function Dashboard() {
         }
       } catch (error: any) {
         console.error("Erro ao carregar dashboard:", error);
-        if (!cancelled) {
-          setLoadError(error?.message || "Erro ao carregar dados.");
-        }
+        if (!cancelled) setLoadError(error?.message || "Erro ao carregar dados.");
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -156,7 +149,6 @@ export default function Dashboard() {
     };
   }, [isOnline, dateRange.start, dateRange.end]);
 
-  // Filtra (extra safety)
   const filteredTransactions = useMemo(() => {
     return transactions.filter((t) => {
       if (!t.due_date) return false;
@@ -165,7 +157,6 @@ export default function Dashboard() {
     });
   }, [transactions, dateRange]);
 
-  // KPIs (somente pagos)
   const paidTransactions = useMemo(
     () => filteredTransactions.filter((t) => t.status === "paid"),
     [filteredTransactions]
@@ -187,17 +178,17 @@ export default function Dashboard() {
 
   const inventoryValue = useMemo(() => {
     return products.reduce(
-      (sum, p) =>
-        sum + Number(p.cost_price || 0) * Number(p.stock || 0),
+      (sum, p) => sum + Number(p.cost_price || 0) * Number(p.stock || 0),
       0
     );
   }, [products]);
 
   const lowStockProducts = useMemo(() => {
-    return products.filter((p) => Number(p.stock || 0) <= Number(p.min_stock ?? 5));
+    return products.filter(
+      (p) => Number(p.stock || 0) <= Number(p.min_stock ?? 5)
+    );
   }, [products]);
 
-  // Gráfico diário (usa paidTransactions)
   const chartData = useMemo(() => {
     const days = eachDayOfInterval({ start: dateRange.start, end: dateRange.end });
 
@@ -234,23 +225,57 @@ export default function Dashboard() {
     );
   }
 
+  const KpiCard = ({
+    title,
+    icon,
+    value,
+    sub,
+    valueClassName,
+    cardClassName,
+  }: {
+    title: string;
+    icon: React.ReactNode;
+    value: string;
+    sub: string;
+    valueClassName?: string;
+    cardClassName?: string;
+  }) => (
+    <Card className={cardClassName}>
+      <CardHeader className="flex flex-row items-start justify-between pb-2 space-y-0">
+        <CardTitle className="text-xs sm:text-sm font-medium text-muted-foreground leading-tight">
+          {title}
+        </CardTitle>
+        <div className="shrink-0">{icon}</div>
+      </CardHeader>
+      <CardContent>
+        <p className={`font-bold ${valueClassName ?? "text-foreground"} text-lg sm:text-2xl`}>
+          {value}
+        </p>
+        <p className="text-[11px] sm:text-xs text-muted-foreground">{sub}</p>
+      </CardContent>
+    </Card>
+  );
+
   return (
-    <div className="space-y-6 animate-in fade-in duration-500">
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+    <div className="space-y-5 animate-in fade-in duration-500 p-4 md:p-6 pb-24">
+      {/* HEADER */}
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-3">
           <div className="p-2 rounded-lg bg-primary/10">
-            <LayoutDashboard className="h-6 w-6 text-primary" />
+            <LayoutDashboard className="h-5 w-5 sm:h-6 sm:w-6 text-primary" />
           </div>
-          <div>
-            <h1 className="text-2xl font-semibold text-foreground">Dashboard</h1>
-            <p className="text-sm text-muted-foreground">
+          <div className="min-w-0">
+            <h1 className="text-xl sm:text-2xl font-semibold text-foreground truncate">
+              Dashboard
+            </h1>
+            <p className="text-xs sm:text-sm text-muted-foreground">
               Visão geral financeira e estoque
             </p>
           </div>
         </div>
 
         <Select value={period} onValueChange={(v) => setPeriod(v as Period)}>
-          <SelectTrigger className="w-40">
+          <SelectTrigger className="w-full sm:w-44">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -280,142 +305,136 @@ export default function Dashboard() {
         </Alert>
       )}
 
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">
-              Faturamento (Receitas)
-            </CardTitle>
-            <DollarSign className="h-4 w-4 text-emerald-500" />
-          </CardHeader>
-          <CardContent>
-            <p className="text-2xl font-bold text-foreground">
-              {formatCurrency(totalRevenue)}
-            </p>
-            <p className="text-xs text-muted-foreground">Total recebido no período</p>
-          </CardContent>
-        </Card>
+      {/* KPI GRID - mobile 2 colunas */}
+      <div className="grid gap-3 sm:gap-4 grid-cols-2 lg:grid-cols-4">
+        <KpiCard
+          title="Faturamento (Receitas)"
+          icon={<DollarSign className="h-4 w-4 text-emerald-500" />}
+          value={formatCurrency(totalRevenue)}
+          sub="Total recebido no período"
+        />
 
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">
-              Despesas Pagas
-            </CardTitle>
-            <TrendingDown className="h-4 w-4 text-destructive" />
-          </CardHeader>
-          <CardContent>
-            <p className="text-2xl font-bold text-destructive">
-              {formatCurrency(totalExpenses)}
-            </p>
-            <p className="text-xs text-muted-foreground">Total pago no período</p>
-          </CardContent>
-        </Card>
+        <KpiCard
+          title="Despesas Pagas"
+          icon={<TrendingDown className="h-4 w-4 text-destructive" />}
+          value={formatCurrency(totalExpenses)}
+          sub="Total pago no período"
+          valueClassName="text-destructive text-lg sm:text-2xl"
+        />
 
         {isAdmin ? (
-          <Card className={netProfit >= 0 ? "border-emerald-500/30" : "border-destructive/30"}>
-            <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-sm font-medium text-muted-foreground">
-                Saldo (Lucro Caixa)
-              </CardTitle>
-              {netProfit >= 0 ? (
+          <KpiCard
+            title="Saldo (Lucro Caixa)"
+            icon={
+              netProfit >= 0 ? (
                 <TrendingUp className="h-4 w-4 text-emerald-500" />
               ) : (
                 <TrendingDown className="h-4 w-4 text-destructive" />
-              )}
-            </CardHeader>
-            <CardContent>
-              <p
-                className={`text-2xl font-bold ${
-                  netProfit >= 0 ? "text-emerald-600" : "text-destructive"
-                }`}
-              >
-                {formatCurrency(netProfit)}
-              </p>
-              <p className="text-xs text-muted-foreground">Receitas − Despesas</p>
-            </CardContent>
-          </Card>
+              )
+            }
+            value={formatCurrency(netProfit)}
+            sub="Receitas − Despesas"
+            cardClassName={netProfit >= 0 ? "border-emerald-500/30" : "border-destructive/30"}
+            valueClassName={netProfit >= 0 ? "text-emerald-600 text-lg sm:text-2xl" : "text-destructive text-lg sm:text-2xl"}
+          />
         ) : (
-          <Card className="border-muted">
-            <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-sm font-medium text-muted-foreground">Saldo</CardTitle>
-              <Lock className="h-4 w-4 text-muted-foreground" />
-            </CardHeader>
-            <CardContent>
-              <p className="text-2xl font-bold text-muted-foreground">••••••</p>
-              <p className="text-xs text-muted-foreground">Restrito a administradores</p>
-            </CardContent>
-          </Card>
+          <KpiCard
+            title="Saldo"
+            icon={<Lock className="h-4 w-4 text-muted-foreground" />}
+            value="••••••"
+            sub="Restrito a administradores"
+            valueClassName="text-muted-foreground text-lg sm:text-2xl"
+            cardClassName="border-muted"
+          />
         )}
 
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">
-              Patrimônio em Estoque
-            </CardTitle>
-            <Package className="h-4 w-4 text-blue-500" />
-          </CardHeader>
-          <CardContent>
-            <p className="text-2xl font-bold text-foreground">
-              {formatCurrency(inventoryValue)}
-            </p>
-            <p className="text-xs text-muted-foreground">Valor de custo total</p>
-          </CardContent>
-        </Card>
+        <KpiCard
+          title="Patrimônio em Estoque"
+          icon={<Package className="h-4 w-4 text-blue-500" />}
+          value={formatCurrency(inventoryValue)}
+          sub="Valor de custo total"
+        />
       </div>
 
+      {/* CONTEÚDO PRINCIPAL */}
       <div className="grid gap-4 md:grid-cols-3">
+        {/* GRÁFICO */}
         <Card className="md:col-span-2">
-          <CardHeader>
-            <CardTitle className="text-lg font-medium">Fluxo de Caixa Diário</CardTitle>
-            <p className="text-sm text-muted-foreground">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-base sm:text-lg font-medium">
+              Fluxo de Caixa Diário
+            </CardTitle>
+            <p className="text-xs sm:text-sm text-muted-foreground">
               Comparativo de entradas e saídas por dia
             </p>
           </CardHeader>
+
           <CardContent>
-            <ChartContainer config={chartConfig} className="h-[300px] w-full">
-              <BarChart data={chartData} margin={{ top: 20, right: 30, left: 20, bottom: 5 }}>
-                <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
-                <XAxis dataKey="date" tickLine={false} axisLine={false} className="text-xs" />
-                <YAxis
-                  tickLine={false}
-                  axisLine={false}
-                  tickFormatter={(value) =>
-                    Number(value || 0).toLocaleString("pt-BR", {
-                      style: "currency",
-                      currency: "BRL",
-                      notation: "compact",
-                    })
-                  }
-                  className="text-xs"
-                />
-                <ChartTooltip
-                  cursor={{ fill: "hsl(var(--muted)/0.3)" }}
-                  content={
-                    <ChartTooltipContent
-                      formatter={(value, name) => {
-                        const labels: Record<string, string> = {
-                          entradas: "Receitas",
-                          saidas: "Despesas",
-                          saldo: "Saldo",
-                        };
-                        return (
-                          <span className="font-mono">
-                            {labels[name as string] || String(name)}:{" "}
-                            {formatCurrency(Number(value))}
-                          </span>
-                        );
-                      }}
+            {/* Mobile: scroll horizontal para não esmagar as barras */}
+            <div className="w-full overflow-x-auto">
+              <div className="min-w-[680px] sm:min-w-0">
+                <ChartContainer config={chartConfig} className="h-[260px] sm:h-[320px] w-full">
+                  <BarChart
+                    data={chartData}
+                    margin={{ top: 16, right: 18, left: 8, bottom: 6 }}
+                  >
+                    <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
+                    <XAxis
+                      dataKey="date"
+                      tickLine={false}
+                      axisLine={false}
+                      interval={0}
+                      tickMargin={8}
+                      className="text-[10px] sm:text-xs"
                     />
-                  }
-                />
-                <Bar dataKey="entradas" fill="hsl(var(--chart-1))" radius={[4, 4, 0, 0]} />
-                <Bar dataKey="saidas" fill="hsl(var(--chart-2))" radius={[4, 4, 0, 0]} />
-                <Bar dataKey="saldo" fill="hsl(var(--chart-3))" radius={[4, 4, 0, 0]} />
-              </BarChart>
-            </ChartContainer>
+                    <YAxis
+                      tickLine={false}
+                      axisLine={false}
+                      width={64}
+                      tickFormatter={(value) =>
+                        Number(value || 0).toLocaleString("pt-BR", {
+                          style: "currency",
+                          currency: "BRL",
+                          notation: "compact",
+                        })
+                      }
+                      className="text-[10px] sm:text-xs"
+                    />
+                    <ChartTooltip
+                      cursor={{ fill: "hsl(var(--muted)/0.3)" }}
+                      content={
+                        <ChartTooltipContent
+                          formatter={(value, name) => {
+                            const labels: Record<string, string> = {
+                              entradas: "Receitas",
+                              saidas: "Despesas",
+                              saldo: "Saldo",
+                            };
+                            return (
+                              <span className="font-mono">
+                                {labels[name as string] || String(name)}:{" "}
+                                {formatCurrency(Number(value))}
+                              </span>
+                            );
+                          }}
+                        />
+                      }
+                    />
+                    <Bar dataKey="entradas" fill="hsl(var(--chart-1))" radius={[4, 4, 0, 0]} />
+                    <Bar dataKey="saidas" fill="hsl(var(--chart-2))" radius={[4, 4, 0, 0]} />
+                    <Bar dataKey="saldo" fill="hsl(var(--chart-3))" radius={[4, 4, 0, 0]} />
+                  </BarChart>
+                </ChartContainer>
+              </div>
+            </div>
+
+            <p className="mt-2 text-[11px] text-muted-foreground sm:hidden">
+              Dica: arraste para o lado para ver melhor o gráfico.
+            </p>
           </CardContent>
         </Card>
 
+        {/* ALERTAS DE ESTOQUE */}
         <Card className={lowStockProducts.length > 0 ? "border-amber-500/50 h-full" : "h-full"}>
           <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-sm font-medium text-foreground">
@@ -427,10 +446,11 @@ export default function Dashboard() {
               }`}
             />
           </CardHeader>
+
           <CardContent>
             <div className="flex items-baseline gap-2 mb-4">
               <span className="text-3xl font-bold">{lowStockProducts.length}</span>
-              <span className="text-sm text-muted-foreground">produtos abaixo do mínimo</span>
+              <span className="text-sm text-muted-foreground">abaixo do mínimo</span>
             </div>
 
             <div className="space-y-3">
@@ -439,7 +459,7 @@ export default function Dashboard() {
                   key={product.id}
                   className="flex items-center justify-between text-sm border-b pb-2 last:border-0"
                 >
-                  <span className="font-medium truncate max-w-[150px]">{product.name}</span>
+                  <span className="font-medium truncate max-w-[160px]">{product.name}</span>
                   <Badge variant="outline" className="text-amber-600 border-amber-200 bg-amber-50">
                     Restam: {product.stock}
                   </Badge>
