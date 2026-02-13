@@ -1,68 +1,32 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { useForm } from "react-hook-form";
-import { zodResolver } from "@hookform/resolvers/zod";
-import { z } from "zod";
-import * as XLSX from "xlsx";
-import {
-  Users,
-  Plus,
-  Search,
-  Edit,
-  Trash2,
-  Phone,
-  MapPin,
-  Loader2,
-  FileText,
-  MessageCircle,
-  Copy,
-  Upload,
-  Filter,
-  X,
-  CheckCircle2,
-  Download,
-} from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
+import { toast } from "sonner";
+import {
+  Search,
+  Trash2,
+  XCircle,
+  RefreshCcw,
+  Receipt,
+  Package,
+  ShieldCheck,
+  Calendar as CalendarIcon,
+  User,
+  Info,
+} from "lucide-react";
+
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
+import { Card, CardContent } from "@/components/ui/card";
 import {
   Dialog,
   DialogContent,
   DialogDescription,
-  DialogFooter,
   DialogHeader,
   DialogTitle,
-  DialogTrigger,
 } from "@/components/ui/dialog";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
-import {
-  Form,
-  FormControl,
-  FormField,
-  FormItem,
-  FormLabel,
-  FormMessage,
-} from "@/components/ui/form";
 import {
   Select,
   SelectContent,
@@ -70,1006 +34,606 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { toast } from "sonner";
 
-// --- TIPAGEM ---
-interface Customer {
+type AuditLog = {
   id: string;
-  name: string;
-  document: string | null;
-  phone: string | null;
-  address: string | null;
-  city: string | null;
-  status: string;
+  company_id: string | null;
+  actor_user_id: string | null;
+  actor_name: string | null;
+
+  event_type: string; // sale_created, sale_cancelled, stock_adjust...
+  entity_type: string; // sale, product...
+  entity_id: string | null;
+
+  title: string;
+  description: string | null;
+  amount: number | null;
+
+  metadata: any;
   created_at: string;
+
+  is_deleted: boolean;
+};
+
+type Sale = {
+  id: string;
+  customer_id: string | null;
+  user_id: string | null;
+  total_amount: number | null;
+  status: string | null;
+  created_at: string | null;
+  company_id: string | null;
+};
+
+type Customer = { id: string; name: string };
+type Profile = { id: string; name: string | null };
+
+type ChipFilter = "all" | "sales" | "cancelled" | "stock";
+type DateFilter = "7d" | "30d" | "this-month" | "this-year" | "all";
+
+function formatCurrency(v: number) {
+  return (v || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 }
 
-// --- UTILS ---
-const onlyDigits = (v: string) => (v || "").replace(/\D/g, "");
-const normalizeNullable = (v: string | undefined | null) => {
-  const t = (v ?? "").trim();
-  return t.length ? t : null;
-};
+function formatDateTime(iso: string) {
+  const d = new Date(iso);
+  return d.toLocaleString("pt-BR");
+}
 
-const formatPhone = (value: string) => {
-  if (!value) return "";
-  const numbers = onlyDigits(value).slice(0, 11);
-  if (numbers.length <= 10) {
-    return numbers.replace(/(\d{2})(\d{4})(\d{0,4})/, "($1) $2-$3").trim();
+function startOfDay(d: Date) {
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+}
+
+function isWithinDays(iso: string, days: number) {
+  const now = new Date();
+  const min = new Date(now);
+  min.setDate(min.getDate() - days);
+  return new Date(iso) >= min;
+}
+
+function getMonthRange() {
+  const now = new Date();
+  const start = new Date(now.getFullYear(), now.getMonth(), 1);
+  const end = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+  return { start, end };
+}
+
+function getYearRange() {
+  const now = new Date();
+  const start = new Date(now.getFullYear(), 0, 1);
+  const end = new Date(now.getFullYear() + 1, 0, 1);
+  return { start, end };
+}
+
+function getIcon(eventType: string) {
+  if (eventType.startsWith("sale")) return <Receipt className="h-4 w-4" />;
+  if (eventType.startsWith("stock")) return <Package className="h-4 w-4" />;
+  return <ShieldCheck className="h-4 w-4" />;
+}
+
+function badgeFor(eventType: string) {
+  if (eventType === "sale_cancelled") {
+    return <Badge variant="destructive" className="text-[10px] px-2 py-0.5">Cancelada</Badge>;
   }
-  return numbers.replace(/(\d{2})(\d{5})(\d{0,4})/, "($1) $2-$3").trim();
-};
-
-const formatDocument = (value: string) => {
-  if (!value) return "";
-  const numbers = onlyDigits(value).slice(0, 14);
-  if (numbers.length <= 11) {
-    return numbers
-      .replace(/(\d{3})(\d{3})(\d{3})(\d{0,2})/, "$1.$2.$3-$4")
-      .trim();
+  if (eventType === "sale_created") {
+    return <Badge className="text-[10px] px-2 py-0.5">Venda</Badge>;
   }
-  return numbers
-    .replace(/(\d{2})(\d{3})(\d{3})(\d{4})(\d{0,2})/, "$1.$2.$3/$4-$5")
-    .trim();
-};
-
-const copyToClipboard = async (text: string) => {
-  try {
-    await navigator.clipboard.writeText(text);
-    toast.success("Copiado!");
-  } catch {
-    toast.error("Não foi possível copiar.");
+  if (eventType.startsWith("stock")) {
+    return <Badge variant="secondary" className="text-[10px] px-2 py-0.5">Estoque</Badge>;
   }
-};
+  return <Badge variant="outline" className="text-[10px] px-2 py-0.5">Evento</Badge>;
+}
 
-const openWhatsApp = (phone: string, name?: string) => {
-  const clean = onlyDigits(phone);
-  if (clean.length < 10) return toast.error("Telefone inválido.");
-  const msg = encodeURIComponent(`Olá ${name || ""}!`);
-  window.open(`https://wa.me/55${clean}?text=${msg}`, "_blank");
-};
+export default function Historico() {
+  const [loading, setLoading] = useState(true);
 
-// --- SCHEMA ---
-const customerSchema = z.object({
-  name: z.string().min(2, "Nome é obrigatório (min 2 letras)").max(100),
+  const [logs, setLogs] = useState<AuditLog[]>([]);
+  const [salesById, setSalesById] = useState<Record<string, Sale>>({});
+  const [customersById, setCustomersById] = useState<Record<string, Customer>>({});
+  const [profilesById, setProfilesById] = useState<Record<string, Profile>>({});
 
-  document: z
-    .string()
-    .optional()
-    .or(z.literal(""))
-    .refine((v) => {
-      const d = onlyDigits(v || "");
-      return d.length === 0 || d.length === 11 || d.length === 14;
-    }, "CPF/CNPJ inválido (precisa ter 11 ou 14 dígitos)."),
+  const [search, setSearch] = useState("");
+  const [chip, setChip] = useState<ChipFilter>("all");
+  const [dateFilter, setDateFilter] = useState<DateFilter>("30d");
 
-  phone: z
-    .string()
-    .optional()
-    .or(z.literal(""))
-    .refine((v) => {
-      const d = onlyDigits(v || "");
-      return d.length === 0 || (d.length >= 10 && d.length <= 11);
-    }, "Telefone inválido (DDD + número)."),
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [confirmMode, setConfirmMode] = useState<"cancel" | "delete">("cancel");
+  const [selected, setSelected] = useState<AuditLog | null>(null);
 
-  address: z.string().optional().or(z.literal("")),
-  city: z.string().optional().or(z.literal("")),
-  status: z.enum(["ativo", "inativo"]).default("ativo"),
-});
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const [detailsLog, setDetailsLog] = useState<AuditLog | null>(null);
 
-type CustomerFormData = z.infer<typeof customerSchema>;
+  const fetchData = async () => {
+    setLoading(true);
 
-// --- IMPORT ---
-type ImportRow = {
-  name: string;
-  document?: string;
-  phone?: string;
-  address?: string;
-  city?: string;
-  status?: "ativo" | "inativo";
-};
+    // 1) logs
+    const { data: logsData, error: logsErr } = await supabase
+      .from("audit_logs")
+      .select("*")
+      .eq("is_deleted", false)
+      .order("created_at", { ascending: false })
+      .limit(500);
 
-const getVal = (obj: any, keys: string[]) => {
-  const lower = Object.keys(obj || {}).reduce<Record<string, any>>((acc, k) => {
-    acc[k.toLowerCase().trim()] = obj[k];
-    return acc;
-  }, {});
-  for (const k of keys) {
-    const v = lower[k.toLowerCase()];
-    if (v !== undefined && v !== null) return String(v).trim();
-  }
-  return "";
-};
+    if (logsErr) {
+      toast.error("Erro ao carregar histórico.");
+      setLoading(false);
+      return;
+    }
 
-export default function Clientes() {
-  const [customers, setCustomers] = useState<Customer[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
+    const L = (logsData || []) as AuditLog[];
+    setLogs(L);
 
-  const [isDialogOpen, setIsDialogOpen] = useState(false);
-  const [editingCustomer, setEditingCustomer] = useState<Customer | null>(null);
-  const [deleteCustomer, setDeleteCustomer] = useState<Customer | null>(null);
+    // 2) sales ids
+    const saleIds = Array.from(
+      new Set(
+        L.filter((l) => l.entity_type === "sale" && l.entity_id).map((l) => l.entity_id as string)
+      )
+    );
 
-  const [searchTerm, setSearchTerm] = useState("");
-  const [debouncedSearch, setDebouncedSearch] = useState("");
+    // 3) fetch sales
+    let sales: Sale[] = [];
+    if (saleIds.length) {
+      const { data: salesData, error: salesErr } = await supabase
+        .from("sales")
+        .select("id, customer_id, user_id, total_amount, status, created_at, company_id")
+        .in("id", saleIds);
 
-  const [statusFilter, setStatusFilter] = useState<"all" | "ativo" | "inativo">("all");
+      if (salesErr) {
+        toast.error("Erro ao carregar vendas relacionadas.");
+        setLoading(false);
+        return;
+      }
 
-  const [importOpen, setImportOpen] = useState(false);
-  const [importRows, setImportRows] = useState<ImportRow[]>([]);
-  const [importing, setImporting] = useState(false);
+      sales = (salesData || []) as Sale[];
+    }
 
-  const form = useForm<CustomerFormData>({
-    resolver: zodResolver(customerSchema),
-    defaultValues: {
-      name: "",
-      document: "",
-      phone: "",
-      address: "",
-      city: "",
-      status: "ativo",
-    },
-  });
+    const sMap: Record<string, Sale> = {};
+    for (const s of sales) sMap[s.id] = s;
+    setSalesById(sMap);
+
+    // 4) customers ids (de sales)
+    const customerIds = Array.from(
+      new Set(sales.map((s) => s.customer_id).filter((id): id is string => Boolean(id)))
+    );
+
+    // 5) users ids (de sales)
+    const userIds = Array.from(
+      new Set(sales.map((s) => s.user_id).filter((id): id is string => Boolean(id)))
+    );
+
+    // 6) fetch customers
+    if (customerIds.length) {
+      const { data: custData } = await supabase
+        .from("customers")
+        .select("id, name")
+        .in("id", customerIds);
+
+      const cMap: Record<string, Customer> = {};
+      for (const c of (custData || []) as Customer[]) cMap[c.id] = c;
+      setCustomersById(cMap);
+    } else {
+      setCustomersById({});
+    }
+
+    // 7) fetch profiles (operador)
+    if (userIds.length) {
+      const { data: profData } = await supabase
+        .from("profiles")
+        .select("id, name")
+        .in("id", userIds);
+
+      const pMap: Record<string, Profile> = {};
+      for (const p of (profData || []) as Profile[]) pMap[p.id] = p;
+      setProfilesById(pMap);
+    } else {
+      setProfilesById({});
+    }
+
+    setLoading(false);
+  };
 
   useEffect(() => {
-    const t = setTimeout(() => setDebouncedSearch(searchTerm.trim().toLowerCase()), 200);
-    return () => clearTimeout(t);
-  }, [searchTerm]);
-
-  useEffect(() => {
-    fetchCustomers();
+    fetchData();
   }, []);
 
-  const fetchCustomers = async () => {
-    setIsLoading(true);
+  const filtered = useMemo(() => {
+    const s = search.trim().toLowerCase();
+
+    const byChip = (l: AuditLog) => {
+      if (chip === "all") return true;
+      if (chip === "sales") return l.event_type.startsWith("sale");
+      if (chip === "cancelled") return l.event_type === "sale_cancelled";
+      if (chip === "stock") return l.event_type.startsWith("stock");
+      return true;
+    };
+
+    const byDate = (l: AuditLog) => {
+      if (dateFilter === "all") return true;
+
+      if (dateFilter === "7d") return isWithinDays(l.created_at, 7);
+      if (dateFilter === "30d") return isWithinDays(l.created_at, 30);
+
+      const d = new Date(l.created_at);
+      if (dateFilter === "this-month") {
+        const { start, end } = getMonthRange();
+        return d >= start && d < end;
+      }
+      if (dateFilter === "this-year") {
+        const { start, end } = getYearRange();
+        return d >= start && d < end;
+      }
+      return true;
+    };
+
+    const bySearch = (l: AuditLog) => {
+      if (!s) return true;
+
+      const sale = l.entity_id ? salesById[l.entity_id] : undefined;
+      const customerName =
+        sale?.customer_id ? customersById[sale.customer_id]?.name : undefined;
+      const operatorName =
+        sale?.user_id ? profilesById[sale.user_id]?.name : undefined;
+
+      const hay = [
+        l.title,
+        l.description ?? "",
+        l.event_type,
+        l.entity_type,
+        l.actor_name ?? "",
+        customerName ?? "",
+        operatorName ?? "",
+        JSON.stringify(l.metadata ?? {}),
+      ]
+        .join(" ")
+        .toLowerCase();
+
+      return hay.includes(s);
+    };
+
+    return logs.filter((l) => byChip(l) && byDate(l) && bySearch(l));
+  }, [logs, chip, dateFilter, search, salesById, customersById, profilesById]);
+
+  const openCancel = (log: AuditLog) => {
+    setSelected(log);
+    setConfirmMode("cancel");
+    setConfirmOpen(true);
+  };
+
+  const openDelete = (log: AuditLog) => {
+    setSelected(log);
+    setConfirmMode("delete");
+    setConfirmOpen(true);
+  };
+
+  const runConfirm = async () => {
+    if (!selected) return;
+
     try {
-      const { data, error } = await supabase.from("customers").select("*").order("name");
-      if (error) throw error;
-      setCustomers((data as Customer[]) || []);
-    } catch (error) {
-      console.error("Erro ao buscar clientes:", error);
-      toast.error("Erro ao carregar lista de clientes");
-    } finally {
-      setIsLoading(false);
-    }
-  };
+      if (confirmMode === "cancel") {
+        const saleId = selected.entity_id || selected.metadata?.sale_id;
+        if (!saleId) throw new Error("Não achei o ID da venda para cancelar.");
 
-  const openNewDialog = () => {
-    setEditingCustomer(null);
-    form.reset({
-      name: "",
-      document: "",
-      phone: "",
-      address: "",
-      city: "",
-      status: "ativo",
-    });
-    setIsDialogOpen(true);
-  };
+        const { error } = await supabase.rpc("cancel_sale", { p_sale_id: saleId });
+        if (error) throw new Error(error.message);
 
-  const openEditDialog = (customer: Customer) => {
-    setEditingCustomer(customer);
-    form.reset({
-      name: customer.name,
-      document: customer.document || "",
-      phone: customer.phone || "",
-      address: customer.address || "",
-      city: customer.city || "",
-      status: (customer.status as "ativo" | "inativo") || "ativo",
-    });
-    setIsDialogOpen(true);
-  };
-
-  const onSubmit = async (data: CustomerFormData) => {
-    try {
-      const payload = {
-        name: data.name.trim(),
-        document: normalizeNullable(data.document),
-        phone: normalizeNullable(data.phone),
-        address: normalizeNullable(data.address),
-        city: normalizeNullable(data.city),
-        status: data.status,
-      };
-
-      if (editingCustomer) {
-        const { error } = await supabase.from("customers").update(payload).eq("id", editingCustomer.id);
-        if (error) throw error;
-        toast.success("Cliente atualizado com sucesso!");
+        toast.success("Venda cancelada e estoque reposto!");
       } else {
-        const { error } = await supabase.from("customers").insert(payload);
-        if (error) throw error;
-        toast.success("Cliente cadastrado com sucesso!");
-      }
+        const { data: userRes } = await supabase.auth.getUser();
+        const uid = userRes?.user?.id ?? null;
 
-      setIsDialogOpen(false);
-      setEditingCustomer(null);
-      await fetchCustomers();
-    } catch (error: any) {
-      console.error("Erro ao salvar cliente:", error);
-      toast.error("Erro ao salvar: " + (error.message || "Verifique os dados"));
-    }
-  };
-
-  const handleDelete = async () => {
-    if (!deleteCustomer) return;
-
-    try {
-      const { error } = await supabase.from("customers").delete().eq("id", deleteCustomer.id);
-      if (error) throw error;
-
-      toast.success("Cliente excluído!");
-      setDeleteCustomer(null);
-      await fetchCustomers();
-    } catch (error) {
-      console.error("Erro ao excluir cliente:", error);
-      toast.error("Não foi possível excluir o cliente.");
-    }
-  };
-
-  const filteredCustomers = useMemo(() => {
-    const s = debouncedSearch;
-
-    const base =
-      statusFilter === "all"
-        ? customers
-        : customers.filter((c) => c.status === statusFilter);
-
-    if (!s) return base;
-
-    return base.filter((c) => {
-      const name = (c.name || "").toLowerCase();
-      const city = (c.city || "").toLowerCase();
-      const phone = (c.phone || "").toLowerCase();
-      const doc = (c.document || "").toLowerCase();
-
-      return (
-        name.includes(s) ||
-        city.includes(s) ||
-        phone.includes(s) ||
-        doc.includes(s) ||
-        onlyDigits(phone).includes(onlyDigits(s)) ||
-        onlyDigits(doc).includes(onlyDigits(s))
-      );
-    });
-  }, [customers, debouncedSearch, statusFilter]);
-
-  const total = customers.length;
-  const active = customers.filter((c) => c.status === "ativo").length;
-  const inactive = customers.filter((c) => c.status === "inativo").length;
-
-  // --- MODELO CSV ---
-  const downloadModeloClientesCSV = () => {
-    const csv =
-      "nome,telefone,documento,endereco,cidade,status\n" +
-      "João da Silva,(92) 99999-9999,000.000.000-00,Rua A 123,Manaus,ativo\n" +
-      "Maria Souza,(92) 98888-8888,00.000.000/0001-00,Rua B 500,Manaus,inativo\n";
-
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "modelo_clientes.csv";
-    a.click();
-
-    URL.revokeObjectURL(url);
-  };
-
-  // --- IMPORTAÇÃO ---
-  const handleFileImport = async (file: File) => {
-    try {
-      const ext = (file.name.split(".").pop() || "").toLowerCase();
-
-      if (ext === "csv") {
-        const text = await file.text();
-        const lines = text
-          .split(/\r?\n/)
-          .map((l) => l.trim())
-          .filter(Boolean);
-
-        if (lines.length < 2) {
-          toast.error("CSV vazio ou inválido.");
-          return;
-        }
-
-        const header = lines[0].split(",").map((h) => h.trim().toLowerCase());
-
-        const idx = (name: string) => header.indexOf(name);
-
-        const rows: ImportRow[] = lines
-          .slice(1)
-          .map((line) => {
-            const cols = line.split(",").map((c) => c.trim());
-            const name = cols[idx("nome")] || cols[idx("name")] || "";
-            const phone = cols[idx("telefone")] || cols[idx("whatsapp")] || cols[idx("phone")] || "";
-            const document =
-              cols[idx("documento")] || cols[idx("cpf")] || cols[idx("cnpj")] || cols[idx("document")] || "";
-            const address = cols[idx("endereco")] || cols[idx("endereço")] || cols[idx("address")] || "";
-            const city = cols[idx("cidade")] || cols[idx("city")] || "";
-            const statusRaw = (cols[idx("status")] || "ativo").toLowerCase();
-
-            const status: "ativo" | "inativo" = statusRaw.includes("in") ? "inativo" : "ativo";
-
-            return {
-              name: name.trim(),
-              document: formatDocument(document),
-              phone: formatPhone(phone),
-              address: address.trim(),
-              city: city.trim(),
-              status,
-            };
+        const { error } = await supabase
+          .from("audit_logs")
+          .update({
+            is_deleted: true,
+            deleted_at: new Date().toISOString(),
+            deleted_by: uid,
           })
-          .filter((r) => r.name.length >= 2);
+          .eq("id", selected.id);
 
-        if (rows.length === 0) {
-          toast.error("Nenhuma linha válida encontrada. Verifique a coluna 'nome'.");
-          return;
-        }
+        if (error) throw new Error(error.message);
 
-        setImportRows(rows);
-        toast.success(`Arquivo lido: ${rows.length} clientes prontos para importar.`);
-        return;
+        toast.success("Removido do histórico!");
       }
 
-      const ab = await file.arrayBuffer();
-      const wb = XLSX.read(ab, { type: "array" });
-      const ws = wb.Sheets[wb.SheetNames[0]];
-      const json = XLSX.utils.sheet_to_json(ws, { defval: "" }) as any[];
-
-      const rows: ImportRow[] = json
-        .map((r) => {
-          const name = getVal(r, ["nome", "name"]);
-          const document = getVal(r, ["documento", "cpf", "cnpj", "document"]);
-          const phone = getVal(r, ["telefone", "whatsapp", "phone", "celular"]);
-          const address = getVal(r, ["endereco", "endereço", "address"]);
-          const city = getVal(r, ["cidade", "city"]);
-          const statusRaw = getVal(r, ["status"]).toLowerCase();
-
-          const status: "ativo" | "inativo" = statusRaw.includes("in") ? "inativo" : "ativo";
-
-          return {
-            name: name.trim(),
-            document: formatDocument(document),
-            phone: formatPhone(phone),
-            address: address.trim(),
-            city: city.trim(),
-            status,
-          };
-        })
-        .filter((r) => r.name.length >= 2);
-
-      if (rows.length === 0) {
-        toast.error("Nenhuma linha válida encontrada. Verifique a coluna 'nome'.");
-        return;
-      }
-
-      setImportRows(rows);
-      toast.success(`Arquivo lido: ${rows.length} clientes prontos para importar.`);
-    } catch (e) {
-      console.error(e);
-      toast.error("Falha ao ler arquivo. Use CSV/XLSX.");
+      setConfirmOpen(false);
+      setSelected(null);
+      fetchData();
+    } catch (e: any) {
+      toast.error(e?.message || "Erro ao executar ação.");
     }
   };
 
-  const handleConfirmImport = async () => {
-    if (importRows.length === 0) return;
+  const openDetails = (log: AuditLog) => {
+    setDetailsLog(log);
+    setDetailsOpen(true);
+  };
 
-    setImporting(true);
-    try {
-      const seen = new Set<string>();
-      const unique = importRows.filter((r) => {
-        const k = `${r.name.toLowerCase()}|${onlyDigits(r.phone || "")}|${onlyDigits(r.document || "")}`;
-        if (seen.has(k)) return false;
-        seen.add(k);
-        return true;
-      });
+  // helpers pra render
+  const getSaleInfo = (log: AuditLog) => {
+    const saleId = log.entity_id || log.metadata?.sale_id;
+    const sale = saleId ? salesById[saleId] : undefined;
 
-      const payload = unique.map((r) => ({
-        name: r.name.trim(),
-        document: normalizeNullable(r.document),
-        phone: normalizeNullable(r.phone),
-        address: normalizeNullable(r.address),
-        city: normalizeNullable(r.city),
-        status: r.status || "ativo",
-      }));
+    const customerName =
+      sale?.customer_id ? customersById[sale.customer_id]?.name : null;
 
-      const { error } = await supabase.from("customers").insert(payload);
-      if (error) throw error;
+    const operatorName =
+      sale?.user_id ? profilesById[sale.user_id]?.name : null;
 
-      toast.success(`Importação concluída: ${payload.length} clientes cadastrados!`);
-      setImportRows([]);
-      setImportOpen(false);
-      await fetchCustomers();
-    } catch (e: any) {
-      console.error(e);
-      toast.error("Erro ao importar: " + (e.message || "Verifique os dados"));
-    } finally {
-      setImporting(false);
-    }
+    return { saleId, sale, customerName, operatorName };
   };
 
   return (
-    <div className="space-y-6 animate-in fade-in duration-500">
-      {/* HEADER */}
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex items-center gap-3">
-          <div className="p-2 rounded-lg bg-primary/10">
-            <Users className="h-6 w-6 text-primary" />
-          </div>
-          <div>
-            <h1 className="text-xl sm:text-2xl font-semibold text-foreground">Clientes</h1>
-            <p className="text-sm text-muted-foreground">Gerencie sua base de clientes</p>
-          </div>
-        </div>
+    <div className="w-full max-w-md mx-auto px-3 sm:px-6 py-4 overflow-x-hidden">
+      {/* TOP BAR */}
+      <div className="flex items-center justify-between gap-2 mb-3">
+        <h1 className="text-base font-semibold flex items-center gap-2">
+          <ShieldCheck className="h-4 w-4" />
+          Histórico
+        </h1>
 
-        <div className="grid grid-cols-2 sm:flex gap-2 w-full sm:w-auto">
-          {/* Importar */}
-          <Dialog open={importOpen} onOpenChange={setImportOpen}>
-            <DialogTrigger asChild>
-              <Button variant="outline" className="w-full sm:w-auto">
-                <Upload className="h-4 w-4 mr-2" />
-                Importar
-              </Button>
-            </DialogTrigger>
+        <Button variant="outline" size="sm" className="h-9 rounded-full" onClick={fetchData}>
+          <RefreshCcw className="h-4 w-4 mr-2" />
+          Atualizar
+        </Button>
+      </div>
 
-            <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
-              <DialogHeader>
-                <DialogTitle>Importar Clientes (CSV/XLSX)</DialogTitle>
-                <DialogDescription>
-                  Colunas aceitas: <strong>nome</strong>, telefone/whatsapp, documento/cpf/cnpj,
-                  endereco, cidade, status.
-                </DialogDescription>
-              </DialogHeader>
+      {/* BUSCA */}
+      <div className="relative w-full mb-2">
+        <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+        <Input
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Buscar (cliente, operador, valor...)"
+          className="pl-9 h-10 rounded-full"
+        />
+      </div>
 
-              <div className="space-y-4">
-                <div className="flex flex-col sm:flex-row gap-2 sm:items-center sm:justify-between">
-                  <Button variant="outline" onClick={downloadModeloClientesCSV} className="w-full sm:w-auto">
-                    <Download className="h-4 w-4 mr-2" />
-                    Baixar modelo (CSV)
-                  </Button>
+      {/* FILTERS ROW */}
+      <div className="flex gap-2 mb-2">
+        <Select value={dateFilter} onValueChange={(v: any) => setDateFilter(v)}>
+          <SelectTrigger className="h-10 rounded-full flex-1">
+            <CalendarIcon className="h-4 w-4 mr-2 text-muted-foreground" />
+            <SelectValue placeholder="Período" />
+          </SelectTrigger>
+          <SelectContent align="start">
+            <SelectItem value="7d">Últimos 7 dias</SelectItem>
+            <SelectItem value="30d">Últimos 30 dias</SelectItem>
+            <SelectItem value="this-month">Este mês</SelectItem>
+            <SelectItem value="this-year">Este ano</SelectItem>
+            <SelectItem value="all">Tudo</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
 
-                  <Input
-                    className="w-full sm:w-auto"
-                    type="file"
-                    accept=".csv,.xlsx,.xls"
-                    onChange={(e) => {
-                      const f = e.target.files?.[0];
-                      if (f) handleFileImport(f);
-                    }}
-                  />
-                </div>
-
-                {importRows.length > 0 ? (
-                  <div className="rounded-md border overflow-auto max-h-[320px]">
-                    <Table>
-                      <TableHeader>
-                        <TableRow>
-                          <TableHead>Nome</TableHead>
-                          <TableHead>Telefone</TableHead>
-                          <TableHead>Documento</TableHead>
-                          <TableHead>Cidade</TableHead>
-                          <TableHead>Status</TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {importRows.slice(0, 20).map((r, idx) => (
-                          <TableRow key={idx}>
-                            <TableCell className="font-medium">{r.name}</TableCell>
-                            <TableCell>{r.phone || "-"}</TableCell>
-                            <TableCell>{r.document || "-"}</TableCell>
-                            <TableCell>{r.city || "-"}</TableCell>
-                            <TableCell>
-                              <Badge variant={r.status === "ativo" ? "default" : "secondary"}>{r.status}</Badge>
-                            </TableCell>
-                          </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
-
-                    {importRows.length > 20 && (
-                      <div className="p-2 text-xs text-muted-foreground">Mostrando 20 de {importRows.length}.</div>
-                    )}
-                  </div>
-                ) : (
-                  <div className="text-sm text-muted-foreground">Selecione um arquivo para ver a prévia.</div>
-                )}
-
-                <div className="flex flex-col sm:flex-row justify-end gap-2">
-                  <Button
-                    variant="outline"
-                    onClick={() => {
-                      setImportRows([]);
-                      setImportOpen(false);
-                    }}
-                  >
-                    Fechar
-                  </Button>
-
-                  <Button
-                    onClick={handleConfirmImport}
-                    disabled={importRows.length === 0 || importing}
-                    className="bg-emerald-600 hover:bg-emerald-700"
-                  >
-                    {importing ? (
-                      <>
-                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                        Importando...
-                      </>
-                    ) : (
-                      <>
-                        <CheckCircle2 className="h-4 w-4 mr-2" />
-                        Confirmar Importação
-                      </>
-                    )}
-                  </Button>
-                </div>
-              </div>
-            </DialogContent>
-          </Dialog>
-
-          {/* Novo Cliente */}
-          <Dialog
-            open={isDialogOpen}
-            onOpenChange={(open) => {
-              setIsDialogOpen(open);
-              if (!open) setEditingCustomer(null);
-            }}
+      {/* CHIPS (mobile friendly) */}
+      <div className="flex gap-2 overflow-x-auto pb-1 no-scrollbar mb-3">
+        {[
+          { v: "all", label: "Tudo" },
+          { v: "sales", label: "Vendas" },
+          { v: "cancelled", label: "Canceladas" },
+          { v: "stock", label: "Estoque" },
+        ].map((c) => (
+          <button
+            key={c.v}
+            type="button"
+            onClick={() => setChip(c.v as ChipFilter)}
+            className={[
+              "px-3 py-1.5 rounded-full text-[11px] border whitespace-nowrap",
+              "active:scale-[0.97] transition-transform",
+              chip === c.v
+                ? "bg-slate-900 text-white border-slate-900"
+                : "bg-white text-slate-700 border-slate-200",
+            ].join(" ")}
           >
-            <DialogTrigger asChild>
-              <Button onClick={openNewDialog} className="w-full sm:w-auto">
-                <Plus className="h-4 w-4 mr-2" />
-                Novo Cliente
-              </Button>
-            </DialogTrigger>
+            {c.label}
+          </button>
+        ))}
+      </div>
 
-            <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
-              <DialogHeader>
-                <DialogTitle>{editingCustomer ? "Editar Cliente" : "Novo Cliente"}</DialogTitle>
-                <DialogDescription>Apenas o nome é obrigatório.</DialogDescription>
-              </DialogHeader>
-
-              <Form {...form}>
-                <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
-                  <FormField
-                    control={form.control}
-                    name="name"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Nome Completo *</FormLabel>
-                        <FormControl>
-                          <Input placeholder="Ex: João da Silva" {...field} className="h-12 text-base" />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    <FormField
-                      control={form.control}
-                      name="document"
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>CPF/CNPJ (Opcional)</FormLabel>
-                          <FormControl>
-                            <Input
-                              placeholder="000.000.000-00"
-                              {...field}
-                              className="h-12 text-base"
-                              onChange={(e) => field.onChange(formatDocument(e.target.value))}
-                              maxLength={18}
-                            />
-                          </FormControl>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
-
-                    <FormField
-                      control={form.control}
-                      name="phone"
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>WhatsApp (Opcional)</FormLabel>
-                          <FormControl>
-                            <Input
-                              placeholder="(00) 00000-0000"
-                              {...field}
-                              className="h-12 text-base"
-                              onChange={(e) => field.onChange(formatPhone(e.target.value))}
-                              maxLength={15}
-                            />
-                          </FormControl>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
-                  </div>
-
-                  <FormField
-                    control={form.control}
-                    name="address"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Endereço (Opcional)</FormLabel>
-                        <FormControl>
-                          <Input placeholder="Rua, número, bairro" {...field} className="h-12 text-base" />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    <FormField
-                      control={form.control}
-                      name="city"
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>Cidade (Opcional)</FormLabel>
-                          <FormControl>
-                            <Input placeholder="Ex: Manaus" {...field} className="h-12 text-base" />
-                          </FormControl>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
-
-                    <FormField
-                      control={form.control}
-                      name="status"
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>Status</FormLabel>
-                          <Select onValueChange={field.onChange} value={field.value}>
-                            <FormControl>
-                              <SelectTrigger className="h-12">
-                                <SelectValue />
-                              </SelectTrigger>
-                            </FormControl>
-                            <SelectContent>
-                              <SelectItem value="ativo">Ativo</SelectItem>
-                              <SelectItem value="inativo">Inativo</SelectItem>
-                            </SelectContent>
-                          </Select>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
-                  </div>
-
-                  <DialogFooter className="flex flex-col sm:flex-row gap-2 sm:justify-end">
-                    <Button type="button" variant="outline" onClick={() => setIsDialogOpen(false)} className="w-full sm:w-auto">
-                      Cancelar
-                    </Button>
-                    <Button type="submit" className="w-full sm:w-auto">
-                      {editingCustomer ? "Salvar Alterações" : "Cadastrar Cliente"}
-                    </Button>
-                  </DialogFooter>
-                </form>
-              </Form>
-            </DialogContent>
-          </Dialog>
+      {/* LIST */}
+      {loading ? (
+        <div className="text-center py-10 text-muted-foreground text-sm">Carregando...</div>
+      ) : filtered.length === 0 ? (
+        <div className="text-center py-10 text-muted-foreground text-sm">
+          Nenhum registro encontrado.
         </div>
-      </div>
+      ) : (
+        <div className="space-y-2 pb-24">
+          {filtered.map((log) => {
+            const { saleId, sale, customerName, operatorName } = getSaleInfo(log);
 
-      {/* SUMMARY */}
-      <div className="grid gap-4 md:grid-cols-3">
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">Total de Clientes</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <p className="text-2xl font-bold">{total}</p>
-          </CardContent>
-        </Card>
+            const canCancel =
+              log.event_type === "sale_created" &&
+              saleId &&
+              (sale?.status ?? "") !== "cancelled";
 
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">Clientes Ativos</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <p className="text-2xl font-bold text-emerald-600">{active}</p>
-          </CardContent>
-        </Card>
+            const isCancelled = log.event_type === "sale_cancelled" || sale?.status === "cancelled";
 
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">Inativos</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <p className="text-2xl font-bold text-muted-foreground">{inactive}</p>
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* LISTA */}
-      <Card>
-        <CardHeader className="pb-4">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <div className="relative w-full sm:max-w-sm">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-              <Input
-                placeholder="Buscar por nome, documento, telefone ou cidade..."
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                className="pl-10 h-12"
-              />
-            </div>
-
-            <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto">
-              <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v as any)}>
-                <SelectTrigger className="w-full sm:w-[180px] h-12">
-                  <Filter className="h-4 w-4 mr-2" />
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">Todos</SelectItem>
-                  <SelectItem value="ativo">Somente Ativos</SelectItem>
-                  <SelectItem value="inativo">Somente Inativos</SelectItem>
-                </SelectContent>
-              </Select>
-
-              {statusFilter !== "all" && (
-                <Button variant="outline" onClick={() => setStatusFilter("all")} className="h-12">
-                  <X className="h-4 w-4 mr-2" />
-                  Limpar
-                </Button>
-              )}
-            </div>
-          </div>
-        </CardHeader>
-
-        <CardContent>
-          {isLoading ? (
-            <div className="flex flex-col items-center justify-center py-10 text-muted-foreground">
-              <Loader2 className="h-8 w-8 animate-spin mb-2" />
-              <p>Carregando clientes...</p>
-            </div>
-          ) : filteredCustomers.length === 0 ? (
-            <div className="text-center py-10 text-muted-foreground">Nenhum cliente encontrado.</div>
-          ) : (
-            <>
-              {/* MOBILE: CARDS */}
-              <div className="grid gap-3 sm:hidden">
-                {filteredCustomers.map((c) => (
-                  <Card key={c.id} className="border shadow-sm">
-                    <CardContent className="p-4 space-y-3">
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="min-w-0">
-                          <p className="font-semibold text-base leading-snug truncate">{c.name}</p>
-                          <div className="mt-1 flex flex-wrap items-center gap-2">
-                            <Badge
-                              variant={c.status === "ativo" ? "default" : "secondary"}
-                              className={c.status === "ativo" ? "bg-emerald-600 hover:bg-emerald-700" : ""}
-                            >
-                              {c.status === "ativo" ? "Ativo" : "Inativo"}
-                            </Badge>
-
-                            {c.city && (
-                              <span className="text-xs text-muted-foreground flex items-center gap-1">
-                                <MapPin className="h-3 w-3" />
-                                {c.city}
-                              </span>
-                            )}
-                          </div>
-                        </div>
-
-                        <div className="flex gap-1 shrink-0">
-                          <Button size="icon" variant="outline" className="h-10 w-10" onClick={() => openEditDialog(c)} title="Editar">
-                            <Edit className="h-4 w-4" />
-                          </Button>
-                          <Button
-                            size="icon"
-                            variant="outline"
-                            className="h-10 w-10 text-destructive"
-                            onClick={() => setDeleteCustomer(c)}
-                            title="Excluir"
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </Button>
-                        </div>
+            return (
+              <Card key={log.id} className="border-none shadow-sm rounded-2xl overflow-hidden">
+                <CardContent className="p-3">
+                  <div className="flex items-start justify-between gap-3">
+                    {/* LEFT */}
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <span className="text-slate-700 shrink-0">{getIcon(log.event_type)}</span>
+                        <p className="font-medium text-sm truncate">
+                          {log.title || "Registro"}
+                        </p>
                       </div>
 
-                      {c.phone ? (
-                        <div className="flex items-center justify-between gap-2 bg-muted/30 rounded-lg p-3">
-                          <div className="min-w-0">
-                            <p className="text-xs text-muted-foreground">WhatsApp</p>
-                            <p className="font-medium flex items-center gap-2 truncate">
-                              <Phone className="h-4 w-4 text-emerald-600" />
-                              {c.phone}
-                            </p>
-                          </div>
+                      <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+                        <span className="flex items-center gap-1">
+                          <CalendarIcon className="h-3.5 w-3.5" />
+                          {formatDateTime(log.created_at)}
+                        </span>
 
-                          <div className="flex gap-2 shrink-0">
-                            <Button
-                              size="icon"
-                              variant="outline"
-                              className="h-10 w-10"
-                              onClick={() => copyToClipboard(c.phone!)}
-                              title="Copiar"
-                            >
-                              <Copy className="h-4 w-4" />
-                            </Button>
-                            <Button
-                              size="icon"
-                              className="h-10 w-10 bg-emerald-600 hover:bg-emerald-700"
-                              onClick={() => openWhatsApp(c.phone!, c.name)}
-                              title="WhatsApp"
-                            >
-                              <MessageCircle className="h-4 w-4" />
-                            </Button>
-                          </div>
-                        </div>
-                      ) : (
-                        <div className="text-sm text-muted-foreground">Sem telefone</div>
+                        {customerName && (
+                          <span className="flex items-center gap-1 truncate max-w-[240px]">
+                            <Receipt className="h-3.5 w-3.5" />
+                            {customerName}
+                          </span>
+                        )}
+
+                        {operatorName && (
+                          <span className="flex items-center gap-1 truncate max-w-[240px]">
+                            <User className="h-3.5 w-3.5" />
+                            {operatorName}
+                          </span>
+                        )}
+                      </div>
+
+                      {log.amount != null && (
+                        <p className="mt-1 font-bold text-sm text-slate-900">
+                          {formatCurrency(Number(log.amount))}
+                        </p>
                       )}
 
-                      {c.document ? (
-                        <div className="flex items-center justify-between gap-2">
-                          <div className="min-w-0">
-                            <p className="text-xs text-muted-foreground">Documento</p>
-                            <p className="text-sm font-mono truncate flex items-center gap-2">
-                              <FileText className="h-4 w-4 text-muted-foreground" />
-                              {c.document}
-                            </p>
-                          </div>
-                          <Button
-                            size="icon"
-                            variant="outline"
-                            className="h-10 w-10 shrink-0"
-                            onClick={() => copyToClipboard(c.document!)}
-                            title="Copiar documento"
-                          >
-                            <Copy className="h-4 w-4" />
-                          </Button>
-                        </div>
-                      ) : null}
-                    </CardContent>
-                  </Card>
-                ))}
-              </div>
-
-              {/* DESKTOP/TABLET: TABELA */}
-              <div className="hidden sm:block rounded-md border overflow-x-auto">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Nome</TableHead>
-                      <TableHead>Documento</TableHead>
-                      <TableHead>Contato</TableHead>
-                      <TableHead>Localização</TableHead>
-                      <TableHead>Status</TableHead>
-                      <TableHead className="text-right">Ações</TableHead>
-                    </TableRow>
-                  </TableHeader>
-
-                  <TableBody>
-                    {filteredCustomers.map((customer) => (
-                      <TableRow key={customer.id}>
-                        <TableCell className="font-medium">{customer.name}</TableCell>
-
-                        <TableCell>
-                          {customer.document ? (
-                            <div className="flex items-center gap-2">
-                              <span className="flex items-center gap-1 text-sm text-muted-foreground">
-                                <FileText className="h-3 w-3" /> {customer.document}
-                              </span>
-                              <Button
-                                size="icon"
-                                variant="ghost"
-                                className="h-7 w-7"
-                                onClick={() => copyToClipboard(customer.document!)}
-                                title="Copiar documento"
-                              >
-                                <Copy className="h-4 w-4" />
-                              </Button>
-                            </div>
-                          ) : (
-                            "-"
-                          )}
-                        </TableCell>
-
-                        <TableCell>
-                          {customer.phone ? (
-                            <div className="flex items-center gap-2">
-                              <span className="flex items-center gap-1 text-sm">
-                                <Phone className="h-3 w-3 text-emerald-600" />
-                                {customer.phone}
-                              </span>
-
-                              <Button
-                                size="icon"
-                                variant="ghost"
-                                className="h-7 w-7"
-                                onClick={() => copyToClipboard(customer.phone!)}
-                                title="Copiar telefone"
-                              >
-                                <Copy className="h-4 w-4" />
-                              </Button>
-
-                              <Button
-                                size="icon"
-                                variant="ghost"
-                                className="h-7 w-7 text-emerald-700"
-                                onClick={() => openWhatsApp(customer.phone!, customer.name)}
-                                title="Abrir WhatsApp"
-                              >
-                                <MessageCircle className="h-4 w-4" />
-                              </Button>
-                            </div>
-                          ) : (
-                            <span className="text-muted-foreground text-xs">-</span>
-                          )}
-                        </TableCell>
-
-                        <TableCell>
-                          {customer.city ? (
-                            <span className="flex items-center gap-1 text-sm">
-                              <MapPin className="h-3 w-3 text-blue-500" />
-                              {customer.city}
-                            </span>
-                          ) : (
-                            <span className="text-muted-foreground text-xs">-</span>
-                          )}
-                        </TableCell>
-
-                        <TableCell>
-                          <Badge
-                            variant={customer.status === "ativo" ? "default" : "secondary"}
-                            className={customer.status === "ativo" ? "bg-emerald-600 hover:bg-emerald-700" : ""}
-                          >
-                            {customer.status === "ativo" ? "Ativo" : "Inativo"}
+                      <div className="mt-2 flex items-center gap-2">
+                        {badgeFor(log.event_type)}
+                        {isCancelled && (
+                          <Badge variant="destructive" className="text-[10px] px-2 py-0.5">
+                            Cancelada
                           </Badge>
-                        </TableCell>
+                        )}
+                      </div>
+                    </div>
 
-                        <TableCell className="text-right">
-                          <div className="flex justify-end gap-1">
-                            <Button size="icon" variant="ghost" onClick={() => openEditDialog(customer)} title="Editar">
-                              <Edit className="h-4 w-4 text-muted-foreground" />
-                            </Button>
+                    {/* RIGHT actions */}
+                    <div className="flex flex-col gap-2 shrink-0">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-9 rounded-full px-3"
+                        onClick={() => openDetails(log)}
+                      >
+                        <Info className="h-4 w-4 mr-2" />
+                        Ver
+                      </Button>
 
-                            <Button
-                              size="icon"
-                              variant="ghost"
-                              className="text-destructive hover:text-destructive hover:bg-destructive/10"
-                              onClick={() => setDeleteCustomer(customer)}
-                              title="Excluir"
-                            >
-                              <Trash2 className="h-4 w-4" />
-                            </Button>
-                          </div>
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </div>
-            </>
-          )}
-        </CardContent>
-      </Card>
+                      {canCancel && (
+                        <Button
+                          size="sm"
+                          variant="destructive"
+                          className="h-9 rounded-full px-3"
+                          onClick={() => openCancel(log)}
+                        >
+                          <XCircle className="h-4 w-4 mr-2" />
+                          Cancelar
+                        </Button>
+                      )}
 
-      {/* DELETE */}
-      <AlertDialog open={!!deleteCustomer} onOpenChange={() => setDeleteCustomer(null)}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Tem certeza?</AlertDialogTitle>
-            <AlertDialogDescription>
-              Você está prestes a excluir o cliente <strong>{deleteCustomer?.name}</strong>. Esta ação não pode ser desfeita.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancelar</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={async () => {
-                await handleDelete();
-              }}
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-9 rounded-full px-3"
+                        onClick={() => openDelete(log)}
+                      >
+                        <Trash2 className="h-4 w-4 mr-2" />
+                        Apagar
+                      </Button>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            );
+          })}
+        </div>
+      )}
+
+      {/* CONFIRM DIALOG */}
+      <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+        <DialogContent className="max-w-sm w-[92vw] rounded-2xl p-4">
+          <DialogHeader>
+            <DialogTitle className="text-base">
+              {confirmMode === "cancel" ? "Cancelar venda?" : "Apagar do histórico?"}
+            </DialogTitle>
+            <DialogDescription className="text-xs">
+              {confirmMode === "cancel"
+                ? "Isso vai marcar a venda como cancelada e repor o estoque automaticamente."
+                : "Isso remove o registro apenas do histórico (soft delete)."}
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="flex gap-2 mt-3">
+            <Button
+              variant="outline"
+              className="flex-1 h-10 rounded-full"
+              onClick={() => setConfirmOpen(false)}
             >
-              Sim, Excluir
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+              Voltar
+            </Button>
+            <Button
+              variant={confirmMode === "cancel" ? "destructive" : "default"}
+              className="flex-1 h-10 rounded-full"
+              onClick={runConfirm}
+            >
+              Confirmar
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* DETAILS DIALOG */}
+      <Dialog open={detailsOpen} onOpenChange={setDetailsOpen}>
+        <DialogContent className="max-w-sm w-[92vw] rounded-2xl p-4">
+          <DialogHeader>
+            <DialogTitle className="text-base">Detalhes</DialogTitle>
+            <DialogDescription className="text-xs">
+              Informações completas do evento.
+            </DialogDescription>
+          </DialogHeader>
+
+          {detailsLog ? (
+            <div className="space-y-3 pt-2 text-sm">
+              {(() => {
+                const { saleId, sale, customerName, operatorName } = getSaleInfo(detailsLog);
+
+                return (
+                  <>
+                    <div className="rounded-xl border bg-slate-50 p-3">
+                      <div className="flex items-center gap-2 text-slate-700">
+                        {getIcon(detailsLog.event_type)}
+                        <span className="font-semibold">{detailsLog.title}</span>
+                      </div>
+
+                      <div className="mt-2 text-[12px] text-muted-foreground space-y-1">
+                        <div><strong>Data:</strong> {formatDateTime(detailsLog.created_at)}</div>
+                        <div><strong>Tipo:</strong> {detailsLog.event_type}</div>
+                        <div><strong>Entidade:</strong> {detailsLog.entity_type}</div>
+                        {detailsLog.amount != null && (
+                          <div><strong>Valor:</strong> {formatCurrency(Number(detailsLog.amount))}</div>
+                        )}
+                      </div>
+                    </div>
+
+                    {saleId && (
+                      <div className="rounded-xl border p-3">
+                        <p className="font-semibold mb-2">Venda</p>
+                        <div className="text-[12px] text-muted-foreground space-y-1">
+                          <div><strong>ID:</strong> {saleId}</div>
+                          <div><strong>Status:</strong> {sale?.status || "—"}</div>
+                          <div><strong>Cliente:</strong> {customerName || "—"}</div>
+                          <div><strong>Operador:</strong> {operatorName || "—"}</div>
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="rounded-xl border p-3">
+                      <p className="font-semibold mb-2">Metadata</p>
+                      <pre className="text-[11px] bg-slate-50 border rounded-lg p-2 overflow-x-auto">
+{JSON.stringify(detailsLog.metadata ?? {}, null, 2)}
+                      </pre>
+                    </div>
+                  </>
+                );
+              })()}
+            </div>
+          ) : (
+            <div className="text-center text-muted-foreground text-sm py-6">Sem dados.</div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
