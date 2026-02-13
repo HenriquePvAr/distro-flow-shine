@@ -1,18 +1,19 @@
+"use client";
+
 import { useState, useEffect, useMemo } from "react";
 import {
-  Landmark,
+  Wallet,
   Plus,
-  ArrowDownCircle,
-  ArrowUpCircle,
-  CheckCircle,
+  ArrowDownLeft,
+  ArrowUpRight,
+  Check,
   Search,
-  TrendingUp,
   Calendar as CalendarIcon,
   Info,
   X,
   Repeat,
-  Wallet,
-  FileText,
+  AlertCircle,
+  MoreHorizontal
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -25,26 +26,18 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-import {
   Dialog,
   DialogContent,
   DialogHeader,
   DialogTitle,
   DialogTrigger,
+  DialogDescription
 } from "@/components/ui/dialog";
 import {
   Card,
   CardContent,
   CardHeader,
   CardTitle,
-  CardDescription,
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -63,18 +56,14 @@ import { ptBR } from "date-fns/locale";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
-import {
-  BarChart,
-  Bar,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  ResponsiveContainer,
-  Legend,
-} from "recharts";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Switch } from "@/components/ui/switch";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 
 // --- TIPAGEM ---
 interface FinancialEntry {
@@ -95,37 +84,20 @@ interface FinancialEntry {
 const formatCurrency = (v: number) =>
   (v || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 
-const statusLabel: Record<string, string> = {
-  pending: "Pendente",
-  partial: "Parcial",
-  paid: "Pago",
-  overdue: "Vencido",
-};
-
-const statusVariant: Record<
-  string,
-  "default" | "secondary" | "destructive" | "outline"
-> = {
-  pending: "outline",
-  partial: "secondary",
-  paid: "default",
-  overdue: "destructive",
-};
-
 export default function Despesas() {
   const [entries, setEntries] = useState<FinancialEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [showInfo, setShowInfo] = useState(true);
 
-  // Filtros de Data
+  // Filtros
   const [dateFilter, setDateFilter] = useState("this-month");
+  const [searchTerm, setSearchTerm] = useState("");
 
-  // Dialogs e Inputs
+  // Dialogs
   const [dialogOpen, setDialogOpen] = useState(false);
   const [payDialogOpen, setPayDialogOpen] = useState(false);
   const [selectedEntry, setSelectedEntry] = useState<FinancialEntry | null>(null);
   const [payAmount, setPayAmount] = useState("");
-  const [searchTerm, setSearchTerm] = useState("");
 
   // Form
   const [formType, setFormType] = useState<"receivable" | "payable">("payable");
@@ -146,11 +118,6 @@ export default function Despesas() {
     localStorage.setItem("hide_financial_info", "true");
   };
 
-  const handleShowInfo = () => {
-    setShowInfo(true);
-    localStorage.removeItem("hide_financial_info");
-  };
-
   const fetchEntries = async () => {
     setLoading(true);
     const { data, error } = await supabase
@@ -162,8 +129,8 @@ export default function Despesas() {
     setLoading(false);
   };
 
-  // --- FILTRO POR DATA ---
-  const getFilteredEntriesByDate = () => {
+  // --- FILTROS ---
+  const filteredEntries = useMemo(() => {
     const now = new Date();
     let start: Date | null = null;
     let end: Date | null = null;
@@ -187,45 +154,28 @@ export default function Despesas() {
         start = startOfYear(now);
         end = endOfYear(now);
         break;
-      case "all":
-        return entries;
     }
 
+    let result = entries;
     if (start && end) {
-      return entries.filter((e) => {
-        const d = parseISO(e.due_date);
-        return isWithinInterval(d, { start, end });
-      });
+      result = result.filter((e) => isWithinInterval(parseISO(e.due_date), { start, end }));
     }
-    return entries;
-  };
 
-  const dateFilteredEntries = useMemo(
-    () => getFilteredEntriesByDate(),
-    [entries, dateFilter]
-  );
-
-  // --- FILTRO DE TEXTO ---
-  const finalFilteredEntries = useMemo(() => {
     const s = searchTerm.trim().toLowerCase();
-    if (!s) return dateFilteredEntries;
-    return dateFilteredEntries.filter((e) => {
-      return (
-        e.description.toLowerCase().includes(s) ||
+    if (s) {
+      result = result.filter(e => 
+        e.description.toLowerCase().includes(s) || 
         (e.entity_name && e.entity_name.toLowerCase().includes(s))
       );
-    });
-  }, [dateFilteredEntries, searchTerm]);
+    }
+    return result;
+  }, [entries, dateFilter, searchTerm]);
 
   // --- ACTIONS ---
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
     const amount = parseFloat(totalAmount);
-
-    if (!description || isNaN(amount) || amount <= 0) {
-      toast.error("Preencha a descrição e um valor válido.");
-      return;
-    }
+    if (!description || isNaN(amount) || amount <= 0) return toast.error("Dados inválidos.");
 
     const entriesToCreate: any[] = [];
     const loopCount = isRecurring ? 12 : 1;
@@ -233,27 +183,21 @@ export default function Despesas() {
     for (let i = 0; i < loopCount; i++) {
       const entryDate = new Date(dueDate);
       entryDate.setMonth(entryDate.getMonth() + i);
-
-      const entryDesc = isRecurring ? `${description} (${i + 1}/12)` : description;
-
       entriesToCreate.push({
         type: formType,
-        description: entryDesc,
+        description: isRecurring ? `${description} (${i + 1}/12)` : description,
         total_amount: amount,
         paid_amount: 0,
         due_date: entryDate.toISOString(),
-        entity_name: entityName.trim() === "" ? null : entityName.trim(),
+        entity_name: entityName.trim() || null,
         status: "pending",
       });
     }
 
     const { error } = await supabase.from("financial_entries").insert(entriesToCreate);
-    if (error) {
-      toast.error("Erro ao salvar.");
-      return;
-    }
+    if (error) return toast.error("Erro ao salvar.");
 
-    toast.success("Lançamento salvo com sucesso!");
+    toast.success("Salvo com sucesso!");
     resetForm();
     setDialogOpen(false);
     fetchEntries();
@@ -262,11 +206,7 @@ export default function Despesas() {
   const handlePay = async () => {
     if (!selectedEntry) return;
     const amount = parseFloat(payAmount);
-
-    if (isNaN(amount) || amount <= 0) {
-      toast.error("Valor inválido.");
-      return;
-    }
+    if (isNaN(amount) || amount <= 0) return toast.error("Valor inválido.");
 
     const newPaid = (selectedEntry.paid_amount || 0) + amount;
     const newStatus = newPaid >= selectedEntry.total_amount ? "paid" : "partial";
@@ -276,12 +216,9 @@ export default function Despesas() {
       .update({ paid_amount: newPaid, status: newStatus })
       .eq("id", selectedEntry.id);
 
-    if (error) {
-      toast.error("Erro ao dar baixa.");
-      return;
-    }
+    if (error) return toast.error("Erro ao baixar.");
 
-    toast.success("Baixa realizada com sucesso!");
+    toast.success("Baixa realizada!");
     setPayDialogOpen(false);
     fetchEntries();
   };
@@ -303,697 +240,300 @@ export default function Despesas() {
 
   // --- SUMMARY ---
   const summary = useMemo(() => {
-    const receivable = finalFilteredEntries.filter((e) => e.type === "receivable");
-    const payable = finalFilteredEntries.filter((e) => e.type === "payable");
+    const receivable = filteredEntries.filter(e => e.type === "receivable");
+    const payable = filteredEntries.filter(e => e.type === "payable");
 
-    const paidReceivable = receivable.reduce((acc, e) => acc + (e.paid_amount || 0), 0);
-    const paidPayable = payable.reduce((acc, e) => acc + (e.paid_amount || 0), 0);
+    const totalRec = receivable.reduce((acc, e) => acc + e.total_amount, 0);
+    const totalPay = payable.reduce((acc, e) => acc + e.total_amount, 0);
+    
+    const paidRec = receivable.reduce((acc, e) => acc + (e.paid_amount || 0), 0);
+    const paidPay = payable.reduce((acc, e) => acc + (e.paid_amount || 0), 0);
 
-    return {
-      totalReceivable: receivable.reduce((acc, e) => acc + e.total_amount, 0),
-      totalPayable: payable.reduce((acc, e) => acc + e.total_amount, 0),
-      paidReceivable,
-      paidPayable,
-      balance: paidReceivable - paidPayable,
-    };
-  }, [finalFilteredEntries]);
+    return { totalRec, totalPay, paidRec, paidPay, balance: paidRec - paidPay };
+  }, [filteredEntries]);
 
-  const breakEven = useMemo(() => {
-    const revenue = summary.totalReceivable;
-    const costs = summary.totalPayable;
-    const progress = costs > 0 ? (revenue / costs) * 100 : 100;
+  const progress = summary.totalPay > 0 ? (summary.totalRec / summary.totalPay) * 100 : 100;
+  const isProfitable = summary.totalRec >= summary.totalPay;
 
-    return {
-      costs,
-      revenue,
-      progress: Math.min(progress, 100),
-      isProfitable: revenue > costs,
-      gap: costs - revenue,
-    };
-  }, [summary]);
+  // --- UI COMPONENTS ---
+  const EntryItem = ({ entry }: { entry: FinancialEntry }) => {
+    const isPaid = entry.status === 'paid';
+    const isReceivable = entry.type === 'receivable';
+    const isOverdue = !isPaid && new Date(entry.due_date) < new Date();
+    
+    return (
+      <div className={`flex items-center justify-between p-3 bg-white border rounded-xl mb-2 shadow-sm relative overflow-hidden ${isPaid ? 'opacity-70' : ''}`}>
+        {isOverdue && <div className="absolute left-0 top-0 bottom-0 w-1 bg-red-500" />}
+        
+        <div className="flex items-center gap-3 overflow-hidden">
+          <div className={`h-10 w-10 rounded-full flex items-center justify-center shrink-0 ${isReceivable ? 'bg-emerald-100 text-emerald-600' : 'bg-red-100 text-red-600'}`}>
+            {isReceivable ? <ArrowUpRight size={18} /> : <ArrowDownLeft size={18} />}
+          </div>
+          <div className="min-w-0">
+            <p className="font-medium text-sm truncate text-gray-900">{entry.description}</p>
+            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+              <span>{format(parseISO(entry.due_date), "dd/MM")}</span>
+              {entry.entity_name && (
+                <>
+                  <span>•</span>
+                  <span className="truncate max-w-[100px]">{entry.entity_name}</span>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
 
-  const chartData = useMemo(() => {
-    const data: Record<
-      string,
-      { name: string; receitas: number; despesas: number }
-    > = {};
-
-    dateFilteredEntries.forEach((entry) => {
-      const date = parseISO(entry.due_date);
-      const key = format(date, "MMM yyyy", { locale: ptBR });
-
-      if (!data[key]) data[key] = { name: key, receitas: 0, despesas: 0 };
-
-      if (entry.type === "receivable") data[key].receitas += entry.total_amount;
-      else data[key].despesas += entry.total_amount;
-    });
-
-    return Object.values(data);
-  }, [dateFilteredEntries]);
-
-  const isOverdue = (entry: FinancialEntry) =>
-    entry.status !== "paid" && new Date(entry.due_date) < new Date();
+        <div className="flex flex-col items-end gap-1">
+          <span className={`font-bold text-sm ${isReceivable ? 'text-emerald-700' : 'text-red-700'}`}>
+            {isReceivable ? '+' : '-'}{formatCurrency(entry.total_amount)}
+          </span>
+          
+          {isPaid ? (
+            <Badge variant="outline" className="text-[10px] bg-gray-50 text-gray-600 border-gray-200 px-1.5 h-5">
+              Pago
+            </Badge>
+          ) : (
+            <div className="flex items-center gap-2">
+              {isOverdue && <AlertCircle className="h-3 w-3 text-red-500" />}
+              <Button 
+                size="sm" 
+                variant="ghost" 
+                className="h-6 px-2 text-[10px] bg-blue-50 text-blue-700 hover:bg-blue-100 hover:text-blue-800"
+                onClick={() => openPayDialog(entry)}
+              >
+                Baixar
+              </Button>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  };
 
   return (
-    <div className="space-y-6 animate-in fade-in duration-500">
-      {/* CABEÇALHO (RESPONSIVO) */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-        <div>
-          <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-foreground flex items-center gap-2">
-            <Wallet className="h-7 w-7 sm:h-8 sm:w-8 text-primary" />
-            Central Financeira
+    <div className="flex flex-col h-full bg-slate-50/50 pb-20">
+      
+      {/* HEADER COMPACTO */}
+      <div className="sticky top-0 bg-white/90 backdrop-blur-md border-b z-10 px-4 py-3 shadow-sm">
+        <div className="flex items-center justify-between mb-3">
+          <h1 className="text-lg font-bold flex items-center gap-2 text-slate-800">
+            <Wallet className="h-5 w-5 text-primary" /> Financeiro
           </h1>
-          <p className="text-muted-foreground">
-            Visão geral de fluxo de caixa, metas e lançamentos.
-          </p>
-        </div>
-
-        <div className="grid grid-cols-2 sm:flex items-center gap-2 w-full md:w-auto">
+          
           <Select value={dateFilter} onValueChange={setDateFilter}>
-            <SelectTrigger className="w-full sm:w-[180px] bg-background h-12">
-              <CalendarIcon className="mr-2 h-4 w-4" />
-              <SelectValue placeholder="Período" />
+            <SelectTrigger className="h-8 w-[130px] text-xs bg-slate-100 border-none">
+              <CalendarIcon className="mr-2 h-3 w-3 text-muted-foreground" />
+              <SelectValue />
             </SelectTrigger>
-            <SelectContent>
+            <SelectContent align="end">
               <SelectItem value="this-month">Este Mês</SelectItem>
               <SelectItem value="last-month">Mês Passado</SelectItem>
-              <SelectItem value="last-3">Últimos 3 Meses</SelectItem>
               <SelectItem value="this-year">Este Ano</SelectItem>
-              <SelectItem value="all">Todo o Período</SelectItem>
+              <SelectItem value="all">Tudo</SelectItem>
             </SelectContent>
           </Select>
+        </div>
 
-          <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-            <DialogTrigger asChild>
-              <Button className="w-full sm:w-auto shadow-md bg-primary hover:bg-primary/90 h-12">
-                <Plus className="h-4 w-4 mr-2" />
-                Novo
-              </Button>
-            </DialogTrigger>
+        {/* BARRA DE PESQUISA */}
+        <div className="relative">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          <Input 
+            placeholder="Buscar lançamentos..." 
+            className="pl-9 h-10 bg-slate-50 border-slate-200"
+            value={searchTerm}
+            onChange={e => setSearchTerm(e.target.value)}
+          />
+        </div>
+      </div>
 
-            <DialogContent className="max-w-md">
-              <DialogHeader>
-                <DialogTitle>Novo Lançamento Financeiro</DialogTitle>
-              </DialogHeader>
+      <div className="p-4 space-y-4">
+        {/* CARDS DE RESUMO - SCROLL HORIZONTAL NO MOBILE */}
+        <div className="flex gap-3 overflow-x-auto pb-2 scrollbar-none -mx-4 px-4 sm:mx-0 sm:px-0 sm:grid sm:grid-cols-3 sm:overflow-visible">
+          
+          <Card className="min-w-[140px] flex-1 border-none shadow-sm bg-white">
+            <CardContent className="p-3">
+              <p className="text-[10px] font-semibold text-muted-foreground uppercase">Saldo Real</p>
+              <p className={`text-lg font-bold ${summary.balance >= 0 ? "text-primary" : "text-destructive"}`}>
+                {formatCurrency(summary.balance)}
+              </p>
+            </CardContent>
+          </Card>
 
-              <form onSubmit={handleCreate} className="space-y-4 pt-4">
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <Label>Tipo</Label>
+          <Card className="min-w-[140px] flex-1 border-none shadow-sm bg-red-50/50">
+             <CardContent className="p-3">
+               <p className="text-[10px] font-semibold text-red-600/70 uppercase">A Pagar</p>
+               <p className="text-lg font-bold text-red-700">
+                 {formatCurrency(summary.totalPayable - summary.paidPayable)}
+               </p>
+             </CardContent>
+          </Card>
+
+          <Card className="min-w-[140px] flex-1 border-none shadow-sm bg-emerald-50/50">
+             <CardContent className="p-3">
+               <p className="text-[10px] font-semibold text-emerald-600/70 uppercase">A Receber</p>
+               <p className="text-lg font-bold text-emerald-700">
+                 {formatCurrency(summary.totalReceivable - summary.paidReceivable)}
+               </p>
+             </CardContent>
+          </Card>
+
+        </div>
+
+        {/* PROGRESSO DE META */}
+        <Card className="border-none shadow-sm bg-gradient-to-r from-blue-50 to-indigo-50">
+          <CardContent className="p-3">
+            <div className="flex justify-between text-xs font-medium mb-2">
+              <span className="text-blue-700">Cobertura de Despesas</span>
+              <span className={isProfitable ? "text-emerald-600" : "text-amber-600"}>
+                {progress.toFixed(0)}%
+              </span>
+            </div>
+            <Progress value={progress} className="h-2 bg-blue-200" />
+            <p className="text-[10px] text-muted-foreground mt-2 text-center">
+              {isProfitable ? "Receitas cobrem as despesas! 🎉" : "Atenção: Despesas maiores que receitas."}
+            </p>
+          </CardContent>
+        </Card>
+
+        {/* LISTA DE LANÇAMENTOS COM ABAS */}
+        <Tabs defaultValue="all" className="w-full">
+          <TabsList className="grid w-full grid-cols-3 h-9 mb-2 bg-slate-100 p-1">
+            <TabsTrigger value="all" className="text-xs">Tudo</TabsTrigger>
+            <TabsTrigger value="payable" className="text-xs">Saídas</TabsTrigger>
+            <TabsTrigger value="receivable" className="text-xs">Entradas</TabsTrigger>
+          </TabsList>
+
+          <div className="space-y-2 pb-20">
+            {["all", "payable", "receivable"].map(tab => (
+              <TabsContent key={tab} value={tab} className="m-0 space-y-0">
+                {filteredEntries
+                  .filter(e => tab === "all" || e.type === tab)
+                  .map(entry => (
+                    <EntryItem key={entry.id} entry={entry} />
+                  ))}
+                 
+                 {filteredEntries.filter(e => tab === "all" || e.type === tab).length === 0 && (
+                   <div className="text-center py-10 text-muted-foreground text-sm">
+                     Nenhum lançamento encontrado.
+                   </div>
+                 )}
+              </TabsContent>
+            ))}
+          </div>
+        </Tabs>
+      </div>
+
+      {/* FAB - BOTÃO FLUTUANTE DE ADICIONAR */}
+      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+        <DialogTrigger asChild>
+          <Button 
+            size="icon" 
+            className="fixed bottom-24 right-4 h-14 w-14 rounded-full shadow-lg bg-primary hover:bg-primary/90 z-20"
+          >
+            <Plus className="h-6 w-6" />
+          </Button>
+        </DialogTrigger>
+        <DialogContent className="max-w-md top-[20%] translate-y-0">
+           <DialogHeader>
+             <DialogTitle>Novo Lançamento</DialogTitle>
+           </DialogHeader>
+           <form onSubmit={handleCreate} className="space-y-4 pt-2">
+              <div className="grid grid-cols-2 gap-3">
+                 <div className="space-y-1">
+                    <Label className="text-xs">Tipo</Label>
                     <Select value={formType} onValueChange={(v: any) => setFormType(v)}>
-                      <SelectTrigger className="h-11">
-                        <SelectValue />
-                      </SelectTrigger>
+                      <SelectTrigger><SelectValue /></SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="payable">Saída (Despesa)</SelectItem>
-                        <SelectItem value="receivable">Entrada (Receita)</SelectItem>
+                        <SelectItem value="payable">Saída</SelectItem>
+                        <SelectItem value="receivable">Entrada</SelectItem>
                       </SelectContent>
                     </Select>
-                  </div>
-
-                  <div className="space-y-2">
-                    <Label>Valor (R$)</Label>
-                    <Input
-                      type="number"
-                      step="0.01"
-                      placeholder="0,00"
-                      value={totalAmount}
-                      onChange={(e) => setTotalAmount(e.target.value)}
-                      className="font-mono font-medium h-11"
+                 </div>
+                 <div className="space-y-1">
+                    <Label className="text-xs">Valor</Label>
+                    <Input 
+                      type="number" 
+                      step="0.01" 
+                      placeholder="0,00" 
+                      value={totalAmount} 
+                      onChange={e => setTotalAmount(e.target.value)}
+                      className="font-bold"
                     />
-                  </div>
-                </div>
-
-                <div className="space-y-2">
-                  <Label>Descrição</Label>
-                  <Input
-                    placeholder="Ex: Aluguel, Venda Balcão..."
-                    value={description}
-                    onChange={(e) => setDescription(e.target.value)}
-                    required
-                    className="h-11"
-                  />
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <Label>{formType === "receivable" ? "Cliente" : "Fornecedor"} (Opcional)</Label>
-                    <Input
-                      placeholder="Nome..."
-                      value={entityName}
-                      onChange={(e) => setEntityName(e.target.value)}
-                      className="h-11"
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label>Vencimento</Label>
-                    <Input
-                      type="date"
-                      value={format(dueDate, "yyyy-MM-dd")}
-                      onChange={(e) => setDueDate(new Date(e.target.value))}
-                      className="h-11"
-                    />
-                  </div>
-                </div>
-
-                <div className="flex items-center justify-between border p-3 rounded-md bg-muted/20">
-                  <div className="space-y-0.5">
-                    <Label className="text-base flex items-center gap-2">
-                      <Repeat className="h-4 w-4 text-primary" />
-                      {formType === "payable" ? "Despesa Fixa?" : "Receita Recorrente?"}
-                    </Label>
-                    <p className="text-xs text-muted-foreground">Repetir por 12 meses.</p>
-                  </div>
-                  <Switch checked={isRecurring} onCheckedChange={setIsRecurring} />
-                </div>
-
-                <Button type="submit" className="w-full mt-2 font-bold h-11">
-                  Salvar
-                </Button>
-              </form>
-            </DialogContent>
-          </Dialog>
-        </div>
-      </div>
-
-      {/* ALERTA DE AJUDA */}
-      {showInfo ? (
-        <Alert className="bg-blue-50/50 border-blue-200 text-blue-800 relative pr-10 animate-in slide-in-from-top-2 fade-in shadow-sm">
-          <Info className="h-4 w-4 text-blue-600" />
-          <AlertTitle className="text-blue-700 font-semibold">
-            Como funciona a Meta de Sobrevivência?
-          </AlertTitle>
-          <AlertDescription className="text-blue-700/80 text-sm mt-1">
-            <p className="mb-1">
-              Mostra quanto da sua <strong>Receita</strong> cobre as suas{" "}
-              <strong>Despesas</strong> no período.
-            </p>
-            <ul className="list-disc list-inside space-y-1 ml-1">
-              <li>
-                <strong>Cálculo:</strong> (Total a Receber) ÷ (Total a Pagar) x 100.
-              </li>
-              <li>
-                <strong>Objetivo:</strong> 100% para pagar todas as contas.
-              </li>
-              <li>
-                <strong>Importante:</strong> lance contas e confirme vendas do PDV no financeiro.
-              </li>
-            </ul>
-          </AlertDescription>
-
-          <Button
-            variant="ghost"
-            size="icon"
-            className="absolute top-2 right-2 text-blue-400 hover:text-blue-700"
-            onClick={handleCloseInfo}
-          >
-            <X className="h-4 w-4" />
-          </Button>
-        </Alert>
-      ) : (
-        <div className="flex justify-end">
-          <Button variant="outline" size="sm" onClick={handleShowInfo}>
-            Mostrar dica
-          </Button>
-        </div>
-      )}
-
-      {/* BREAK-EVEN */}
-      <Card className="border-2 border-primary/10 shadow-md bg-gradient-to-br from-background to-muted/20 overflow-hidden relative">
-        <div
-          className={cn(
-            "absolute top-0 left-0 w-1 h-full",
-            breakEven.isProfitable ? "bg-emerald-500" : "bg-amber-500"
-          )}
-        />
-        <CardHeader className="pb-2">
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <CardTitle className="flex items-center gap-2 text-lg sm:text-xl">
-                <TrendingUp className="h-5 w-5 text-primary" />
-                Resultado do Período
-              </CardTitle>
-              <CardDescription>Balanço entre Receitas e Despesas.</CardDescription>
-            </div>
-
-            {breakEven.isProfitable ? (
-              <Badge className="bg-emerald-500 text-sm sm:text-base px-3 py-1">
-                Lucro! 🚀
-              </Badge>
-            ) : (
-              <Badge
-                variant="outline"
-                className="text-sm sm:text-base px-3 py-1 border-amber-500 text-amber-600 bg-amber-50"
-              >
-                Déficit: {formatCurrency(breakEven.gap)} ⚠️
-              </Badge>
-            )}
-          </div>
-        </CardHeader>
-
-        <CardContent>
-          <div className="space-y-3">
-            <div className="flex flex-col sm:flex-row sm:justify-between gap-1 text-sm font-medium">
-              <span className="flex items-center gap-1 text-emerald-600">
-                <ArrowUpCircle className="h-4 w-4" /> Receitas: {formatCurrency(breakEven.revenue)}
-              </span>
-              <span className="flex items-center gap-1 text-destructive">
-                <ArrowDownCircle className="h-4 w-4" /> Despesas: {formatCurrency(breakEven.costs)}
-              </span>
-            </div>
-
-            <Progress value={breakEven.progress} className="h-4 w-full" />
-
-            <p className="text-sm text-center text-muted-foreground">
-              {breakEven.progress < 100
-                ? `As receitas cobrem ${breakEven.progress.toFixed(1)}% das despesas neste período.`
-                : "Receitas superaram as despesas!"}
-            </p>
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* KPIs */}
-      <div className="grid gap-4 md:grid-cols-3">
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium">Caixa Líquido (Realizado)</CardTitle>
-            <Landmark className="h-4 w-4 text-primary" />
-          </CardHeader>
-          <CardContent>
-            <div
-              className={cn(
-                "text-2xl font-bold",
-                summary.balance >= 0 ? "text-primary" : "text-destructive"
-              )}
-            >
-              {formatCurrency(summary.balance)}
-            </div>
-            <p className="text-xs text-muted-foreground">Total Recebido - Total Pago</p>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium">A Pagar (Pendente)</CardTitle>
-            <ArrowDownCircle className="h-4 w-4 text-destructive" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold text-destructive">
-              {formatCurrency(summary.totalPayable - summary.paidPayable)}
-            </div>
-            <p className="text-xs text-muted-foreground">Contas futuras ou atrasadas</p>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium">A Receber (Pendente)</CardTitle>
-            <ArrowUpCircle className="h-4 w-4 text-emerald-500" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold text-emerald-600">
-              {formatCurrency(summary.totalReceivable - summary.paidReceivable)}
-            </div>
-            <p className="text-xs text-muted-foreground">Vendas a prazo / Boletos</p>
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* GRÁFICO + LANÇAMENTOS */}
-      <div className="grid gap-4 md:grid-cols-7">
-        <Card className="md:col-span-4 shadow-sm">
-          <CardHeader>
-            <CardTitle>Histórico Visual</CardTitle>
-            <CardDescription>Evolução financeira no período</CardDescription>
-          </CardHeader>
-          <CardContent className="pl-0">
-            <div className="h-[260px] sm:h-[300px] w-full">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={chartData}>
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                  <XAxis
-                    dataKey="name"
-                    fontSize={12}
-                    tickLine={false}
-                    axisLine={false}
-                  />
-                  <YAxis
-                    fontSize={12}
-                    tickLine={false}
-                    axisLine={false}
-                    tickFormatter={(value) => `R$${value}`}
-                  />
-                  <Tooltip
-                    cursor={{ fill: "transparent" }}
-                    formatter={(value: number) => formatCurrency(value)}
-                    contentStyle={{
-                      borderRadius: "8px",
-                      border: "none",
-                      boxShadow: "0 4px 12px rgba(0,0,0,0.1)",
-                    }}
-                  />
-                  <Legend />
-                  <Bar dataKey="receitas" name="Entradas" fill="#10b981" radius={[4, 4, 0, 0]} barSize={18} />
-                  <Bar dataKey="despesas" name="Saídas" fill="#ef4444" radius={[4, 4, 0, 0]} barSize={18} />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Desktop: tabela / Mobile: cards */}
-        <Card className="md:col-span-3 shadow-sm flex flex-col">
-          <CardHeader>
-            <div className="flex items-center justify-between gap-2">
-              <CardTitle>Lançamentos</CardTitle>
-              <div className="relative w-40">
-                <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
-                <Input
-                  placeholder="Buscar..."
-                  className="pl-8 h-9"
-                  value={searchTerm}
-                  onChange={(e) => setSearchTerm(e.target.value)}
-                />
+                 </div>
               </div>
-            </div>
-          </CardHeader>
-
-          <CardContent className="flex-1 overflow-hidden p-0">
-            {/* MOBILE CARDS */}
-            <div className="sm:hidden p-4 space-y-3">
-              {finalFilteredEntries.length === 0 ? (
-                <div className="text-center text-muted-foreground py-8">
-                  Nada encontrado no período.
-                </div>
-              ) : (
-                finalFilteredEntries.slice(0, 30).map((entry) => {
-                  const falta = entry.total_amount - (entry.paid_amount || 0);
-                  return (
-                    <Card key={entry.id} className="border shadow-sm">
-                      <CardContent className="p-4 space-y-2">
-                        <div className="flex items-start justify-between gap-2">
-                          <div className="min-w-0">
-                            <p className="font-semibold truncate">{entry.description}</p>
-                            <p className="text-xs text-muted-foreground mt-1">
-                              {format(parseISO(entry.due_date), "dd/MM/yyyy")} •{" "}
-                              {entry.type === "receivable" ? "Entrada" : "Saída"}
-                              {entry.entity_name ? ` • ${entry.entity_name}` : ""}
-                            </p>
-                          </div>
-
-                          <div className="text-right shrink-0">
-                            <p
-                              className={cn(
-                                "font-bold",
-                                entry.type === "receivable"
-                                  ? "text-emerald-600"
-                                  : "text-destructive"
-                              )}
-                            >
-                              {entry.type === "receivable" ? "+" : "-"}{" "}
-                              {formatCurrency(entry.total_amount)}
-                            </p>
-                            <p className="text-[11px] text-muted-foreground">
-                              Falta: {formatCurrency(falta)}
-                            </p>
-                          </div>
-                        </div>
-
-                        <div className="flex items-center justify-between">
-                          <Badge
-                            variant={isOverdue(entry) ? "destructive" : statusVariant[entry.status]}
-                          >
-                            {isOverdue(entry) ? "Atrasado" : statusLabel[entry.status] || entry.status}
-                          </Badge>
-
-                          {entry.status !== "paid" ? (
-                            <Button
-                              size="sm"
-                              onClick={() => openPayDialog(entry)}
-                              className="h-10"
-                            >
-                              <CheckCircle className="h-4 w-4 mr-2" />
-                              Baixar
-                            </Button>
-                          ) : (
-                            <span className="text-xs text-muted-foreground">OK</span>
-                          )}
-                        </div>
-                      </CardContent>
-                    </Card>
-                  );
-                })
-              )}
-              {finalFilteredEntries.length > 30 && (
-                <div className="text-xs text-muted-foreground text-center">
-                  Mostrando 30 de {finalFilteredEntries.length}.
-                </div>
-              )}
-            </div>
-
-            {/* DESKTOP TABLE */}
-            <div className="hidden sm:block h-[300px] overflow-auto">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Data</TableHead>
-                    <TableHead>Desc.</TableHead>
-                    <TableHead className="text-right">Valor</TableHead>
-                    <TableHead className="w-[40px]"></TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {finalFilteredEntries.length === 0 ? (
-                    <TableRow>
-                      <TableCell colSpan={4} className="text-center text-muted-foreground py-8">
-                        Nada encontrado no período.
-                      </TableCell>
-                    </TableRow>
-                  ) : (
-                    finalFilteredEntries.map((entry) => (
-                      <TableRow key={entry.id}>
-                        <TableCell className="text-xs text-muted-foreground">
-                          {format(parseISO(entry.due_date), "dd/MM")}
-                        </TableCell>
-                        <TableCell>
-                          <div className="font-medium truncate max-w-[140px]" title={entry.description}>
-                            {entry.description}
-                          </div>
-                        </TableCell>
-                        <TableCell className="text-right">
-                          <div
-                            className={cn(
-                              "font-medium",
-                              entry.type === "receivable"
-                                ? "text-emerald-600"
-                                : "text-destructive"
-                            )}
-                          >
-                            {entry.type === "receivable" ? "+" : "-"}{" "}
-                            {formatCurrency(entry.total_amount)}
-                          </div>
-                        </TableCell>
-                        <TableCell>
-                          {entry.status !== "paid" && (
-                            <Button
-                              size="icon"
-                              variant="ghost"
-                              className="h-7 w-7"
-                              onClick={() => openPayDialog(entry)}
-                            >
-                              <CheckCircle className="h-4 w-4 text-primary" />
-                            </Button>
-                          )}
-                        </TableCell>
-                      </TableRow>
-                    ))
-                  )}
-                </TableBody>
-              </Table>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* ABAS */}
-      <Tabs defaultValue="payable" className="w-full">
-        <div className="flex items-center justify-between mb-4">
-          <TabsList className="w-full sm:w-auto">
-            <TabsTrigger value="payable" className="flex-1 sm:w-[160px]">
-              Contas a Pagar
-            </TabsTrigger>
-            <TabsTrigger value="receivable" className="flex-1 sm:w-[160px]">
-              Contas a Receber
-            </TabsTrigger>
-          </TabsList>
-        </div>
-
-        {(["payable", "receivable"] as const).map((tabValue) => {
-          const list = finalFilteredEntries.filter((e) => e.type === tabValue);
-
-          return (
-            <TabsContent key={tabValue} value={tabValue} className="mt-0">
-              <Card className="overflow-hidden">
-                {/* MOBILE CARDS */}
-                <div className="sm:hidden p-4 space-y-3">
-                  {list.length === 0 ? (
-                    <div className="text-center py-10 text-muted-foreground">
-                      Nenhum lançamento encontrado.
-                    </div>
-                  ) : (
-                    list.map((entry) => {
-                      const falta = entry.total_amount - (entry.paid_amount || 0);
-                      return (
-                        <Card key={entry.id} className="border shadow-sm">
-                          <CardContent className="p-4 space-y-2">
-                            <div className="flex items-start justify-between gap-2">
-                              <div className="min-w-0">
-                                <p className="font-semibold truncate">{entry.description}</p>
-                                <p
-                                  className={cn(
-                                    "text-xs mt-1",
-                                    isOverdue(entry) ? "text-destructive font-semibold" : "text-muted-foreground"
-                                  )}
-                                >
-                                  Venc: {format(parseISO(entry.due_date), "dd/MM/yyyy")}
-                                </p>
-                                <p className="text-xs text-muted-foreground">
-                                  {tabValue === "receivable" ? "Cliente" : "Fornecedor"}:{" "}
-                                  {entry.entity_name || "-"}
-                                </p>
-                              </div>
-
-                              <div className="text-right shrink-0">
-                                <p className="font-bold">{formatCurrency(entry.total_amount)}</p>
-                                <p className="text-[11px] text-muted-foreground">
-                                  Falta: {formatCurrency(falta)}
-                                </p>
-                              </div>
-                            </div>
-
-                            <div className="flex items-center justify-between">
-                              <Badge
-                                variant={isOverdue(entry) ? "destructive" : statusVariant[entry.status]}
-                              >
-                                {isOverdue(entry) ? "Atrasado" : statusLabel[entry.status] || entry.status}
-                              </Badge>
-
-                              {entry.status !== "paid" ? (
-                                <Button size="sm" variant="outline" onClick={() => openPayDialog(entry)} className="h-10">
-                                  <CheckCircle className="h-4 w-4 mr-2" />
-                                  Baixar
-                                </Button>
-                              ) : (
-                                <Badge className="bg-emerald-100 text-emerald-800">Pago</Badge>
-                              )}
-                            </div>
-                          </CardContent>
-                        </Card>
-                      );
-                    })
-                  )}
-                </div>
-
-                {/* DESKTOP TABLE */}
-                <div className="hidden sm:block">
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>Vencimento</TableHead>
-                        <TableHead>Descrição</TableHead>
-                        <TableHead>{tabValue === "receivable" ? "Cliente" : "Fornecedor"}</TableHead>
-                        <TableHead className="text-right">Valor Total</TableHead>
-                        <TableHead className="text-right">Falta</TableHead>
-                        <TableHead>Status</TableHead>
-                        <TableHead className="text-right">Ação</TableHead>
-                      </TableRow>
-                    </TableHeader>
-
-                    <TableBody>
-                      {list.map((entry) => {
-                        const overdue = isOverdue(entry);
-                        return (
-                          <TableRow key={entry.id}>
-                            <TableCell className={cn(overdue && "text-destructive font-bold")}>
-                              {format(parseISO(entry.due_date), "dd/MM/yyyy")}
-                            </TableCell>
-                            <TableCell className="font-medium">{entry.description}</TableCell>
-                            <TableCell>{entry.entity_name || "-"}</TableCell>
-                            <TableCell className="text-right">{formatCurrency(entry.total_amount)}</TableCell>
-                            <TableCell className="text-right font-mono font-medium">
-                              {formatCurrency(entry.total_amount - (entry.paid_amount || 0))}
-                            </TableCell>
-                            <TableCell>
-                              <Badge variant={overdue ? "destructive" : statusVariant[entry.status]}>
-                                {overdue ? "Atrasado" : statusLabel[entry.status] || entry.status}
-                              </Badge>
-                            </TableCell>
-                            <TableCell className="text-right">
-                              {entry.status !== "paid" && (
-                                <Button variant="outline" size="sm" onClick={() => openPayDialog(entry)}>
-                                  Baixar
-                                </Button>
-                              )}
-                            </TableCell>
-                          </TableRow>
-                        );
-                      })}
-
-                      {list.length === 0 && (
-                        <TableRow>
-                          <TableCell colSpan={7} className="text-center py-8 text-muted-foreground">
-                            Nenhum lançamento encontrado.
-                          </TableCell>
-                        </TableRow>
-                      )}
-                    </TableBody>
-                  </Table>
-                </div>
-              </Card>
-            </TabsContent>
-          );
-        })}
-      </Tabs>
-
-      {/* DIALOG BAIXA */}
-      <Dialog open={payDialogOpen} onOpenChange={setPayDialogOpen}>
-        <DialogContent className="max-w-sm">
-          <DialogHeader>
-            <DialogTitle>Registrar Pagamento/Baixa</DialogTitle>
-            <CardDescription>Confirme o valor.</CardDescription>
-          </DialogHeader>
-
-          {selectedEntry && (
-            <div className="space-y-4 pt-2">
-              <div className="p-3 bg-muted rounded-md text-sm border">
-                <p className="font-semibold">{selectedEntry.description}</p>
-                <div className="flex justify-between mt-2 text-xs text-muted-foreground">
-                  <span>Total: {formatCurrency(selectedEntry.total_amount)}</span>
-                  <span className="text-primary font-bold">
-                    Falta: {formatCurrency(selectedEntry.total_amount - (selectedEntry.paid_amount || 0))}
-                  </span>
-                </div>
+              
+              <div className="space-y-1">
+                 <Label className="text-xs">Descrição</Label>
+                 <Input 
+                   placeholder="Ex: Aluguel, Venda..." 
+                   value={description}
+                   onChange={e => setDescription(e.target.value)}
+                 />
               </div>
 
-              <div className="space-y-2">
-                <Label>Valor a Baixar (R$)</Label>
-                <Input
-                  type="number"
-                  value={payAmount}
-                  onChange={(e) => setPayAmount(e.target.value)}
-                  placeholder="0,00"
-                  className="h-11"
-                />
+              <div className="grid grid-cols-2 gap-3">
+                 <div className="space-y-1">
+                   <Label className="text-xs">Entidade (Opcional)</Label>
+                   <Input 
+                     placeholder="Nome..." 
+                     value={entityName}
+                     onChange={e => setEntityName(e.target.value)}
+                   />
+                 </div>
+                 <div className="space-y-1">
+                   <Label className="text-xs">Vencimento</Label>
+                   <Input 
+                     type="date" 
+                     value={format(dueDate, "yyyy-MM-dd")}
+                     onChange={e => setDueDate(new Date(e.target.value))}
+                   />
+                 </div>
               </div>
 
-              <Button onClick={handlePay} className="w-full h-11">
-                Confirmar
-              </Button>
-            </div>
-          )}
+              <div className="flex items-center justify-between border p-3 rounded-lg bg-muted/20">
+                 <div className="space-y-0.5">
+                    <Label className="text-sm">Recorrente?</Label>
+                    <p className="text-[10px] text-muted-foreground">Repetir por 12 meses</p>
+                 </div>
+                 <Switch checked={isRecurring} onCheckedChange={setIsRecurring} />
+              </div>
+
+              <Button type="submit" className="w-full">Salvar</Button>
+           </form>
         </DialogContent>
       </Dialog>
+
+      {/* DIALOG DE BAIXA */}
+      <Dialog open={payDialogOpen} onOpenChange={setPayDialogOpen}>
+        <DialogContent className="max-w-xs top-[30%] translate-y-0">
+          <DialogHeader>
+            <DialogTitle>Baixar Lançamento</DialogTitle>
+            <DialogDescription>Confirme o valor pago.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 pt-2">
+             <div className="bg-slate-50 p-3 rounded-lg border text-sm">
+                <p className="font-medium truncate">{selectedEntry?.description}</p>
+                <div className="flex justify-between mt-1 text-xs text-muted-foreground">
+                   <span>Total: {formatCurrency(selectedEntry?.total_amount || 0)}</span>
+                   <span className="font-bold text-primary">
+                     Restante: {formatCurrency((selectedEntry?.total_amount || 0) - (selectedEntry?.paid_amount || 0))}
+                   </span>
+                </div>
+             </div>
+             <div className="space-y-1">
+               <Label>Valor do Pagamento</Label>
+               <Input 
+                 type="number" 
+                 value={payAmount} 
+                 onChange={e => setPayAmount(e.target.value)}
+                 className="text-lg font-bold"
+               />
+             </div>
+             <Button onClick={handlePay} className="w-full">Confirmar Baixa</Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
     </div>
   );
 }
