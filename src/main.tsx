@@ -7,7 +7,6 @@ import "./index.css";
 // =======================
 function showFatal(msg: string) {
   try {
-    // evita duplicar overlay
     if (document.getElementById("__fatal_overlay__")) return;
 
     const el = document.createElement("div");
@@ -33,7 +32,7 @@ function showFatal(msg: string) {
 
     document.body.appendChild(el);
   } catch {
-    // se até isso falhar, não tem muito o que fazer
+    // sem fallback
   }
 }
 
@@ -50,8 +49,36 @@ window.addEventListener("unhandledrejection", (e: any) => {
   showFatal(msg);
 });
 
-// marca de vida (pra confirmar que o main carregou)
-console.log("[BOOT] main.tsx carregou", new Date().toISOString());
+// =======================
+// PASSO 5 (LOGS IMPORTANTES)
+// =======================
+function logEnv() {
+  const href = window.location.href;
+
+  // se Capacitor existir, mostra info do ambiente
+  const cap = (window as any).Capacitor;
+  const isNative = !!cap?.isNativePlatform?.() || !!cap?.getPlatform?.();
+
+  console.log("[BOOT] main.tsx carregou", new Date().toISOString());
+  console.log("[URL]", href);
+  console.log("[ONLINE?]", navigator.onLine);
+  console.log("[USER_AGENT]", navigator.userAgent);
+  console.log("[CAPACITOR EXISTS?]", !!cap);
+  console.log("[CAPACITOR IS_NATIVE?]", isNative);
+  if (cap?.getPlatform) console.log("[CAPACITOR PLATFORM]", cap.getPlatform());
+}
+
+logEnv();
+
+window.addEventListener("online", () => {
+  console.log("[NET] ONLINE event fired", new Date().toISOString());
+  console.log("[ONLINE?]", navigator.onLine);
+});
+
+window.addEventListener("offline", () => {
+  console.log("[NET] OFFLINE event fired", new Date().toISOString());
+  console.log("[ONLINE?]", navigator.onLine);
+});
 
 // =======================
 // START APP
