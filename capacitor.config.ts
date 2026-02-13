@@ -4,17 +4,21 @@ const config: CapacitorConfig = {
   appId: "com.henrique.distroflow",
   appName: "2G",
   webDir: "dist",
-  bundledWebRuntime: false,
 
   server: {
     url: "https://distro-flow-shine.vercel.app",
-    cleartext: false,
     androidScheme: "https",
+    cleartext: false,
+    allowNavigation: [
+      "distro-flow-shine.vercel.app",
+      "*.vercel.app",
+      "*.supabase.co"
+    ]
   },
 
   android: {
-    allowMixedContent: false,
-  },
+    allowMixedContent: false
+  }
 };
 
 export default config;
