@@ -14,6 +14,7 @@ import {
   Calendar as CalendarIcon,
   User,
   Info,
+  ShoppingBasket,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -37,11 +38,10 @@ import {
 
 type AuditLog = {
   id: string;
-  company_id: string | null;
   actor_user_id: string | null;
   actor_name: string | null;
 
-  event_type: string; // sale_created, sale_cancelled, stock_adjust...
+  event_type: string; // sale_created, sale_cancelled, stock_...
   entity_type: string; // sale, product...
   entity_id: string | null;
 
@@ -61,27 +61,46 @@ type Sale = {
   user_id: string | null;
   total_amount: number | null;
   status: string | null;
+  payment_method: string | null;
   created_at: string | null;
-  company_id: string | null;
 };
 
 type Customer = { id: string; name: string };
 type Profile = { id: string; name: string | null };
 
+type SaleItem = {
+  id: string;
+  sale_id: string;
+  product_id: string;
+  quantity: number;
+  unit_price: number;
+  total_price: number;
+};
+
+type Product = { id: string; name: string };
+
+type SaleItemView = {
+  id: string;
+  product_id: string;
+  product_name: string;
+  quantity: number;
+  unit_price: number;
+  total_price: number;
+};
+
 type ChipFilter = "all" | "sales" | "cancelled" | "stock";
 type DateFilter = "7d" | "30d" | "this-month" | "this-year" | "all";
 
 function formatCurrency(v: number) {
-  return (v || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+  return (v || 0).toLocaleString("pt-BR", {
+    style: "currency",
+    currency: "BRL",
+  });
 }
 
 function formatDateTime(iso: string) {
   const d = new Date(iso);
   return d.toLocaleString("pt-BR");
-}
-
-function startOfDay(d: Date) {
-  return new Date(d.getFullYear(), d.getMonth(), d.getDate());
 }
 
 function isWithinDays(iso: string, days: number) {
@@ -113,15 +132,27 @@ function getIcon(eventType: string) {
 
 function badgeFor(eventType: string) {
   if (eventType === "sale_cancelled") {
-    return <Badge variant="destructive" className="text-[10px] px-2 py-0.5">Cancelada</Badge>;
+    return (
+      <Badge variant="destructive" className="text-[10px] px-2 py-0.5">
+        Cancelada
+      </Badge>
+    );
   }
   if (eventType === "sale_created") {
     return <Badge className="text-[10px] px-2 py-0.5">Venda</Badge>;
   }
   if (eventType.startsWith("stock")) {
-    return <Badge variant="secondary" className="text-[10px] px-2 py-0.5">Estoque</Badge>;
+    return (
+      <Badge variant="secondary" className="text-[10px] px-2 py-0.5">
+        Estoque
+      </Badge>
+    );
   }
-  return <Badge variant="outline" className="text-[10px] px-2 py-0.5">Evento</Badge>;
+  return (
+    <Badge variant="outline" className="text-[10px] px-2 py-0.5">
+      Evento
+    </Badge>
+  );
 }
 
 export default function Historico() {
@@ -129,8 +160,12 @@ export default function Historico() {
 
   const [logs, setLogs] = useState<AuditLog[]>([]);
   const [salesById, setSalesById] = useState<Record<string, Sale>>({});
-  const [customersById, setCustomersById] = useState<Record<string, Customer>>({});
-  const [profilesById, setProfilesById] = useState<Record<string, Profile>>({});
+  const [customersById, setCustomersById] = useState<Record<string, Customer>>(
+    {}
+  );
+  const [profilesById, setProfilesById] = useState<Record<string, Profile>>(
+    {}
+  );
 
   const [search, setSearch] = useState("");
   const [chip, setChip] = useState<ChipFilter>("all");
@@ -142,6 +177,10 @@ export default function Historico() {
 
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [detailsLog, setDetailsLog] = useState<AuditLog | null>(null);
+
+  // itens da venda no modal
+  const [detailsItemsLoading, setDetailsItemsLoading] = useState(false);
+  const [detailsItems, setDetailsItems] = useState<SaleItemView[]>([]);
 
   const fetchData = async () => {
     setLoading(true);
@@ -163,10 +202,12 @@ export default function Historico() {
     const L = (logsData || []) as AuditLog[];
     setLogs(L);
 
-    // 2) sales ids
+    // 2) sales ids (pega entity_id e também metadata.sale_id)
     const saleIds = Array.from(
       new Set(
-        L.filter((l) => l.entity_type === "sale" && l.entity_id).map((l) => l.entity_id as string)
+        L.filter((l) => l.entity_type === "sale")
+          .map((l) => (l.entity_id || l.metadata?.sale_id) as string)
+          .filter(Boolean)
       )
     );
 
@@ -175,7 +216,7 @@ export default function Historico() {
     if (saleIds.length) {
       const { data: salesData, error: salesErr } = await supabase
         .from("sales")
-        .select("id, customer_id, user_id, total_amount, status, created_at, company_id")
+        .select("id, customer_id, user_id, total_amount, status, payment_method, created_at")
         .in("id", saleIds);
 
       if (salesErr) {
@@ -193,7 +234,9 @@ export default function Historico() {
 
     // 4) customers ids (de sales)
     const customerIds = Array.from(
-      new Set(sales.map((s) => s.customer_id).filter((id): id is string => Boolean(id)))
+      new Set(
+        sales.map((s) => s.customer_id).filter((id): id is string => Boolean(id))
+      )
     );
 
     // 5) users ids (de sales)
@@ -203,10 +246,16 @@ export default function Historico() {
 
     // 6) fetch customers
     if (customerIds.length) {
-      const { data: custData } = await supabase
+      const { data: custData, error: custErr } = await supabase
         .from("customers")
         .select("id, name")
         .in("id", customerIds);
+
+      if (custErr) {
+        toast.error("Erro ao carregar clientes.");
+        setLoading(false);
+        return;
+      }
 
       const cMap: Record<string, Customer> = {};
       for (const c of (custData || []) as Customer[]) cMap[c.id] = c;
@@ -217,10 +266,16 @@ export default function Historico() {
 
     // 7) fetch profiles (operador)
     if (userIds.length) {
-      const { data: profData } = await supabase
+      const { data: profData, error: profErr } = await supabase
         .from("profiles")
         .select("id, name")
         .in("id", userIds);
+
+      if (profErr) {
+        toast.error("Erro ao carregar operadores.");
+        setLoading(false);
+        return;
+      }
 
       const pMap: Record<string, Profile> = {};
       for (const p of (profData || []) as Profile[]) pMap[p.id] = p;
@@ -249,7 +304,6 @@ export default function Historico() {
 
     const byDate = (l: AuditLog) => {
       if (dateFilter === "all") return true;
-
       if (dateFilter === "7d") return isWithinDays(l.created_at, 7);
       if (dateFilter === "30d") return isWithinDays(l.created_at, 30);
 
@@ -268,7 +322,9 @@ export default function Historico() {
     const bySearch = (l: AuditLog) => {
       if (!s) return true;
 
-      const sale = l.entity_id ? salesById[l.entity_id] : undefined;
+      const saleId = (l.entity_id || l.metadata?.sale_id) as string | undefined;
+      const sale = saleId ? salesById[saleId] : undefined;
+
       const customerName =
         sale?.customer_id ? customersById[sale.customer_id]?.name : undefined;
       const operatorName =
@@ -282,6 +338,8 @@ export default function Historico() {
         l.actor_name ?? "",
         customerName ?? "",
         operatorName ?? "",
+        sale?.payment_method ?? "",
+        String(l.amount ?? ""),
         JSON.stringify(l.metadata ?? {}),
       ]
         .join(" ")
@@ -310,7 +368,7 @@ export default function Historico() {
 
     try {
       if (confirmMode === "cancel") {
-        const saleId = selected.entity_id || selected.metadata?.sale_id;
+        const saleId = (selected.entity_id || selected.metadata?.sale_id) as string | undefined;
         if (!saleId) throw new Error("Não achei o ID da venda para cancelar.");
 
         const { error } = await supabase.rpc("cancel_sale", { p_sale_id: saleId });
@@ -337,20 +395,15 @@ export default function Historico() {
 
       setConfirmOpen(false);
       setSelected(null);
-      fetchData();
+      await fetchData();
     } catch (e: any) {
       toast.error(e?.message || "Erro ao executar ação.");
     }
   };
 
-  const openDetails = (log: AuditLog) => {
-    setDetailsLog(log);
-    setDetailsOpen(true);
-  };
-
-  // helpers pra render
+  // helpers
   const getSaleInfo = (log: AuditLog) => {
-    const saleId = log.entity_id || log.metadata?.sale_id;
+    const saleId = (log.entity_id || log.metadata?.sale_id) as string | undefined;
     const sale = saleId ? salesById[saleId] : undefined;
 
     const customerName =
@@ -362,16 +415,83 @@ export default function Historico() {
     return { saleId, sale, customerName, operatorName };
   };
 
+  const loadSaleItemsForDetails = async (saleId: string) => {
+    setDetailsItemsLoading(true);
+    setDetailsItems([]);
+
+    try {
+      const { data: itemsData, error: itemsErr } = await supabase
+        .from("sale_items")
+        .select("id, sale_id, product_id, quantity, unit_price, total_price")
+        .eq("sale_id", saleId);
+
+      if (itemsErr) throw new Error(itemsErr.message);
+
+      const items = (itemsData || []) as SaleItem[];
+
+      const productIds = Array.from(new Set(items.map((i) => i.product_id).filter(Boolean)));
+
+      let productsMap: Record<string, string> = {};
+      if (productIds.length) {
+        const { data: prodData, error: prodErr } = await supabase
+          .from("products")
+          .select("id, name")
+          .in("id", productIds);
+
+        if (prodErr) throw new Error(prodErr.message);
+
+        for (const p of (prodData || []) as Product[]) {
+          productsMap[p.id] = p.name;
+        }
+      }
+
+      const view: SaleItemView[] = items.map((i) => ({
+        id: i.id,
+        product_id: i.product_id,
+        product_name: productsMap[i.product_id] || "Produto",
+        quantity: Number(i.quantity || 0),
+        unit_price: Number(i.unit_price || 0),
+        total_price: Number(i.total_price || 0),
+      }));
+
+      // ordena por nome
+      view.sort((a, b) => a.product_name.localeCompare(b.product_name));
+
+      setDetailsItems(view);
+    } catch (e: any) {
+      toast.error(e?.message || "Erro ao carregar itens da venda.");
+    } finally {
+      setDetailsItemsLoading(false);
+    }
+  };
+
+  const openDetails = async (log: AuditLog) => {
+    setDetailsLog(log);
+    setDetailsOpen(true);
+
+    const saleId = (log.entity_id || log.metadata?.sale_id) as string | undefined;
+    if (saleId) {
+      await loadSaleItemsForDetails(saleId);
+    } else {
+      setDetailsItems([]);
+    }
+  };
+
   return (
     <div className="w-full max-w-md mx-auto px-3 sm:px-6 py-4 overflow-x-hidden">
       {/* TOP BAR */}
-      <div className="flex items-center justify-between gap-2 mb-3">
-        <h1 className="text-base font-semibold flex items-center gap-2">
-          <ShieldCheck className="h-4 w-4" />
-          Histórico
+      <div className="flex items-center justify-between gap-2 mb-3 min-w-0">
+        <h1 className="text-base font-semibold flex items-center gap-2 min-w-0">
+          <ShieldCheck className="h-4 w-4 shrink-0" />
+          <span className="truncate">Histórico</span>
         </h1>
 
-        <Button variant="outline" size="sm" className="h-9 rounded-full" onClick={fetchData}>
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-9 rounded-full shrink-0"
+          onClick={fetchData}
+        >
           <RefreshCcw className="h-4 w-4 mr-2" />
           Atualizar
         </Button>
@@ -384,15 +504,15 @@ export default function Historico() {
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder="Buscar (cliente, operador, valor...)"
-          className="pl-9 h-10 rounded-full"
+          className="pl-9 h-10 rounded-full w-full"
         />
       </div>
 
-      {/* FILTERS ROW */}
+      {/* FILTERS */}
       <div className="flex gap-2 mb-2">
         <Select value={dateFilter} onValueChange={(v: any) => setDateFilter(v)}>
-          <SelectTrigger className="h-10 rounded-full flex-1">
-            <CalendarIcon className="h-4 w-4 mr-2 text-muted-foreground" />
+          <SelectTrigger className="h-10 rounded-full flex-1 min-w-0">
+            <CalendarIcon className="h-4 w-4 mr-2 text-muted-foreground shrink-0" />
             <SelectValue placeholder="Período" />
           </SelectTrigger>
           <SelectContent align="start">
@@ -405,7 +525,7 @@ export default function Historico() {
         </Select>
       </div>
 
-      {/* CHIPS (mobile friendly) */}
+      {/* CHIPS */}
       <div className="flex gap-2 overflow-x-auto pb-1 no-scrollbar mb-3">
         {[
           { v: "all", label: "Tudo" },
@@ -432,7 +552,9 @@ export default function Historico() {
 
       {/* LIST */}
       {loading ? (
-        <div className="text-center py-10 text-muted-foreground text-sm">Carregando...</div>
+        <div className="text-center py-10 text-muted-foreground text-sm">
+          Carregando...
+        </div>
       ) : filtered.length === 0 ? (
         <div className="text-center py-10 text-muted-foreground text-sm">
           Nenhum registro encontrado.
@@ -444,19 +566,26 @@ export default function Historico() {
 
             const canCancel =
               log.event_type === "sale_created" &&
-              saleId &&
+              !!saleId &&
               (sale?.status ?? "") !== "cancelled";
 
-            const isCancelled = log.event_type === "sale_cancelled" || sale?.status === "cancelled";
+            const isCancelled =
+              log.event_type === "sale_cancelled" ||
+              (sale?.status ?? "") === "cancelled";
 
             return (
-              <Card key={log.id} className="border-none shadow-sm rounded-2xl overflow-hidden">
+              <Card
+                key={log.id}
+                className="border-none shadow-sm rounded-2xl overflow-hidden"
+              >
                 <CardContent className="p-3">
-                  <div className="flex items-start justify-between gap-3">
+                  <div className="flex items-start justify-between gap-3 min-w-0">
                     {/* LEFT */}
                     <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2">
-                        <span className="text-slate-700 shrink-0">{getIcon(log.event_type)}</span>
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className="text-slate-700 shrink-0">
+                          {getIcon(log.event_type)}
+                        </span>
                         <p className="font-medium text-sm truncate">
                           {log.title || "Registro"}
                         </p>
@@ -492,8 +621,16 @@ export default function Historico() {
                       <div className="mt-2 flex items-center gap-2">
                         {badgeFor(log.event_type)}
                         {isCancelled && (
-                          <Badge variant="destructive" className="text-[10px] px-2 py-0.5">
+                          <Badge
+                            variant="destructive"
+                            className="text-[10px] px-2 py-0.5"
+                          >
                             Cancelada
+                          </Badge>
+                        )}
+                        {sale?.payment_method && (
+                          <Badge variant="outline" className="text-[10px] px-2 py-0.5">
+                            {sale.payment_method.toUpperCase()}
                           </Badge>
                         )}
                       </div>
@@ -546,7 +683,9 @@ export default function Historico() {
         <DialogContent className="max-w-sm w-[92vw] rounded-2xl p-4">
           <DialogHeader>
             <DialogTitle className="text-base">
-              {confirmMode === "cancel" ? "Cancelar venda?" : "Apagar do histórico?"}
+              {confirmMode === "cancel"
+                ? "Cancelar venda?"
+                : "Apagar do histórico?"}
             </DialogTitle>
             <DialogDescription className="text-xs">
               {confirmMode === "cancel"
@@ -580,29 +719,39 @@ export default function Historico() {
           <DialogHeader>
             <DialogTitle className="text-base">Detalhes</DialogTitle>
             <DialogDescription className="text-xs">
-              Informações completas do evento.
+              Venda completa + itens.
             </DialogDescription>
           </DialogHeader>
 
           {detailsLog ? (
             <div className="space-y-3 pt-2 text-sm">
               {(() => {
-                const { saleId, sale, customerName, operatorName } = getSaleInfo(detailsLog);
+                const { saleId, sale, customerName, operatorName } =
+                  getSaleInfo(detailsLog);
 
                 return (
                   <>
                     <div className="rounded-xl border bg-slate-50 p-3">
                       <div className="flex items-center gap-2 text-slate-700">
                         {getIcon(detailsLog.event_type)}
-                        <span className="font-semibold">{detailsLog.title}</span>
+                        <span className="font-semibold">
+                          {detailsLog.title}
+                        </span>
                       </div>
 
                       <div className="mt-2 text-[12px] text-muted-foreground space-y-1">
-                        <div><strong>Data:</strong> {formatDateTime(detailsLog.created_at)}</div>
-                        <div><strong>Tipo:</strong> {detailsLog.event_type}</div>
-                        <div><strong>Entidade:</strong> {detailsLog.entity_type}</div>
+                        <div>
+                          <strong>Data:</strong>{" "}
+                          {formatDateTime(detailsLog.created_at)}
+                        </div>
+                        <div>
+                          <strong>Tipo:</strong> {detailsLog.event_type}
+                        </div>
                         {detailsLog.amount != null && (
-                          <div><strong>Valor:</strong> {formatCurrency(Number(detailsLog.amount))}</div>
+                          <div>
+                            <strong>Valor:</strong>{" "}
+                            {formatCurrency(Number(detailsLog.amount))}
+                          </div>
                         )}
                       </div>
                     </div>
@@ -611,14 +760,88 @@ export default function Historico() {
                       <div className="rounded-xl border p-3">
                         <p className="font-semibold mb-2">Venda</p>
                         <div className="text-[12px] text-muted-foreground space-y-1">
-                          <div><strong>ID:</strong> {saleId}</div>
-                          <div><strong>Status:</strong> {sale?.status || "—"}</div>
-                          <div><strong>Cliente:</strong> {customerName || "—"}</div>
-                          <div><strong>Operador:</strong> {operatorName || "—"}</div>
+                          <div className="break-all">
+                            <strong>ID:</strong> {saleId}
+                          </div>
+                          <div>
+                            <strong>Status:</strong> {sale?.status || "—"}
+                          </div>
+                          <div>
+                            <strong>Pagamento:</strong>{" "}
+                            {sale?.payment_method || "—"}
+                          </div>
+                          <div>
+                            <strong>Cliente:</strong> {customerName || "—"}
+                          </div>
+                          <div>
+                            <strong>Operador:</strong> {operatorName || "—"}
+                          </div>
                         </div>
                       </div>
                     )}
 
+                    {/* ITENS */}
+                    {saleId && (
+                      <div className="rounded-xl border p-3">
+                        <div className="flex items-center justify-between gap-2 mb-2">
+                          <p className="font-semibold flex items-center gap-2">
+                            <ShoppingBasket className="h-4 w-4" />
+                            Itens
+                          </p>
+                          {detailsItemsLoading && (
+                            <span className="text-[11px] text-muted-foreground">
+                              carregando...
+                            </span>
+                          )}
+                        </div>
+
+                        {detailsItemsLoading ? (
+                          <div className="text-xs text-muted-foreground py-2">
+                            Carregando itens...
+                          </div>
+                        ) : detailsItems.length === 0 ? (
+                          <div className="text-xs text-muted-foreground py-2">
+                            Nenhum item encontrado.
+                          </div>
+                        ) : (
+                          <div className="space-y-2">
+                            {detailsItems.map((it) => (
+                              <div
+                                key={it.id}
+                                className="flex items-start justify-between gap-3 bg-slate-50 border rounded-xl p-2"
+                              >
+                                <div className="min-w-0">
+                                  <p className="text-xs font-medium truncate">
+                                    {it.product_name}
+                                  </p>
+                                  <p className="text-[11px] text-muted-foreground">
+                                    Qtd: <strong>{it.quantity}</strong> • Unit:{" "}
+                                    <strong>{formatCurrency(it.unit_price)}</strong>
+                                  </p>
+                                </div>
+
+                                <div className="shrink-0 text-right">
+                                  <p className="text-xs font-bold">
+                                    {formatCurrency(it.total_price)}
+                                  </p>
+                                </div>
+                              </div>
+                            ))}
+
+                            <div className="pt-2 border-t flex items-center justify-between text-xs">
+                              <span className="text-muted-foreground">
+                                Total (venda)
+                              </span>
+                              <span className="font-bold">
+                                {formatCurrency(Number(sale?.total_amount || detailsLog.amount || 0))}
+                              </span>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* METADATA (opcional) */}
                     <div className="rounded-xl border p-3">
                       <p className="font-semibold mb-2">Metadata</p>
                       <pre className="text-[11px] bg-slate-50 border rounded-lg p-2 overflow-x-auto">
@@ -630,7 +853,9 @@ export default function Historico() {
               })()}
             </div>
           ) : (
-            <div className="text-center text-muted-foreground text-sm py-6">Sem dados.</div>
+            <div className="text-center text-muted-foreground text-sm py-6">
+              Sem dados.
+            </div>
           )}
         </DialogContent>
       </Dialog>
