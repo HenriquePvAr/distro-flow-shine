@@ -8,13 +8,12 @@ export default defineConfig(({ mode }) => {
 
   return {
     /**
-     * ✅ FUNDAMENTAL para Capacitor (file://)
-     * - Garante que assets sejam carregados com caminho relativo
-     * - Evita tela branca ao reabrir o app em uma rota diferente
-     *
-     * Obs: No Vercel também funciona ok.
+     * ✅ CORREÇÃO PARA TELA BRANCA (F5)
+     * Usar "/" garante que os assets (JS/CSS) sejam sempre buscados
+     * a partir da raiz do domínio, independente da rota que você esteja (ex: /pdv).
+     * * Isso resolve o problema de carregar arquivos relativos em sub-rotas.
      */
-    base: "./",
+    base: "/",
 
     server: {
       host: "::",
