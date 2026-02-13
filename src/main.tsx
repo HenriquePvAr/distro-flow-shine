@@ -2,10 +2,34 @@ import { createRoot } from "react-dom/client";
 import App from "./App.tsx";
 import "./index.css";
 
-// =======================
-// DEBUG ANTI-TELA-BRANCA
-// =======================
-function showFatal(msg: string) {
+const LOGS: string[] = [];
+const MAX_LOGS = 200;
+
+function pushLog(...args: any[]) {
+  const line = args
+    .map((a) => {
+      try {
+        if (a instanceof Error) return a.stack || a.message;
+        if (typeof a === "object") return JSON.stringify(a);
+        return String(a);
+      } catch {
+        return String(a);
+      }
+    })
+    .join(" ");
+  LOGS.push(`[${new Date().toISOString()}] ${line}`);
+  if (LOGS.length > MAX_LOGS) LOGS.shift();
+}
+
+const origLog = console.log;
+const origErr = console.error;
+const origWarn = console.warn;
+
+console.log = (...a) => { pushLog("[LOG]", ...a); origLog(...a); };
+console.error = (...a) => { pushLog("[ERR]", ...a); origErr(...a); };
+console.warn = (...a) => { pushLog("[WRN]", ...a); origWarn(...a); };
+
+function showFatal(title: string, err: any) {
   try {
     if (document.getElementById("__fatal_overlay__")) return;
 
@@ -18,74 +42,48 @@ function showFatal(msg: string) {
     el.style.color = "#ffffff";
     el.style.padding = "16px";
     el.style.fontFamily = "monospace";
-    el.style.fontSize = "13px";
+    el.style.fontSize = "12px";
     el.style.lineHeight = "1.4";
     el.style.whiteSpace = "pre-wrap";
     el.style.overflow = "auto";
 
+    const isCapacitor = !!(window as any).Capacitor;
+    const stack =
+      err?.stack ||
+      err?.reason?.stack ||
+      err?.error?.stack ||
+      (typeof err === "string" ? err : JSON.stringify(err, null, 2));
+
     el.innerText =
-      "FATAL ERROR (tela branca)\n" +
-      "========================\n\n" +
-      msg +
-      "\n\n" +
-      "Dica: copie essa tela e me envie aqui.";
+      `FATAL ERROR (tela branca)\n` +
+      `========================\n\n` +
+      `TITLE: ${title}\n` +
+      `URL: ${location.href}\n` +
+      `CAPACITOR: ${isCapacitor}\n` +
+      `UA: ${navigator.userAgent}\n\n` +
+      `STACK:\n${stack}\n\n` +
+      `LAST LOGS:\n${LOGS.join("\n")}\n\n` +
+      `COPIE ESSA TELA E ME ENVIE.`;
 
     document.body.appendChild(el);
   } catch {
-    // sem fallback
+    // nada
   }
 }
 
 window.addEventListener("error", (e) => {
-  const msg =
-    (e as any)?.error?.stack ||
-    (e as any)?.message ||
-    String(e);
-  showFatal(msg);
+  showFatal("window.error", (e as any)?.error || e);
 });
 
 window.addEventListener("unhandledrejection", (e: any) => {
-  const msg = e?.reason?.stack || e?.reason || String(e);
-  showFatal(msg);
+  showFatal("unhandledrejection", e?.reason || e);
 });
 
-// =======================
-// PASSO 5 (LOGS IMPORTANTES)
-// =======================
-function logEnv() {
-  const href = window.location.href;
+console.log("[BOOT] main.tsx carregou", new Date().toISOString());
 
-  // se Capacitor existir, mostra info do ambiente
-  const cap = (window as any).Capacitor;
-  const isNative = !!cap?.isNativePlatform?.() || !!cap?.getPlatform?.();
-
-  console.log("[BOOT] main.tsx carregou", new Date().toISOString());
-  console.log("[URL]", href);
-  console.log("[ONLINE?]", navigator.onLine);
-  console.log("[USER_AGENT]", navigator.userAgent);
-  console.log("[CAPACITOR EXISTS?]", !!cap);
-  console.log("[CAPACITOR IS_NATIVE?]", isNative);
-  if (cap?.getPlatform) console.log("[CAPACITOR PLATFORM]", cap.getPlatform());
-}
-
-logEnv();
-
-window.addEventListener("online", () => {
-  console.log("[NET] ONLINE event fired", new Date().toISOString());
-  console.log("[ONLINE?]", navigator.onLine);
-});
-
-window.addEventListener("offline", () => {
-  console.log("[NET] OFFLINE event fired", new Date().toISOString());
-  console.log("[ONLINE?]", navigator.onLine);
-});
-
-// =======================
-// START APP
-// =======================
 const rootEl = document.getElementById("root");
 if (!rootEl) {
-  showFatal("Elemento #root não encontrado no index.html");
+  showFatal("root-missing", "Elemento #root não encontrado no index.html");
 } else {
   createRoot(rootEl).render(<App />);
 }

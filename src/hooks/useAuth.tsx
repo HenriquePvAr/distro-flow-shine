@@ -62,6 +62,7 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
+// ✅ seu email mestre
 const SUPER_ADMIN_EMAIL = "henriquepaiva2808@gmail.com";
 
 function calcCanUseApp(sub: SubscriptionData | null): boolean {
@@ -78,17 +79,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [userData, setUserData] = useState<UserData | null>(null);
 
-  // loading = “estou carregando perfil/assinatura agora”
-  const [loading, setLoading] = useState(false);
+  // loading = “estou buscando perfil/assinatura agora”
+  const [loading, setLoading] = useState<boolean>(true);
 
-  // initialized = “terminei a primeira inicialização (anti-tela-branca)”
-  const [initialized, setInitialized] = useState(false);
+  // initialized = “terminei a primeira inicialização”
+  const [initialized, setInitialized] = useState<boolean>(false);
 
   const [subscription, setSubscription] = useState<SubscriptionData | null>(null);
-  const [subscriptionLoading, setSubscriptionLoading] = useState(false);
+  const [subscriptionLoading, setSubscriptionLoading] = useState<boolean>(true);
 
-  // evita corrida/loop entre initAuth, onAuthStateChange e signIn
+  // ✅ evita init duplicado (muito comum em WebView / StrictMode / resume)
+  const initRunningRef = useRef(false);
+
+  // ✅ controla respostas “velhas” (corrida de requests)
   const fetchIdRef = useRef(0);
+
+  // ✅ evita setState depois de desmontar
+  const mountedRef = useRef(true);
 
   const isSuperAdmin = useMemo(() => {
     const email = user?.email?.trim().toLowerCase();
@@ -109,22 +116,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         .eq("company_id", companyId)
         .maybeSingle();
 
-      // se chegou uma resposta velha, ignora
-      if (fetchIdRef.current !== fetchId) return;
+      // resposta velha? ignora
+      if (fetchIdRef.current !== fetchId || !mountedRef.current) return;
 
       if (error) {
-        console.error("Erro ao buscar assinatura:", error);
+        console.error("[Auth] Erro ao buscar assinatura:", error);
         setSubscription(null);
         return;
       }
 
       setSubscription((data ?? null) as SubscriptionData | null);
     } catch (e) {
-      console.error("Erro inesperado ao buscar assinatura:", e);
-      if (fetchIdRef.current !== fetchId) return;
+      console.error("[Auth] Erro inesperado ao buscar assinatura:", e);
+      if (fetchIdRef.current !== fetchId || !mountedRef.current) return;
       setSubscription(null);
     } finally {
-      if (fetchIdRef.current === fetchId) setSubscriptionLoading(false);
+      if (fetchIdRef.current === fetchId && mountedRef.current) {
+        setSubscriptionLoading(false);
+      }
     }
   };
 
@@ -141,18 +150,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         .eq("id", userId)
         .maybeSingle();
 
-      if (fetchIdRef.current !== fetchId) return;
+      // resposta velha / desmontou?
+      if (fetchIdRef.current !== fetchId || !mountedRef.current) return;
 
-      // Se der erro ou não tiver perfil: limpa e desloga sem loop
+      // perfil não existe/erro -> limpa e desloga sem loop
       if (error || !data) {
-        console.warn("Perfil não encontrado/erro. Limpando sessão...");
+        console.warn("[Auth] Perfil não encontrado/erro. Limpando sessão...");
 
         setUserData(null);
         setSubscription(null);
         setSubscriptionLoading(false);
 
-        // IMPORTANTE: não chama window.location aqui
+        // invalida fetches pendentes
+        fetchIdRef.current++;
+
         await supabase.auth.signOut();
+        if (!mountedRef.current) return;
+
         setSession(null);
         setUser(null);
         return;
@@ -178,24 +192,37 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setSubscriptionLoading(false);
       }
     } catch (e) {
-      console.error("Erro inesperado ao buscar perfil:", e);
-      if (fetchIdRef.current !== fetchId) return;
+      console.error("[Auth] Erro inesperado ao buscar perfil:", e);
+      if (fetchIdRef.current !== fetchId || !mountedRef.current) return;
+
       setUserData(null);
       setSubscription(null);
       setSubscriptionLoading(false);
     } finally {
-      if (fetchIdRef.current === fetchId) setLoading(false);
-      if (!initialized) setInitialized(true);
+      if (fetchIdRef.current === fetchId && mountedRef.current) {
+        setLoading(false);
+        setInitialized(true);
+      }
     }
   };
 
   useEffect(() => {
-    let unsub: any;
+    mountedRef.current = true;
+    let subscriptionUnsub: any;
 
-    (async () => {
+    const initAuth = async () => {
+      // ✅ trava init duplicado
+      if (initRunningRef.current) return;
+      initRunningRef.current = true;
+
       try {
+        setLoading(true);
+        setSubscriptionLoading(true);
+
         const { data } = await supabase.auth.getSession();
         const sess = data.session ?? null;
+
+        if (!mountedRef.current) return;
 
         setSession(sess);
         setUser(sess?.user ?? null);
@@ -203,6 +230,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (sess?.user) {
           await fetchUserData(sess.user.id, sess.user.email ?? undefined);
         } else {
+          // invalida fetches pendentes
+          fetchIdRef.current++;
+
           setUserData(null);
           setSubscription(null);
           setSubscriptionLoading(false);
@@ -210,34 +240,53 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           setInitialized(true);
         }
 
-        const { data: listener } = supabase.auth.onAuthStateChange(async (_event, sess2) => {
-          setSession(sess2);
-          setUser(sess2?.user ?? null);
+        const { data: listener } = supabase.auth.onAuthStateChange(
+          async (event, sess2) => {
+            if (!mountedRef.current) return;
 
-          if (sess2?.user) {
-            await fetchUserData(sess2.user.id, sess2.user.email ?? undefined);
-          } else {
-            // invalida fetches pendentes
-            fetchIdRef.current++;
+            console.log("[AUTH EVENT]", event);
 
-            setUserData(null);
-            setSubscription(null);
-            setSubscriptionLoading(false);
-            setLoading(false);
-            setInitialized(true);
+            setSession(sess2);
+            setUser(sess2?.user ?? null);
+
+            // 🔥 IMPORTANTÍSSIMO:
+            // no mobile, não chama fetchUserData para TODO evento
+            // apenas quando realmente entrou / trocou sessão
+            if ((event === "SIGNED_IN" || event === "TOKEN_REFRESHED") && sess2?.user) {
+              await fetchUserData(sess2.user.id, sess2.user.email ?? undefined);
+              return;
+            }
+
+            if (event === "SIGNED_OUT") {
+              // invalida fetches pendentes
+              fetchIdRef.current++;
+
+              setUserData(null);
+              setSubscription(null);
+              setSubscriptionLoading(false);
+              setLoading(false);
+              setInitialized(true);
+            }
           }
-        });
+        );
 
-        unsub = listener?.subscription;
+        subscriptionUnsub = listener?.subscription;
       } catch (e) {
-        console.error("initAuth falhou:", e);
+        console.error("[Auth] initAuth falhou:", e);
+        if (!mountedRef.current) return;
+
         setLoading(false);
         setSubscriptionLoading(false);
         setInitialized(true);
       }
-    })();
+    };
 
-    return () => unsub?.unsubscribe?.();
+    initAuth();
+
+    return () => {
+      mountedRef.current = false;
+      subscriptionUnsub?.unsubscribe?.();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -246,9 +295,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const { data, error } = await supabase.auth.signInWithPassword({ email, password });
       if (error) throw error;
 
-      // NÃO chama fetchUserData aqui se você já tem onAuthStateChange
-      // mas manter ajuda em alguns casos; como temos anti-corrida, ok:
-      if (data.user) await fetchUserData(data.user.id, data.user.email ?? undefined);
+      // ✅ pode deixar, porque temos anti-corrida.
+      // mas o onAuthStateChange também vai rodar.
+      if (data.user) {
+        await fetchUserData(data.user.id, data.user.email ?? undefined);
+      }
 
       return { error: null };
     } catch (error: any) {
@@ -285,15 +336,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     fetchIdRef.current++;
 
     await supabase.auth.signOut();
+
+    if (!mountedRef.current) return;
+
     setSession(null);
     setUser(null);
     setUserData(null);
     setSubscription(null);
     setSubscriptionLoading(false);
     setLoading(false);
+    setInitialized(true);
 
-    // No Capacitor, evite window.location.href (pode dar comportamento estranho)
-    // Faça redirect via router na tela de logout/login.
+    // ❌ NÃO usa window.location.href no Capacitor
+    // faz redirect via Router (na sua tela)
   };
 
   const value: AuthContextType = {
@@ -302,11 +357,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     userData,
     role: userData?.role ?? null,
     loading,
+
     subscription,
     subscriptionLoading,
+
     canUseApp,
     isSuperAdmin,
     isAdmin: userData?.role === "admin",
+
     signIn,
     signUp,
     signOut,
@@ -314,11 +372,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   return (
     <AuthContext.Provider value={value}>
-      {/* nunca desmonta o app inteiro */}
       {children}
 
-      {/* Overlay só na inicialização / carregamento */}
-      {(!initialized || loading) && (
+      {/* ✅ Overlay apenas enquanto inicializa/carrega */}
+      {(!initialized || loading || subscriptionLoading) && (
         <div
           style={{
             position: "fixed",
