@@ -42,6 +42,8 @@ import {
   endOfYear,
   isWithinInterval,
   parseISO,
+  isBefore,
+  startOfDay,
 } from "date-fns";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
@@ -54,7 +56,7 @@ interface FinancialEntry {
   description: string;
   total_amount: number;
   paid_amount: number;
-  due_date: string; // recomendado: "YYYY-MM-DD"
+  due_date: string; // "YYYY-MM-DD"
   status: string;
   entity_name: string | null;
   reference: string | null;
@@ -183,7 +185,7 @@ export default function Despesas() {
       const entryDate = new Date(dueDate);
       entryDate.setMonth(entryDate.getMonth() + i);
 
-      // SALVA COMO DATE-ONLY (evita bug de fuso no mobile)
+      // SALVA DATE-ONLY (evita bug de fuso no mobile)
       const due_date = format(entryDate, "yyyy-MM-dd");
 
       entriesToCreate.push({
@@ -254,16 +256,28 @@ export default function Despesas() {
     setPayDialogOpen(true);
   };
 
-  // --- SUMMARY (corrigido) ---
+  // --- SUMMARY ---
   const summary = useMemo(() => {
     const receivable = filteredEntries.filter((e) => e.type === "receivable");
     const payable = filteredEntries.filter((e) => e.type === "payable");
 
-    const totalReceivable = receivable.reduce((acc, e) => acc + (e.total_amount || 0), 0);
-    const totalPayable = payable.reduce((acc, e) => acc + (e.total_amount || 0), 0);
+    const totalReceivable = receivable.reduce(
+      (acc, e) => acc + (e.total_amount || 0),
+      0
+    );
+    const totalPayable = payable.reduce(
+      (acc, e) => acc + (e.total_amount || 0),
+      0
+    );
 
-    const paidReceivable = receivable.reduce((acc, e) => acc + (e.paid_amount || 0), 0);
-    const paidPayable = payable.reduce((acc, e) => acc + (e.paid_amount || 0), 0);
+    const paidReceivable = receivable.reduce(
+      (acc, e) => acc + (e.paid_amount || 0),
+      0
+    );
+    const paidPayable = payable.reduce(
+      (acc, e) => acc + (e.paid_amount || 0),
+      0
+    );
 
     return {
       totalReceivable,
@@ -275,7 +289,9 @@ export default function Despesas() {
   }, [filteredEntries]);
 
   const progress =
-    summary.totalPayable > 0 ? (summary.totalReceivable / summary.totalPayable) * 100 : 100;
+    summary.totalPayable > 0
+      ? (summary.totalReceivable / summary.totalPayable) * 100
+      : 100;
 
   const isProfitable = summary.totalReceivable >= summary.totalPayable;
 
@@ -284,36 +300,45 @@ export default function Despesas() {
     const isPaid = entry.status === "paid";
     const isReceivable = entry.type === "receivable";
 
-    // compara com "hoje" (data) de forma simples
-    const isOverdue = !isPaid && parseISO(entry.due_date) < new Date();
+    // Vencido = data menor que hoje (sem considerar horas)
+    const isOverdue =
+      !isPaid && isBefore(parseISO(entry.due_date), startOfDay(new Date()));
 
     return (
       <div
         className={[
-          "w-full min-w-0 flex items-center justify-between p-3 bg-white border rounded-xl mb-2 shadow-sm relative overflow-hidden",
+          "w-full min-w-0 flex items-center justify-between gap-3 p-3 bg-white border rounded-xl mb-2 shadow-sm relative overflow-hidden",
           isPaid ? "opacity-70" : "",
         ].join(" ")}
       >
         {isOverdue && <div className="absolute left-0 top-0 bottom-0 w-1 bg-red-500" />}
 
-        <div className="flex items-center gap-3 min-w-0">
+        <div className="flex items-center gap-3 min-w-0 flex-1">
           <div
             className={[
               "h-10 w-10 rounded-full flex items-center justify-center shrink-0",
-              isReceivable ? "bg-emerald-100 text-emerald-600" : "bg-red-100 text-red-600",
+              isReceivable
+                ? "bg-emerald-100 text-emerald-600"
+                : "bg-red-100 text-red-600",
             ].join(" ")}
           >
             {isReceivable ? <ArrowUpRight size={18} /> : <ArrowDownLeft size={18} />}
           </div>
 
-          <div className="min-w-0">
-            <p className="font-medium text-sm truncate text-gray-900">{entry.description}</p>
+          <div className="min-w-0 flex-1">
+            <p className="font-medium text-sm truncate text-gray-900">
+              {entry.description}
+            </p>
             <div className="flex items-center gap-2 text-xs text-muted-foreground min-w-0">
-              <span className="shrink-0">{format(parseISO(entry.due_date), "dd/MM")}</span>
+              <span className="shrink-0">
+                {format(parseISO(entry.due_date), "dd/MM")}
+              </span>
               {entry.entity_name && (
                 <>
                   <span className="shrink-0">•</span>
-                  <span className="truncate max-w-[140px] sm:max-w-[220px]">{entry.entity_name}</span>
+                  <span className="truncate max-w-[140px] sm:max-w-[220px]">
+                    {entry.entity_name}
+                  </span>
                 </>
               )}
             </div>
@@ -323,7 +348,7 @@ export default function Despesas() {
         <div className="flex flex-col items-end gap-1 shrink-0">
           <span
             className={[
-              "font-bold text-sm",
+              "font-bold text-sm whitespace-nowrap",
               isReceivable ? "text-emerald-700" : "text-red-700",
             ].join(" ")}
           >
@@ -360,7 +385,7 @@ export default function Despesas() {
     <div className="w-full h-full overflow-x-hidden bg-slate-50/50 pb-20">
       {/* HEADER */}
       <div className="sticky top-0 z-10 w-full bg-white/90 backdrop-blur-md border-b px-4 py-3 shadow-sm">
-        <div className="flex items-center justify-between mb-3 min-w-0">
+        <div className="flex items-center justify-between mb-3 min-w-0 gap-3">
           <h1 className="text-lg font-bold flex items-center gap-2 text-slate-800 min-w-0">
             <Wallet className="h-5 w-5 text-primary shrink-0" />
             <span className="truncate">Financeiro</span>
@@ -392,8 +417,9 @@ export default function Despesas() {
         </div>
       </div>
 
+      {/* CONTEÚDO (limita largura no celular) */}
       <div className="w-full max-w-screen-sm mx-auto px-4 py-4 space-y-4">
-        {/* RESUMO - scroll horizontal só aqui (sem estourar a página) */}
+        {/* RESUMO (scroll horizontal só aqui) */}
         <div className="w-full overflow-x-auto -mx-4 px-4">
           <div className="flex gap-3 w-max min-w-full pb-2">
             <Card className="w-[160px] shrink-0 border-none shadow-sm bg-white">
@@ -445,7 +471,10 @@ export default function Despesas() {
                 {Number.isFinite(progress) ? progress.toFixed(0) : "0"}%
               </span>
             </div>
-            <Progress value={Number.isFinite(progress) ? progress : 0} className="h-2 bg-blue-200" />
+            <Progress
+              value={Number.isFinite(progress) ? progress : 0}
+              className="h-2 bg-blue-200"
+            />
             <p className="text-[10px] text-muted-foreground mt-2 text-center">
               {isProfitable
                 ? "Receitas cobrem as despesas! 🎉"
@@ -470,7 +499,11 @@ export default function Despesas() {
 
           <div className="space-y-2 pb-20 w-full min-w-0">
             {["all", "payable", "receivable"].map((tab) => (
-              <TabsContent key={tab} value={tab} className="m-0 space-y-0 w-full min-w-0">
+              <TabsContent
+                key={tab}
+                value={tab}
+                className="m-0 space-y-0 w-full min-w-0"
+              >
                 {loading ? (
                   <div className="text-center py-10 text-muted-foreground text-sm">
                     Carregando...
@@ -483,7 +516,8 @@ export default function Despesas() {
                         <EntryItem key={entry.id} entry={entry} />
                       ))}
 
-                    {filteredEntries.filter((e) => tab === "all" || e.type === tab).length === 0 && (
+                    {filteredEntries.filter((e) => tab === "all" || e.type === tab)
+                      .length === 0 && (
                       <div className="text-center py-10 text-muted-foreground text-sm">
                         Nenhum lançamento encontrado.
                       </div>
@@ -606,7 +640,8 @@ export default function Despesas() {
                 <span className="font-bold text-primary shrink-0">
                   Restante:{" "}
                   {formatCurrency(
-                    (selectedEntry?.total_amount || 0) - (selectedEntry?.paid_amount || 0)
+                    (selectedEntry?.total_amount || 0) -
+                      (selectedEntry?.paid_amount || 0)
                   )}
                 </span>
               </div>
