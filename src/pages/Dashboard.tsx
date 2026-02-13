@@ -20,7 +20,7 @@ import {
   ChartTooltipContent,
   type ChartConfig,
 } from "@/components/ui/chart";
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid } from "recharts";
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, ResponsiveContainer } from "recharts";
 import {
   Select,
   SelectContent,
@@ -219,8 +219,8 @@ export default function Dashboard() {
 
   if (loading) {
     return (
-      <div className="flex h-full items-center justify-center">
-        <Loader2 className="h-8 w-8 animate-spin text-primary" />
+      <div className="flex h-[80vh] items-center justify-center">
+        <Loader2 className="h-10 w-10 animate-spin text-primary" />
       </div>
     );
   }
@@ -241,41 +241,41 @@ export default function Dashboard() {
     cardClassName?: string;
   }) => (
     <Card className={cardClassName}>
-      <CardHeader className="flex flex-row items-start justify-between pb-2 space-y-0">
-        <CardTitle className="text-xs sm:text-sm font-medium text-muted-foreground leading-tight">
+      <CardHeader className="flex flex-row items-center justify-between pb-2 space-y-0">
+        <CardTitle className="text-sm font-medium text-muted-foreground leading-tight">
           {title}
         </CardTitle>
         <div className="shrink-0">{icon}</div>
       </CardHeader>
       <CardContent>
-        <p className={`font-bold ${valueClassName ?? "text-foreground"} text-lg sm:text-2xl`}>
+        <div className={`text-2xl font-bold ${valueClassName ?? "text-foreground"}`}>
           {value}
-        </p>
-        <p className="text-[11px] sm:text-xs text-muted-foreground">{sub}</p>
+        </div>
+        <p className="text-xs text-muted-foreground mt-1">{sub}</p>
       </CardContent>
     </Card>
   );
 
   return (
-    <div className="space-y-5 animate-in fade-in duration-500 p-4 md:p-6 pb-24">
+    <div className="space-y-6 animate-in fade-in duration-500 p-4 pb-24 md:p-8">
       {/* HEADER */}
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-3">
-          <div className="p-2 rounded-lg bg-primary/10">
-            <LayoutDashboard className="h-5 w-5 sm:h-6 sm:w-6 text-primary" />
+          <div className="p-2.5 rounded-xl bg-primary/10">
+            <LayoutDashboard className="h-6 w-6 text-primary" />
           </div>
-          <div className="min-w-0">
-            <h1 className="text-xl sm:text-2xl font-semibold text-foreground truncate">
+          <div>
+            <h1 className="text-2xl font-bold text-foreground tracking-tight">
               Dashboard
             </h1>
-            <p className="text-xs sm:text-sm text-muted-foreground">
-              Visão geral financeira e estoque
+            <p className="text-sm text-muted-foreground">
+              Visão geral do seu negócio
             </p>
           </div>
         </div>
 
         <Select value={period} onValueChange={(v) => setPeriod(v as Period)}>
-          <SelectTrigger className="w-full sm:w-44">
+          <SelectTrigger className="w-full sm:w-[180px]">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -292,193 +292,143 @@ export default function Dashboard() {
           <AlertTitle>Modo Offline</AlertTitle>
           <AlertDescription>
             Você está sem internet. Os dados exibidos podem estar desatualizados.
-            Vá para o <strong>PDV</strong> para realizar vendas offline.
           </AlertDescription>
         </Alert>
       )}
 
       {loadError && (
-        <Alert variant="destructive" className="bg-red-50 text-red-900 border-red-200">
+        <Alert variant="destructive">
           <AlertTriangle className="h-4 w-4" />
-          <AlertTitle>Erro ao carregar</AlertTitle>
+          <AlertTitle>Erro</AlertTitle>
           <AlertDescription>{loadError}</AlertDescription>
         </Alert>
       )}
 
-      {/* KPI GRID - mobile 2 colunas */}
-      <div className="grid gap-3 sm:gap-4 grid-cols-2 lg:grid-cols-4">
+      {/* KPI GRID - Responsivo (2 colunas no mobile, 4 no desktop) */}
+      <div className="grid gap-4 grid-cols-2 lg:grid-cols-4">
         <KpiCard
-          title="Faturamento (Receitas)"
+          title="Receita"
           icon={<DollarSign className="h-4 w-4 text-emerald-500" />}
           value={formatCurrency(totalRevenue)}
-          sub="Total recebido no período"
+          sub="Total recebido"
+          valueClassName="text-emerald-600"
         />
 
         <KpiCard
-          title="Despesas Pagas"
-          icon={<TrendingDown className="h-4 w-4 text-destructive" />}
+          title="Despesas"
+          icon={<TrendingDown className="h-4 w-4 text-rose-500" />}
           value={formatCurrency(totalExpenses)}
-          sub="Total pago no período"
-          valueClassName="text-destructive text-lg sm:text-2xl"
+          sub="Total pago"
+          valueClassName="text-rose-600"
         />
 
         {isAdmin ? (
           <KpiCard
-            title="Saldo (Lucro Caixa)"
+            title="Lucro Líquido"
             icon={
               netProfit >= 0 ? (
                 <TrendingUp className="h-4 w-4 text-emerald-500" />
               ) : (
-                <TrendingDown className="h-4 w-4 text-destructive" />
+                <TrendingDown className="h-4 w-4 text-rose-500" />
               )
             }
             value={formatCurrency(netProfit)}
-            sub="Receitas − Despesas"
-            cardClassName={netProfit >= 0 ? "border-emerald-500/30" : "border-destructive/30"}
-            valueClassName={netProfit >= 0 ? "text-emerald-600 text-lg sm:text-2xl" : "text-destructive text-lg sm:text-2xl"}
+            sub="Receita - Despesas"
+            cardClassName={netProfit >= 0 ? "border-emerald-200 bg-emerald-50/30" : "border-rose-200 bg-rose-50/30"}
+            valueClassName={netProfit >= 0 ? "text-emerald-700" : "text-rose-700"}
           />
         ) : (
           <KpiCard
-            title="Saldo"
+            title="Lucro"
             icon={<Lock className="h-4 w-4 text-muted-foreground" />}
             value="••••••"
-            sub="Restrito a administradores"
-            valueClassName="text-muted-foreground text-lg sm:text-2xl"
-            cardClassName="border-muted"
+            sub="Acesso restrito"
+            valueClassName="text-muted-foreground"
           />
         )}
 
         <KpiCard
-          title="Patrimônio em Estoque"
+          title="Em Estoque"
           icon={<Package className="h-4 w-4 text-blue-500" />}
           value={formatCurrency(inventoryValue)}
-          sub="Valor de custo total"
+          sub="Valor de custo"
+          valueClassName="text-blue-600"
         />
       </div>
 
-      {/* CONTEÚDO PRINCIPAL */}
-      <div className="grid gap-4 md:grid-cols-3">
-        {/* GRÁFICO */}
-        <Card className="md:col-span-2">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-base sm:text-lg font-medium">
-              Fluxo de Caixa Diário
-            </CardTitle>
-            <p className="text-xs sm:text-sm text-muted-foreground">
-              Comparativo de entradas e saídas por dia
-            </p>
+      {/* GRÁFICOS E ALERTAS */}
+      <div className="grid gap-4 md:grid-cols-7">
+        
+        {/* GRÁFICO - Ocupa 4 colunas no desktop */}
+        <Card className="md:col-span-4 shadow-sm">
+          <CardHeader>
+            <CardTitle className="text-lg">Fluxo de Caixa</CardTitle>
           </CardHeader>
-
-          <CardContent>
-            {/* Mobile: scroll horizontal para não esmagar as barras */}
-            <div className="w-full overflow-x-auto">
-              <div className="min-w-[680px] sm:min-w-0">
-                <ChartContainer config={chartConfig} className="h-[260px] sm:h-[320px] w-full">
-                  <BarChart
-                    data={chartData}
-                    margin={{ top: 16, right: 18, left: 8, bottom: 6 }}
-                  >
-                    <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
-                    <XAxis
-                      dataKey="date"
-                      tickLine={false}
-                      axisLine={false}
-                      interval={0}
-                      tickMargin={8}
-                      className="text-[10px] sm:text-xs"
+          <CardContent className="pl-0">
+            {/* Scroll horizontal no mobile para o gráfico não ficar espremido */}
+            <div className="overflow-x-auto pb-2">
+              <div className="min-w-[600px] sm:min-w-full h-[300px] sm:h-[350px]">
+                <ChartContainer config={chartConfig} className="h-full w-full">
+                  <BarChart data={chartData} margin={{ top: 20, right: 20, left: 0, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" />
+                    <XAxis 
+                      dataKey="date" 
+                      tickLine={false} 
+                      axisLine={false} 
+                      tickMargin={10} 
+                      fontSize={12}
                     />
-                    <YAxis
-                      tickLine={false}
-                      axisLine={false}
-                      width={64}
-                      tickFormatter={(value) =>
-                        Number(value || 0).toLocaleString("pt-BR", {
-                          style: "currency",
-                          currency: "BRL",
-                          notation: "compact",
-                        })
-                      }
-                      className="text-[10px] sm:text-xs"
+                    <YAxis 
+                      tickLine={false} 
+                      axisLine={false} 
+                      fontSize={12}
+                      tickFormatter={(value) => 
+                        new Intl.NumberFormat("pt-BR", { notation: "compact", compactDisplay: "short" }).format(value)
+                      } 
                     />
-                    <ChartTooltip
-                      cursor={{ fill: "hsl(var(--muted)/0.3)" }}
-                      content={
-                        <ChartTooltipContent
-                          formatter={(value, name) => {
-                            const labels: Record<string, string> = {
-                              entradas: "Receitas",
-                              saidas: "Despesas",
-                              saldo: "Saldo",
-                            };
-                            return (
-                              <span className="font-mono">
-                                {labels[name as string] || String(name)}:{" "}
-                                {formatCurrency(Number(value))}
-                              </span>
-                            );
-                          }}
-                        />
-                      }
+                    <ChartTooltip 
+                      cursor={{ fill: "hsl(var(--muted)/0.4)" }} 
+                      content={<ChartTooltipContent indicator="dashed" />} 
                     />
-                    <Bar dataKey="entradas" fill="hsl(var(--chart-1))" radius={[4, 4, 0, 0]} />
-                    <Bar dataKey="saidas" fill="hsl(var(--chart-2))" radius={[4, 4, 0, 0]} />
-                    <Bar dataKey="saldo" fill="hsl(var(--chart-3))" radius={[4, 4, 0, 0]} />
+                    <Bar dataKey="entradas" fill="hsl(var(--chart-1))" radius={[4, 4, 0, 0]} maxBarSize={40} />
+                    <Bar dataKey="saidas" fill="hsl(var(--chart-2))" radius={[4, 4, 0, 0]} maxBarSize={40} />
                   </BarChart>
                 </ChartContainer>
               </div>
             </div>
-
-            <p className="mt-2 text-[11px] text-muted-foreground sm:hidden">
-              Dica: arraste para o lado para ver melhor o gráfico.
-            </p>
           </CardContent>
         </Card>
 
-        {/* ALERTAS DE ESTOQUE */}
-        <Card className={lowStockProducts.length > 0 ? "border-amber-500/50 h-full" : "h-full"}>
+        {/* ALERTAS DE ESTOQUE - Ocupa 3 colunas no desktop */}
+        <Card className={`md:col-span-3 shadow-sm flex flex-col ${lowStockProducts.length > 0 ? "border-amber-200" : ""}`}>
           <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium text-foreground">
-              Alertas de Estoque
-            </CardTitle>
-            <AlertTriangle
-              className={`h-4 w-4 ${
-                lowStockProducts.length > 0 ? "text-amber-500" : "text-muted-foreground"
-              }`}
-            />
+            <CardTitle className="text-lg font-medium">Alertas de Estoque</CardTitle>
+            <AlertTriangle className={`h-5 w-5 ${lowStockProducts.length > 0 ? "text-amber-500" : "text-muted-foreground/30"}`} />
           </CardHeader>
-
-          <CardContent>
-            <div className="flex items-baseline gap-2 mb-4">
-              <span className="text-3xl font-bold">{lowStockProducts.length}</span>
-              <span className="text-sm text-muted-foreground">abaixo do mínimo</span>
-            </div>
-
-            <div className="space-y-3">
-              {lowStockProducts.slice(0, 5).map((product) => (
-                <div
-                  key={product.id}
-                  className="flex items-center justify-between text-sm border-b pb-2 last:border-0"
-                >
-                  <span className="font-medium truncate max-w-[160px]">{product.name}</span>
-                  <Badge variant="outline" className="text-amber-600 border-amber-200 bg-amber-50">
-                    Restam: {product.stock}
-                  </Badge>
+          <CardContent className="flex-1 overflow-auto max-h-[350px]">
+            {lowStockProducts.length === 0 ? (
+              <div className="flex flex-col items-center justify-center h-full text-muted-foreground py-8">
+                <Package className="h-10 w-10 mb-2 opacity-20" />
+                <p className="text-sm">Estoque saudável!</p>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <div className="bg-amber-50 text-amber-800 text-xs px-3 py-2 rounded-md border border-amber-100 mb-2">
+                  <strong>{lowStockProducts.length} produtos</strong> estão abaixo do estoque mínimo.
                 </div>
-              ))}
-
-              {lowStockProducts.length === 0 && (
-                <div className="flex flex-col items-center justify-center h-32 text-muted-foreground text-sm text-center">
-                  <Package className="h-8 w-8 mb-2 opacity-20" />
-                  <p>Estoque saudável!</p>
-                </div>
-              )}
-
-              {lowStockProducts.length > 5 && (
-                <p className="text-xs text-center text-muted-foreground pt-2">
-                  + {lowStockProducts.length - 5} outros produtos
-                </p>
-              )}
-            </div>
+                {lowStockProducts.map((product) => (
+                  <div key={product.id} className="flex items-center justify-between py-2 border-b last:border-0">
+                    <div className="min-w-0">
+                      <p className="font-medium text-sm truncate">{product.name}</p>
+                      <p className="text-xs text-muted-foreground">Mínimo: {product.min_stock ?? 5}</p>
+                    </div>
+                    <Badge variant="outline" className="text-amber-600 bg-white border-amber-200 whitespace-nowrap">
+                      Restam: {product.stock}
+                    </Badge>
+                  </div>
+                ))}
+              </div>
+            )}
           </CardContent>
         </Card>
       </div>
