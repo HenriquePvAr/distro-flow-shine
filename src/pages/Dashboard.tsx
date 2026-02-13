@@ -11,6 +11,8 @@ import {
   Lock,
   Loader2,
   WifiOff,
+  Calendar,
+  Filter
 } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -20,7 +22,7 @@ import {
   ChartTooltipContent,
   type ChartConfig,
 } from "@/components/ui/chart";
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, ResponsiveContainer } from "recharts";
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid } from "recharts";
 import {
   Select,
   SelectContent,
@@ -42,10 +44,11 @@ import { ptBR } from "date-fns/locale";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { supabase } from "@/integrations/supabase/client";
 
+// --- CONFIGURAÇÃO DO GRÁFICO ---
 const chartConfig = {
-  entradas: { label: "Receitas", color: "hsl(var(--chart-1))" },
-  saidas: { label: "Despesas", color: "hsl(var(--chart-2))" },
-  saldo: { label: "Saldo", color: "hsl(var(--chart-3))" },
+  entradas: { label: "Receitas", color: "#10b981" }, // Emerald 500
+  saidas: { label: "Despesas", color: "#ef4444" },   // Red 500
+  saldo: { label: "Saldo", color: "#3b82f6" },       // Blue 500
 } satisfies ChartConfig;
 
 type Period = "7d" | "30d" | "month";
@@ -81,6 +84,7 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
 
+  // --- MONITORA CONEXÃO ---
   useEffect(() => {
     const handleStatusChange = () => setIsOnline(navigator.onLine);
     window.addEventListener("online", handleStatusChange);
@@ -91,29 +95,26 @@ export default function Dashboard() {
     };
   }, []);
 
+  // --- INTERVALO DE DATAS ---
   const dateRange = useMemo(() => {
     const now = new Date();
     switch (period) {
-      case "7d":
-        return { start: subDays(now, 6), end: now };
-      case "30d":
-        return { start: subDays(now, 29), end: now };
-      case "month":
-        return { start: startOfMonth(now), end: endOfMonth(now) };
+      case "7d": return { start: subDays(now, 6), end: now };
+      case "30d": return { start: subDays(now, 29), end: now };
+      case "month": return { start: startOfMonth(now), end: endOfMonth(now) };
     }
   }, [period]);
 
+  // --- CARREGAR DADOS ---
   useEffect(() => {
     let cancelled = false;
 
     async function fetchData() {
       setLoadError(null);
-
       if (!navigator.onLine) {
         setLoading(false);
         return;
       }
-
       setLoading(true);
       try {
         const { data: finData, error: finError } = await supabase
@@ -136,19 +137,18 @@ export default function Dashboard() {
           setProducts((prodData as Product[]) || []);
         }
       } catch (error: any) {
-        console.error("Erro ao carregar dashboard:", error);
-        if (!cancelled) setLoadError(error?.message || "Erro ao carregar dados.");
+        console.error("Erro dashboard:", error);
+        if (!cancelled) setLoadError(error?.message || "Erro ao carregar.");
       } finally {
         if (!cancelled) setLoading(false);
       }
     }
 
     fetchData();
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, [isOnline, dateRange.start, dateRange.end]);
 
+  // --- CÁLCULOS ---
   const filteredTransactions = useMemo(() => {
     return transactions.filter((t) => {
       if (!t.due_date) return false;
@@ -162,275 +162,262 @@ export default function Dashboard() {
     [filteredTransactions]
   );
 
-  const totalRevenue = useMemo(() => {
-    return paidTransactions
-      .filter((t) => t.type === "receivable")
-      .reduce((sum, t) => sum + Number(t.total_amount || 0), 0);
-  }, [paidTransactions]);
+  const totalRevenue = useMemo(() => 
+    paidTransactions.filter((t) => t.type === "receivable")
+      .reduce((sum, t) => sum + Number(t.total_amount || 0), 0)
+  , [paidTransactions]);
 
-  const totalExpenses = useMemo(() => {
-    return paidTransactions
-      .filter((t) => t.type === "payable")
-      .reduce((sum, t) => sum + Number(t.total_amount || 0), 0);
-  }, [paidTransactions]);
+  const totalExpenses = useMemo(() => 
+    paidTransactions.filter((t) => t.type === "payable")
+      .reduce((sum, t) => sum + Number(t.total_amount || 0), 0)
+  , [paidTransactions]);
 
   const netProfit = totalRevenue - totalExpenses;
 
-  const inventoryValue = useMemo(() => {
-    return products.reduce(
-      (sum, p) => sum + Number(p.cost_price || 0) * Number(p.stock || 0),
-      0
-    );
-  }, [products]);
+  const inventoryValue = useMemo(() => 
+    products.reduce((sum, p) => sum + Number(p.cost_price || 0) * Number(p.stock || 0), 0)
+  , [products]);
 
-  const lowStockProducts = useMemo(() => {
-    return products.filter(
-      (p) => Number(p.stock || 0) <= Number(p.min_stock ?? 5)
-    );
-  }, [products]);
+  const lowStockProducts = useMemo(() => 
+    products.filter((p) => Number(p.stock || 0) <= Number(p.min_stock ?? 5))
+  , [products]);
 
   const chartData = useMemo(() => {
     const days = eachDayOfInterval({ start: dateRange.start, end: dateRange.end });
-
     return days.map((day) => {
       const dayKey = format(day, "yyyy-MM-dd");
-
-      const dayTrans = paidTransactions.filter((t) => {
-        if (!t.due_date) return false;
-        return format(parseISO(t.due_date), "yyyy-MM-dd") === dayKey;
-      });
-
-      const dayRevenue = dayTrans
-        .filter((t) => t.type === "receivable")
-        .reduce((sum, t) => sum + Number(t.total_amount || 0), 0);
-
-      const dayExpenses = dayTrans
-        .filter((t) => t.type === "payable")
-        .reduce((sum, t) => sum + Number(t.total_amount || 0), 0);
-
+      const dayTrans = paidTransactions.filter((t) => 
+        t.due_date && format(parseISO(t.due_date), "yyyy-MM-dd") === dayKey
+      );
+      const rev = dayTrans.filter(t => t.type === "receivable").reduce((s, t) => s + Number(t.total_amount), 0);
+      const exp = dayTrans.filter(t => t.type === "payable").reduce((s, t) => s + Number(t.total_amount), 0);
       return {
         date: format(day, "dd/MM", { locale: ptBR }),
-        entradas: dayRevenue,
-        saidas: dayExpenses,
-        saldo: dayRevenue - dayExpenses,
+        entradas: rev,
+        saidas: exp,
+        saldo: rev - exp,
       };
     });
   }, [paidTransactions, dateRange]);
 
+  // --- RENDERIZAÇÃO ---
   if (loading) {
     return (
-      <div className="flex h-[80vh] items-center justify-center">
+      <div className="flex h-[80vh] items-center justify-center flex-col gap-4">
         <Loader2 className="h-10 w-10 animate-spin text-primary" />
+        <p className="text-sm text-muted-foreground animate-pulse">Atualizando dados...</p>
       </div>
     );
   }
 
+  // Componente de Card KPI (Mobile First: 100% width)
   const KpiCard = ({
     title,
     icon,
     value,
     sub,
     valueClassName,
-    cardClassName,
+    bgClass,
   }: {
     title: string;
     icon: React.ReactNode;
     value: string;
     sub: string;
     valueClassName?: string;
-    cardClassName?: string;
+    bgClass?: string;
   }) => (
-    <Card className={cardClassName}>
-      <CardHeader className="flex flex-row items-center justify-between pb-2 space-y-0">
-        <CardTitle className="text-sm font-medium text-muted-foreground leading-tight">
-          {title}
-        </CardTitle>
-        <div className="shrink-0">{icon}</div>
-      </CardHeader>
-      <CardContent>
-        <div className={`text-2xl font-bold ${valueClassName ?? "text-foreground"}`}>
-          {value}
+    <Card className={`border-none shadow-sm ${bgClass || "bg-white"}`}>
+      <CardContent className="p-4 flex items-center justify-between">
+        <div className="space-y-1">
+          <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">{title}</p>
+          <div className={`text-2xl font-bold ${valueClassName || "text-gray-900"}`}>
+            {value}
+          </div>
+          <p className="text-[10px] text-muted-foreground/80">{sub}</p>
         </div>
-        <p className="text-xs text-muted-foreground mt-1">{sub}</p>
+        <div className="h-10 w-10 rounded-full bg-white/50 flex items-center justify-center shadow-sm">
+          {icon}
+        </div>
       </CardContent>
     </Card>
   );
 
   return (
-    <div className="space-y-6 animate-in fade-in duration-500 p-4 pb-24 md:p-8">
-      {/* HEADER */}
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex items-center gap-3">
-          <div className="p-2.5 rounded-xl bg-primary/10">
-            <LayoutDashboard className="h-6 w-6 text-primary" />
-          </div>
-          <div>
-            <h1 className="text-2xl font-bold text-foreground tracking-tight">
-              Dashboard
-            </h1>
-            <p className="text-sm text-muted-foreground">
-              Visão geral do seu negócio
-            </p>
-          </div>
+    <div className="min-h-full bg-slate-50/50 pb-20">
+      
+      {/* HEADER FIXO MOBILE */}
+      <div className="sticky top-0 bg-white/80 backdrop-blur-md border-b z-10 px-4 py-3 flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <LayoutDashboard className="h-5 w-5 text-primary" />
+          <span className="font-bold text-lg">Visão Geral</span>
         </div>
-
-        <Select value={period} onValueChange={(v) => setPeriod(v as Period)}>
-          <SelectTrigger className="w-full sm:w-[180px]">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="7d">Últimos 7 dias</SelectItem>
-            <SelectItem value="30d">Últimos 30 dias</SelectItem>
-            <SelectItem value="month">Este mês</SelectItem>
-          </SelectContent>
-        </Select>
+        <div className="flex items-center gap-2">
+           {!isOnline && <WifiOff className="h-4 w-4 text-destructive animate-pulse" />}
+           
+           <Select value={period} onValueChange={(v) => setPeriod(v as Period)}>
+             <SelectTrigger className="h-8 w-[130px] text-xs bg-slate-100 border-none">
+               <Calendar className="h-3 w-3 mr-2 text-muted-foreground"/>
+               <SelectValue />
+             </SelectTrigger>
+             <SelectContent>
+               <SelectItem value="7d">7 dias</SelectItem>
+               <SelectItem value="30d">30 dias</SelectItem>
+               <SelectItem value="month">Este mês</SelectItem>
+             </SelectContent>
+           </Select>
+        </div>
       </div>
 
-      {!isOnline && (
-        <Alert variant="destructive" className="bg-red-50 text-red-900 border-red-200">
-          <WifiOff className="h-4 w-4" />
-          <AlertTitle>Modo Offline</AlertTitle>
-          <AlertDescription>
-            Você está sem internet. Os dados exibidos podem estar desatualizados.
-          </AlertDescription>
-        </Alert>
-      )}
-
-      {loadError && (
-        <Alert variant="destructive">
-          <AlertTriangle className="h-4 w-4" />
-          <AlertTitle>Erro</AlertTitle>
-          <AlertDescription>{loadError}</AlertDescription>
-        </Alert>
-      )}
-
-      {/* KPI GRID - Responsivo (2 colunas no mobile, 4 no desktop) */}
-      <div className="grid gap-4 grid-cols-2 lg:grid-cols-4">
-        <KpiCard
-          title="Receita"
-          icon={<DollarSign className="h-4 w-4 text-emerald-500" />}
-          value={formatCurrency(totalRevenue)}
-          sub="Total recebido"
-          valueClassName="text-emerald-600"
-        />
-
-        <KpiCard
-          title="Despesas"
-          icon={<TrendingDown className="h-4 w-4 text-rose-500" />}
-          value={formatCurrency(totalExpenses)}
-          sub="Total pago"
-          valueClassName="text-rose-600"
-        />
-
-        {isAdmin ? (
-          <KpiCard
-            title="Lucro Líquido"
-            icon={
-              netProfit >= 0 ? (
-                <TrendingUp className="h-4 w-4 text-emerald-500" />
-              ) : (
-                <TrendingDown className="h-4 w-4 text-rose-500" />
-              )
-            }
-            value={formatCurrency(netProfit)}
-            sub="Receita - Despesas"
-            cardClassName={netProfit >= 0 ? "border-emerald-200 bg-emerald-50/30" : "border-rose-200 bg-rose-50/30"}
-            valueClassName={netProfit >= 0 ? "text-emerald-700" : "text-rose-700"}
-          />
-        ) : (
-          <KpiCard
-            title="Lucro"
-            icon={<Lock className="h-4 w-4 text-muted-foreground" />}
-            value="••••••"
-            sub="Acesso restrito"
-            valueClassName="text-muted-foreground"
-          />
+      <div className="p-4 space-y-4">
+        
+        {/* ALERTA DE ERRO */}
+        {loadError && (
+          <Alert variant="destructive" className="bg-red-50 border-red-100">
+            <AlertTriangle className="h-4 w-4" />
+            <AlertTitle>Atenção</AlertTitle>
+            <AlertDescription>{loadError}</AlertDescription>
+          </Alert>
         )}
 
-        <KpiCard
-          title="Em Estoque"
-          icon={<Package className="h-4 w-4 text-blue-500" />}
-          value={formatCurrency(inventoryValue)}
-          sub="Valor de custo"
-          valueClassName="text-blue-600"
-        />
-      </div>
+        {/* CARDS DE KPI (Vertical Stack no Mobile) */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+          
+          <KpiCard
+            title="Receitas"
+            value={formatCurrency(totalRevenue)}
+            sub="Vendas e recebimentos"
+            icon={<TrendingUp className="h-5 w-5 text-emerald-600" />}
+            valueClassName="text-emerald-700"
+            bgClass="bg-emerald-50/50 border border-emerald-100"
+          />
 
-      {/* GRÁFICOS E ALERTAS */}
-      <div className="grid gap-4 md:grid-cols-7">
-        
-        {/* GRÁFICO - Ocupa 4 colunas no desktop */}
-        <Card className="md:col-span-4 shadow-sm">
-          <CardHeader>
-            <CardTitle className="text-lg">Fluxo de Caixa</CardTitle>
+          <KpiCard
+            title="Despesas"
+            value={formatCurrency(totalExpenses)}
+            sub="Contas pagas"
+            icon={<TrendingDown className="h-5 w-5 text-rose-600" />}
+            valueClassName="text-rose-700"
+            bgClass="bg-rose-50/50 border border-rose-100"
+          />
+
+          {isAdmin ? (
+            <KpiCard
+              title="Lucro Líquido"
+              value={formatCurrency(netProfit)}
+              sub="Resultado do período"
+              icon={<DollarSign className="h-5 w-5 text-blue-600" />}
+              valueClassName={netProfit >= 0 ? "text-blue-700" : "text-rose-700"}
+              bgClass="bg-blue-50/50 border border-blue-100"
+            />
+          ) : (
+            <KpiCard
+              title="Lucro"
+              value="R$ •••"
+              sub="Acesso restrito"
+              icon={<Lock className="h-5 w-5 text-gray-400" />}
+              bgClass="bg-gray-50 border border-gray-100"
+            />
+          )}
+
+          <KpiCard
+            title="Estoque (Custo)"
+            value={formatCurrency(inventoryValue)}
+            sub="Valor investido"
+            icon={<Package className="h-5 w-5 text-purple-600" />}
+            valueClassName="text-purple-700"
+            bgClass="bg-purple-50/50 border border-purple-100"
+          />
+        </div>
+
+        {/* GRÁFICO (Com scroll interno para não quebrar a página) */}
+        <Card className="shadow-sm border-slate-100">
+          <CardHeader className="pb-2 border-b border-slate-50">
+            <CardTitle className="text-base font-semibold flex items-center gap-2">
+              <TrendingUp className="h-4 w-4 text-muted-foreground" />
+              Fluxo Financeiro
+            </CardTitle>
           </CardHeader>
-          <CardContent className="pl-0">
-            {/* Scroll horizontal no mobile para o gráfico não ficar espremido */}
-            <div className="overflow-x-auto pb-2">
-              <div className="min-w-[600px] sm:min-w-full h-[300px] sm:h-[350px]">
+          <CardContent className="p-4">
+            <div className="w-full overflow-x-auto pb-2 scrollbar-hide">
+              {/* Define largura mínima para garantir legibilidade das barras */}
+              <div className="h-[250px] min-w-[500px]"> 
                 <ChartContainer config={chartConfig} className="h-full w-full">
-                  <BarChart data={chartData} margin={{ top: 20, right: 20, left: 0, bottom: 0 }}>
-                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" />
+                  <BarChart data={chartData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e5e7eb" />
                     <XAxis 
                       dataKey="date" 
                       tickLine={false} 
                       axisLine={false} 
                       tickMargin={10} 
-                      fontSize={12}
+                      fontSize={11}
+                      tick={{ fill: '#6b7280' }}
                     />
                     <YAxis 
                       tickLine={false} 
                       axisLine={false} 
-                      fontSize={12}
+                      fontSize={11}
+                      tick={{ fill: '#6b7280' }}
                       tickFormatter={(value) => 
                         new Intl.NumberFormat("pt-BR", { notation: "compact", compactDisplay: "short" }).format(value)
                       } 
                     />
                     <ChartTooltip 
-                      cursor={{ fill: "hsl(var(--muted)/0.4)" }} 
-                      content={<ChartTooltipContent indicator="dashed" />} 
+                      cursor={{ fill: "rgba(0,0,0,0.05)" }} 
+                      content={<ChartTooltipContent indicator="dot" className="bg-white border shadow-lg" />} 
                     />
-                    <Bar dataKey="entradas" fill="hsl(var(--chart-1))" radius={[4, 4, 0, 0]} maxBarSize={40} />
-                    <Bar dataKey="saidas" fill="hsl(var(--chart-2))" radius={[4, 4, 0, 0]} maxBarSize={40} />
+                    <Bar dataKey="entradas" fill={chartConfig.entradas.color} radius={[4, 4, 0, 0]} maxBarSize={30} />
+                    <Bar dataKey="saidas" fill={chartConfig.saidas.color} radius={[4, 4, 0, 0]} maxBarSize={30} />
                   </BarChart>
                 </ChartContainer>
               </div>
             </div>
+            <p className="text-[10px] text-center text-muted-foreground mt-2 flex items-center justify-center gap-1">
+               <span className="inline-block w-1 h-1 rounded-full bg-slate-400"></span>
+               Deslize o gráfico para ver mais dias
+            </p>
           </CardContent>
         </Card>
 
-        {/* ALERTAS DE ESTOQUE - Ocupa 3 colunas no desktop */}
-        <Card className={`md:col-span-3 shadow-sm flex flex-col ${lowStockProducts.length > 0 ? "border-amber-200" : ""}`}>
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-lg font-medium">Alertas de Estoque</CardTitle>
-            <AlertTriangle className={`h-5 w-5 ${lowStockProducts.length > 0 ? "text-amber-500" : "text-muted-foreground/30"}`} />
-          </CardHeader>
-          <CardContent className="flex-1 overflow-auto max-h-[350px]">
-            {lowStockProducts.length === 0 ? (
-              <div className="flex flex-col items-center justify-center h-full text-muted-foreground py-8">
-                <Package className="h-10 w-10 mb-2 opacity-20" />
-                <p className="text-sm">Estoque saudável!</p>
-              </div>
-            ) : (
-              <div className="space-y-3">
-                <div className="bg-amber-50 text-amber-800 text-xs px-3 py-2 rounded-md border border-amber-100 mb-2">
-                  <strong>{lowStockProducts.length} produtos</strong> estão abaixo do estoque mínimo.
-                </div>
-                {lowStockProducts.map((product) => (
-                  <div key={product.id} className="flex items-center justify-between py-2 border-b last:border-0">
-                    <div className="min-w-0">
-                      <p className="font-medium text-sm truncate">{product.name}</p>
-                      <p className="text-xs text-muted-foreground">Mínimo: {product.min_stock ?? 5}</p>
-                    </div>
-                    <Badge variant="outline" className="text-amber-600 bg-white border-amber-200 whitespace-nowrap">
-                      Restam: {product.stock}
-                    </Badge>
-                  </div>
-                ))}
-              </div>
-            )}
-          </CardContent>
+        {/* LISTA DE ESTOQUE BAIXO */}
+        <Card className={`shadow-sm border-slate-100 ${lowStockProducts.length > 0 ? "border-amber-200 ring-1 ring-amber-100" : ""}`}>
+           <CardHeader className="pb-2 border-b border-slate-50">
+             <div className="flex items-center justify-between">
+                <CardTitle className="text-base font-semibold flex items-center gap-2">
+                  <AlertTriangle className={`h-4 w-4 ${lowStockProducts.length > 0 ? "text-amber-500" : "text-muted-foreground"}`} />
+                  Alertas de Estoque
+                </CardTitle>
+                {lowStockProducts.length > 0 && (
+                  <Badge variant="outline" className="bg-amber-50 text-amber-700 border-amber-200">
+                    {lowStockProducts.length} itens
+                  </Badge>
+                )}
+             </div>
+           </CardHeader>
+           <CardContent className="p-0">
+             {lowStockProducts.length === 0 ? (
+               <div className="py-8 text-center text-muted-foreground text-sm flex flex-col items-center">
+                 <Package className="h-8 w-8 mb-2 opacity-20" />
+                 Tudo certo com o estoque!
+               </div>
+             ) : (
+               <div className="divide-y divide-slate-100 max-h-[300px] overflow-y-auto">
+                 {lowStockProducts.map(p => (
+                   <div key={p.id} className="p-3 flex items-center justify-between hover:bg-slate-50 transition-colors">
+                      <div className="min-w-0 pr-3">
+                        <p className="font-medium text-sm text-gray-900 truncate">{p.name}</p>
+                        <p className="text-[11px] text-muted-foreground">Mínimo: {p.min_stock ?? 5}</p>
+                      </div>
+                      <div className="flex flex-col items-end">
+                        <span className="text-sm font-bold text-amber-600">{p.stock}</span>
+                        <span className="text-[10px] text-amber-600/80">unid.</span>
+                      </div>
+                   </div>
+                 ))}
+               </div>
+             )}
+           </CardContent>
         </Card>
+
       </div>
     </div>
   );
