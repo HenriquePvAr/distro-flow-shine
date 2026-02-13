@@ -1,3 +1,5 @@
+package com.henrique.distroflow; // <--- ESSA LINHA ERA A QUE FALTAVA
+
 import android.os.Bundle;
 import com.getcapacitor.BridgeActivity;
 
@@ -6,8 +8,10 @@ public class MainActivity extends BridgeActivity {
   public void onCreate(Bundle savedInstanceState) {
     super.onCreate(savedInstanceState);
 
-    // força a recarregar sem cache ao reabrir (debug)
-    this.bridge.getWebView().clearCache(true);
-    this.bridge.getWebView().clearHistory();
+    // Proteção para evitar erro caso a bridge ainda não esteja pronta
+    if (this.bridge != null && this.bridge.getWebView() != null) {
+        this.bridge.getWebView().clearCache(true);
+        this.bridge.getWebView().clearHistory();
+    }
   }
 }
