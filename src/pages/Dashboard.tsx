@@ -213,12 +213,14 @@ export default function Dashboard() {
     title,
     icon,
     value,
+    sub,
     valueClassName,
     bgClass,
   }: {
     title: string;
     icon: React.ReactNode;
     value: string;
+    sub: string;
     valueClassName?: string;
     bgClass?: string;
   }) => (
@@ -229,6 +231,7 @@ export default function Dashboard() {
           <div className={`text-xl font-bold truncate ${valueClassName || "text-gray-900"}`}>
             {value}
           </div>
+          <p className="text-[10px] text-muted-foreground/80">{sub}</p>
         </div>
         <div className="h-8 w-8 rounded-full bg-white/60 flex items-center justify-center shadow-sm shrink-0">
           {icon}
@@ -275,6 +278,7 @@ export default function Dashboard() {
           <KpiCard
             title="Receitas"
             value={formatCurrency(totalRevenue)}
+            sub="Vendas e recebimentos"
             icon={<TrendingUp className="h-4 w-4 text-emerald-600" />}
             valueClassName="text-emerald-700"
             bgClass="bg-emerald-50/50 border border-emerald-100"
@@ -283,6 +287,7 @@ export default function Dashboard() {
           <KpiCard
             title="Despesas"
             value={formatCurrency(totalExpenses)}
+            sub="Contas pagas"
             icon={<TrendingDown className="h-4 w-4 text-rose-600" />}
             valueClassName="text-rose-700"
             bgClass="bg-rose-50/50 border border-rose-100"
@@ -292,6 +297,7 @@ export default function Dashboard() {
             <KpiCard
               title="Lucro Líquido"
               value={formatCurrency(netProfit)}
+              sub="Resultado do período"
               icon={<DollarSign className="h-4 w-4 text-blue-600" />}
               valueClassName={netProfit >= 0 ? "text-blue-700" : "text-rose-700"}
               bgClass="bg-blue-50/50 border border-blue-100"
@@ -300,6 +306,7 @@ export default function Dashboard() {
             <KpiCard
               title="Lucro"
               value="R$ •••"
+              sub="Acesso restrito"
               icon={<Lock className="h-4 w-4 text-gray-400" />}
               bgClass="bg-gray-50 border border-gray-100"
             />
@@ -308,6 +315,7 @@ export default function Dashboard() {
           <KpiCard
             title="Estoque (Custo)"
             value={formatCurrency(inventoryValue)}
+            sub="Valor investido"
             icon={<Package className="h-4 w-4 text-purple-600" />}
             valueClassName="text-purple-700"
             bgClass="bg-purple-50/50 border border-purple-100"
@@ -352,6 +360,10 @@ export default function Dashboard() {
                 </ChartContainer>
               </div>
             </div>
+            <p className="text-[10px] text-center text-muted-foreground mt-2 flex items-center justify-center gap-1">
+               <span className="inline-block w-1 h-1 rounded-full bg-slate-400"></span>
+               Deslize o gráfico para ver mais dias
+            </p>
           </CardContent>
         </Card>
 
