@@ -15,6 +15,7 @@ import {
   User,
   Info,
   ShoppingBasket,
+  BadgePercent,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -58,8 +59,19 @@ type AuditLog = {
 type Sale = {
   id: string;
   customer_id: string | null;
+
+  // operador do sistema (quem clicou e registrou)
   user_id: string | null;
+
+  // vendedor da venda (quem recebe comissão)
+  seller_id: string | null;
+
   total_amount: number | null;
+
+  // comissão (por venda)
+  commission_rate: number | null; // ex: 5 (%)
+  commission_value: number | null; // ex: 12.50
+
   status: string | null;
   payment_method: string | null;
   created_at: string | null;
@@ -163,9 +175,7 @@ export default function Historico() {
   const [customersById, setCustomersById] = useState<Record<string, Customer>>(
     {}
   );
-  const [profilesById, setProfilesById] = useState<Record<string, Profile>>(
-    {}
-  );
+  const [profilesById, setProfilesById] = useState<Record<string, Profile>>({});
 
   const [search, setSearch] = useState("");
   const [chip, setChip] = useState<ChipFilter>("all");
@@ -216,11 +226,15 @@ export default function Historico() {
     if (saleIds.length) {
       const { data: salesData, error: salesErr } = await supabase
         .from("sales")
-        .select("id, customer_id, user_id, total_amount, status, payment_method, created_at")
+        .select(
+          "id, customer_id, user_id, seller_id, total_amount, commission_rate, commission_value, status, payment_method, created_at"
+        )
         .in("id", saleIds);
 
       if (salesErr) {
-        toast.error("Erro ao carregar vendas relacionadas.");
+        toast.error(
+          "Erro ao carregar vendas relacionadas. (confere se sales tem seller_id/commission_*)"
+        );
         setLoading(false);
         return;
       }
@@ -239,9 +253,13 @@ export default function Historico() {
       )
     );
 
-    // 5) users ids (de sales)
+    // 5) users ids (de sales) -> operador + vendedor
     const userIds = Array.from(
-      new Set(sales.map((s) => s.user_id).filter((id): id is string => Boolean(id)))
+      new Set(
+        sales
+          .flatMap((s) => [s.user_id, s.seller_id])
+          .filter((id): id is string => Boolean(id))
+      )
     );
 
     // 6) fetch customers
@@ -264,7 +282,7 @@ export default function Historico() {
       setCustomersById({});
     }
 
-    // 7) fetch profiles (operador)
+    // 7) fetch profiles (operador + vendedor)
     if (userIds.length) {
       const { data: profData, error: profErr } = await supabase
         .from("profiles")
@@ -272,7 +290,7 @@ export default function Historico() {
         .in("id", userIds);
 
       if (profErr) {
-        toast.error("Erro ao carregar operadores.");
+        toast.error("Erro ao carregar operadores/vendedores.");
         setLoading(false);
         return;
       }
@@ -289,6 +307,7 @@ export default function Historico() {
 
   useEffect(() => {
     fetchData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const filtered = useMemo(() => {
@@ -327,8 +346,14 @@ export default function Historico() {
 
       const customerName =
         sale?.customer_id ? customersById[sale.customer_id]?.name : undefined;
+
       const operatorName =
         sale?.user_id ? profilesById[sale.user_id]?.name : undefined;
+
+      const sellerName =
+        sale?.seller_id ? profilesById[sale.seller_id]?.name : undefined;
+
+      const commissionValue = sale?.commission_value ?? undefined;
 
       const hay = [
         l.title,
@@ -338,8 +363,10 @@ export default function Historico() {
         l.actor_name ?? "",
         customerName ?? "",
         operatorName ?? "",
+        sellerName ?? "",
         sale?.payment_method ?? "",
         String(l.amount ?? ""),
+        String(commissionValue ?? ""),
         JSON.stringify(l.metadata ?? {}),
       ]
         .join(" ")
@@ -368,7 +395,8 @@ export default function Historico() {
 
     try {
       if (confirmMode === "cancel") {
-        const saleId = (selected.entity_id || selected.metadata?.sale_id) as string | undefined;
+        const saleId = (selected.entity_id ||
+          selected.metadata?.sale_id) as string | undefined;
         if (!saleId) throw new Error("Não achei o ID da venda para cancelar.");
 
         const { error } = await supabase.rpc("cancel_sale", { p_sale_id: saleId });
@@ -412,7 +440,22 @@ export default function Historico() {
     const operatorName =
       sale?.user_id ? profilesById[sale.user_id]?.name : null;
 
-    return { saleId, sale, customerName, operatorName };
+    const sellerName =
+      sale?.seller_id ? profilesById[sale.seller_id]?.name : null;
+
+    const commissionValue = Number(sale?.commission_value || 0);
+    const commissionRate =
+      sale?.commission_rate != null ? Number(sale.commission_rate) : null;
+
+    return {
+      saleId,
+      sale,
+      customerName,
+      operatorName,
+      sellerName,
+      commissionValue,
+      commissionRate,
+    };
   };
 
   const loadSaleItemsForDetails = async (saleId: string) => {
@@ -429,7 +472,9 @@ export default function Historico() {
 
       const items = (itemsData || []) as SaleItem[];
 
-      const productIds = Array.from(new Set(items.map((i) => i.product_id).filter(Boolean)));
+      const productIds = Array.from(
+        new Set(items.map((i) => i.product_id).filter(Boolean))
+      );
 
       let productsMap: Record<string, string> = {};
       if (productIds.length) {
@@ -454,7 +499,6 @@ export default function Historico() {
         total_price: Number(i.total_price || 0),
       }));
 
-      // ordena por nome
       view.sort((a, b) => a.product_name.localeCompare(b.product_name));
 
       setDetailsItems(view);
@@ -503,7 +547,7 @@ export default function Historico() {
         <Input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="Buscar (cliente, operador, valor...)"
+          placeholder="Buscar (cliente, vendedor, operador, comissão, valor...)"
           className="pl-9 h-10 rounded-full w-full"
         />
       </div>
@@ -607,7 +651,7 @@ export default function Historico() {
                         {operatorName && (
                           <span className="flex items-center gap-1 truncate max-w-[240px]">
                             <User className="h-3.5 w-3.5" />
-                            {operatorName}
+                            Operador: {operatorName}
                           </span>
                         )}
                       </div>
@@ -618,7 +662,7 @@ export default function Historico() {
                         </p>
                       )}
 
-                      <div className="mt-2 flex items-center gap-2">
+                      <div className="mt-2 flex items-center gap-2 flex-wrap">
                         {badgeFor(log.event_type)}
                         {isCancelled && (
                           <Badge
@@ -629,7 +673,10 @@ export default function Historico() {
                           </Badge>
                         )}
                         {sale?.payment_method && (
-                          <Badge variant="outline" className="text-[10px] px-2 py-0.5">
+                          <Badge
+                            variant="outline"
+                            className="text-[10px] px-2 py-0.5"
+                          >
                             {sale.payment_method.toUpperCase()}
                           </Badge>
                         )}
@@ -683,9 +730,7 @@ export default function Historico() {
         <DialogContent className="max-w-sm w-[92vw] rounded-2xl p-4">
           <DialogHeader>
             <DialogTitle className="text-base">
-              {confirmMode === "cancel"
-                ? "Cancelar venda?"
-                : "Apagar do histórico?"}
+              {confirmMode === "cancel" ? "Cancelar venda?" : "Apagar do histórico?"}
             </DialogTitle>
             <DialogDescription className="text-xs">
               {confirmMode === "cancel"
@@ -726,23 +771,29 @@ export default function Historico() {
           {detailsLog ? (
             <div className="space-y-3 pt-2 text-sm">
               {(() => {
-                const { saleId, sale, customerName, operatorName } =
-                  getSaleInfo(detailsLog);
+                const {
+                  saleId,
+                  sale,
+                  customerName,
+                  operatorName,
+                  sellerName,
+                  commissionValue,
+                  commissionRate,
+                } = getSaleInfo(detailsLog);
+
+                const showCommission = commissionValue > 0;
 
                 return (
                   <>
                     <div className="rounded-xl border bg-slate-50 p-3">
                       <div className="flex items-center gap-2 text-slate-700">
                         {getIcon(detailsLog.event_type)}
-                        <span className="font-semibold">
-                          {detailsLog.title}
-                        </span>
+                        <span className="font-semibold">{detailsLog.title}</span>
                       </div>
 
                       <div className="mt-2 text-[12px] text-muted-foreground space-y-1">
                         <div>
-                          <strong>Data:</strong>{" "}
-                          {formatDateTime(detailsLog.created_at)}
+                          <strong>Data:</strong> {formatDateTime(detailsLog.created_at)}
                         </div>
                         <div>
                           <strong>Tipo:</strong> {detailsLog.event_type}
@@ -759,6 +810,7 @@ export default function Historico() {
                     {saleId && (
                       <div className="rounded-xl border p-3">
                         <p className="font-semibold mb-2">Venda</p>
+
                         <div className="text-[12px] text-muted-foreground space-y-1">
                           <div className="break-all">
                             <strong>ID:</strong> {saleId}
@@ -767,15 +819,39 @@ export default function Historico() {
                             <strong>Status:</strong> {sale?.status || "—"}
                           </div>
                           <div>
-                            <strong>Pagamento:</strong>{" "}
-                            {sale?.payment_method || "—"}
+                            <strong>Pagamento:</strong> {sale?.payment_method || "—"}
                           </div>
                           <div>
                             <strong>Cliente:</strong> {customerName || "—"}
                           </div>
                           <div>
+                            <strong>Vendedor:</strong> {sellerName || "—"}
+                          </div>
+                          <div>
                             <strong>Operador:</strong> {operatorName || "—"}
                           </div>
+
+                          <div className="pt-2">
+                            <strong>Comissão:</strong>{" "}
+                            {showCommission
+                              ? `${formatCurrency(commissionValue)}${
+                                  commissionRate != null ? ` (${commissionRate}%)` : ""
+                                }`
+                              : "—"}
+                          </div>
+
+                          {showCommission && (
+                            <div className="mt-2">
+                              <Badge
+                                variant="outline"
+                                className="text-[10px] px-2 py-0.5"
+                              >
+                                <BadgePercent className="h-3 w-3 mr-1" />
+                                Comissão: {formatCurrency(commissionValue)}
+                                {commissionRate != null ? ` (${commissionRate}%)` : ""}
+                              </Badge>
+                            </div>
+                          )}
                         </div>
                       </div>
                     )}
@@ -829,11 +905,11 @@ export default function Historico() {
                             ))}
 
                             <div className="pt-2 border-t flex items-center justify-between text-xs">
-                              <span className="text-muted-foreground">
-                                Total (venda)
-                              </span>
+                              <span className="text-muted-foreground">Total (venda)</span>
                               <span className="font-bold">
-                                {formatCurrency(Number(sale?.total_amount || detailsLog.amount || 0))}
+                                {formatCurrency(
+                                  Number(sale?.total_amount || detailsLog.amount || 0)
+                                )}
                               </span>
                             </div>
                           </div>

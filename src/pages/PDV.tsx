@@ -108,6 +108,7 @@ type OfflineQueueEntry =
       type: "create_sale";
       payload: {
         p_customer_id: string | null;
+        p_seller_id: string | null;
         p_items: Array<{
           product_id: string;
           quantity: number;
@@ -115,9 +116,12 @@ type OfflineQueueEntry =
           total_price: number;
           sale_mode: "unidade" | "caixa" | "kg";
         }>;
-        p_payment_method: string; // "cash|pix|credit|debit|mixed"
+        p_payment_method: string; // cash|pix|credit|debit|mixed|credit_store
         p_discount: number;
         p_surcharge: number;
+        p_sale_type: "vista" | "prazo";
+        p_due_date: string | null; // timestamptz ISO
+        p_commission_rate: number; // 0|5|10
       };
     }
   | any;
@@ -131,7 +135,12 @@ export default function PDV() {
   // --- ESTADOS DA VENDA ---
   const [cart, setCart] = useState<CartItem[]>([]);
   const [selectedCustomerId, setSelectedCustomerId] = useState<string>("padrao");
-  const [selectedSellerId, setSelectedSellerId] = useState<string>("padrao"); // UI mantém
+  const [selectedSellerId, setSelectedSellerId] = useState<string>("padrao");
+
+  // Venda à vista / a prazo + comissão por venda
+  const [saleType, setSaleType] = useState<"vista" | "prazo">("vista");
+  const [dueDate, setDueDate] = useState<string>(""); // YYYY-MM-DD
+  const [commissionRate, setCommissionRate] = useState<number>(0); // 0|5|10
 
   // Valores Extras
   const [globalDiscount, setGlobalDiscount] = useState<string>("");
@@ -186,6 +195,10 @@ export default function PDV() {
   const isPaid = remaining <= 0.01;
   const change = remaining < 0 ? Math.abs(remaining) : 0;
 
+  const commissionValue = useMemo(() => {
+    return totalPayable * (Number(commissionRate || 0) / 100);
+  }, [totalPayable, commissionRate]);
+
   const filteredProducts = useMemo(() => {
     const s = search.toLowerCase();
     return products.filter(
@@ -193,6 +206,17 @@ export default function PDV() {
         p.name.toLowerCase().includes(s) || p.sku?.toLowerCase().includes(s)
     );
   }, [products, search]);
+
+  // Pode finalizar?
+  const canFinish = useMemo(() => {
+    if (cart.length === 0) return false;
+
+    // se quiser OBRIGAR vendedor, descomenta:
+    // if (selectedSellerId === "padrao") return false;
+
+    if (saleType === "vista") return isPaid;
+    return !!dueDate; // prazo exige vencimento
+  }, [cart.length, saleType, isPaid, dueDate, selectedSellerId]);
 
   // --------------------------
   // OFFLINE QUEUE
@@ -351,7 +375,11 @@ export default function PDV() {
           newMode = "unidade";
         }
 
-        return { ...item, saleMode: newMode, quantity: newMode === "kg" ? 0.1 : 1 };
+        return {
+          ...item,
+          saleMode: newMode,
+          quantity: newMode === "kg" ? 0.1 : 1,
+        };
       })
     );
   };
@@ -387,6 +415,7 @@ export default function PDV() {
   // --------------------------
   const buildRpcPayload = () => {
     const customerId = selectedCustomerId === "padrao" ? null : selectedCustomerId;
+    const sellerId = selectedSellerId === "padrao" ? null : selectedSellerId;
 
     const items = cart.map((i) => {
       const unitPrice =
@@ -401,18 +430,32 @@ export default function PDV() {
       };
     });
 
-    const paymentMethod =
-      payments.length <= 1 ? mapPayMethod(payments[0]?.method || "Dinheiro") : "mixed";
-
     const discount = parseBRNumber(globalDiscount);
     const surcharge = parseBRNumber(globalSurcharge);
 
+    // pagamento: se for prazo, ignora pagamentos e força credit_store (ou outro que você quiser)
+    const paymentMethod =
+      saleType === "prazo"
+        ? "credit_store"
+        : payments.length <= 1
+        ? mapPayMethod(payments[0]?.method || "Dinheiro")
+        : "mixed";
+
+    const dueISO =
+      saleType === "prazo" && dueDate
+        ? new Date(`${dueDate}T12:00:00.000Z`).toISOString()
+        : null;
+
     return {
       p_customer_id: customerId,
+      p_seller_id: sellerId,
       p_items: items,
       p_payment_method: paymentMethod,
       p_discount: discount,
       p_surcharge: surcharge,
+      p_sale_type: saleType,
+      p_due_date: dueISO,
+      p_commission_rate: Number(commissionRate || 0),
     };
   };
 
@@ -421,11 +464,17 @@ export default function PDV() {
   // --------------------------
   const finishSuccess = (payload: any) => {
     const customer = customers.find((c) => c.id === selectedCustomerId) || null;
+    const seller = sellers.find((s) => s.id === selectedSellerId) || null;
 
     setLastSaleData({
       total: totalPayable,
       change,
       customer,
+      seller,
+      commissionRate,
+      commissionValue,
+      saleType,
+      dueDate,
       items: cart,
       payload,
     });
@@ -444,6 +493,10 @@ export default function PDV() {
     setCurrentPayAmount("");
     setSelectedCustomerId("padrao");
     setSelectedSellerId("padrao");
+
+    setSaleType("vista");
+    setDueDate("");
+    setCommissionRate(0);
   };
 
   const saveOffline = (entry: OfflineQueueEntry) => {
@@ -470,7 +523,17 @@ export default function PDV() {
 
   const handleFinish = async () => {
     if (cart.length === 0) return toast.error("Carrinho vazio");
-    if (!isPaid) return toast.error("Pagamento incompleto!");
+
+    // se quiser obrigar vendedor:
+    // if (selectedSellerId === "padrao") return toast.error("Selecione um vendedor");
+
+    if (saleType === "vista" && !isPaid) {
+      return toast.error("Pagamento incompleto para venda à vista!");
+    }
+
+    if (saleType === "prazo" && !dueDate) {
+      return toast.error("Defina a data de vencimento (venda a prazo).");
+    }
 
     setProcessing(true);
 
@@ -490,7 +553,6 @@ export default function PDV() {
       console.error(err);
       toast.error("Erro ao salvar online. Salvando offline...");
 
-      // fallback offline com payload correto (inclui sale_mode + desconto/acréscimo)
       const payload = buildRpcPayload();
       saveOffline({ type: "create_sale", payload });
     } finally {
@@ -849,6 +911,71 @@ export default function PDV() {
                   value="pay"
                   className="flex-1 overflow-y-auto px-6 py-4 flex flex-col"
                 >
+                  {/* À vista / A prazo + Comissão */}
+                  <div className="bg-white p-3 rounded-xl border mb-4 space-y-3">
+                    <div className="flex gap-2">
+                      <Button
+                        variant={saleType === "vista" ? "default" : "outline"}
+                        className="flex-1"
+                        onClick={() => {
+                          setSaleType("vista");
+                        }}
+                      >
+                        À Vista
+                      </Button>
+                      <Button
+                        variant={saleType === "prazo" ? "default" : "outline"}
+                        className="flex-1"
+                        onClick={() => {
+                          setSaleType("prazo");
+                          // limpa pagamentos (prazo não usa pagamento agora)
+                          setPayments([]);
+                          setCurrentPayAmount("");
+                        }}
+                      >
+                        A Prazo
+                      </Button>
+                    </div>
+
+                    {saleType === "prazo" && (
+                      <div className="space-y-1">
+                        <label className="text-xs font-semibold text-muted-foreground">
+                          Data de Pagamento (Vencimento)
+                        </label>
+                        <Input
+                          type="date"
+                          value={dueDate}
+                          onChange={(e) => setDueDate(e.target.value)}
+                        />
+                      </div>
+                    )}
+
+                    <div className="pt-2 border-t space-y-2">
+                      <label className="text-xs font-semibold text-muted-foreground">
+                        Comissão nesta venda
+                      </label>
+                      <div className="flex gap-2">
+                        {[0, 5, 10].map((p) => (
+                          <Button
+                            key={p}
+                            variant={commissionRate === p ? "default" : "secondary"}
+                            className="flex-1"
+                            onClick={() => setCommissionRate(p)}
+                          >
+                            {p}%
+                          </Button>
+                        ))}
+                      </div>
+
+                      <div className="text-xs text-right text-muted-foreground">
+                        Comissão:{" "}
+                        <span className="font-semibold">
+                          {formatCurrency(commissionValue)}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
                   <div className="grid grid-cols-3 gap-2 mb-6">
                     <div className="bg-muted/30 p-3 rounded-lg border text-center">
                       <div className="text-[10px] uppercase text-muted-foreground font-bold">
@@ -890,104 +1017,118 @@ export default function PDV() {
                     </div>
                   </div>
 
-                  {payments.length > 0 && (
-                    <div className="mb-6 space-y-2">
-                      <label className="text-xs font-medium text-muted-foreground uppercase">
-                        Pagamentos Realizados
-                      </label>
-
-                      {payments.map((p) => (
-                        <div
-                          key={p.id}
-                          className="flex justify-between items-center bg-white border p-2 rounded-md shadow-sm"
-                        >
-                          <div className="flex items-center gap-2">
-                            <Badge variant="outline">{p.method}</Badge>
-                            <span className="font-bold">{formatCurrency(p.amount)}</span>
-                          </div>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-6 w-6 text-muted-foreground hover:text-destructive"
-                            onClick={() => removePayment(p.id)}
-                          >
-                            <X className="h-4 w-4" />
-                          </Button>
-                        </div>
-                      ))}
+                  {/* Se for prazo, não mostra blocos de pagamento */}
+                  {saleType === "prazo" ? (
+                    <div className="text-center py-6 text-muted-foreground bg-muted/20 rounded-lg border">
+                      <p className="font-medium">Venda a prazo selecionada</p>
+                      <p className="text-sm">
+                        O estoque será baixado e o financeiro ficará <b>pendente</b> até o vencimento.
+                      </p>
                     </div>
-                  )}
+                  ) : (
+                    <>
+                      {payments.length > 0 && (
+                        <div className="mb-6 space-y-2">
+                          <label className="text-xs font-medium text-muted-foreground uppercase">
+                            Pagamentos Realizados
+                          </label>
 
-                  {remaining > 0.01 && (
-                    <div className="space-y-4 bg-muted/20 p-4 rounded-xl border">
-                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                        {["Dinheiro", "Pix", "Cartão Crédito", "Cartão Débito"].map(
-                          (method) => (
-                            <Button
-                              key={method}
-                              variant={currentPayMethod === method ? "default" : "outline"}
-                              className={`h-9 text-xs ${
-                                currentPayMethod === method ? "ring-2 ring-offset-1" : ""
-                              }`}
-                              onClick={() => setCurrentPayMethod(method)}
+                          {payments.map((p) => (
+                            <div
+                              key={p.id}
+                              className="flex justify-between items-center bg-white border p-2 rounded-md shadow-sm"
                             >
-                              {method === "Dinheiro" && <Banknote className="h-3 w-3 mr-1" />}
-                              {method === "Pix" && <QrCode className="h-3 w-3 mr-1" />}
-                              {method.includes("Cartão") && (
-                                <CreditCard className="h-3 w-3 mr-1" />
-                              )}
-                              {method}
-                            </Button>
-                          )
-                        )}
-                      </div>
-
-                      <div className="flex gap-2">
-                        <div className="relative flex-1">
-                          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground font-bold">
-                            R$
-                          </span>
-                          <Input
-                            className="pl-10 h-12 text-xl font-bold bg-white"
-                            placeholder="0,00"
-                            inputMode="decimal"
-                            value={currentPayAmount}
-                            onChange={(e) => setCurrentPayAmount(e.target.value)}
-                          />
+                              <div className="flex items-center gap-2">
+                                <Badge variant="outline">{p.method}</Badge>
+                                <span className="font-bold">{formatCurrency(p.amount)}</span>
+                              </div>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-6 w-6 text-muted-foreground hover:text-destructive"
+                                onClick={() => removePayment(p.id)}
+                              >
+                                <X className="h-4 w-4" />
+                              </Button>
+                            </div>
+                          ))}
                         </div>
+                      )}
 
-                        {remaining > 0 && (
-                          <Button
-                            variant="secondary"
-                            className="h-12 w-14 border"
-                            onClick={autoFillRemaining}
-                          >
-                            <Calculator className="h-5 w-5" />
-                          </Button>
-                        )}
+                      {remaining > 0.01 && (
+                        <div className="space-y-4 bg-muted/20 p-4 rounded-xl border">
+                          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                            {["Dinheiro", "Pix", "Cartão Crédito", "Cartão Débito"].map(
+                              (method) => (
+                                <Button
+                                  key={method}
+                                  variant={currentPayMethod === method ? "default" : "outline"}
+                                  className={`h-9 text-xs ${
+                                    currentPayMethod === method ? "ring-2 ring-offset-1" : ""
+                                  }`}
+                                  onClick={() => setCurrentPayMethod(method)}
+                                >
+                                  {method === "Dinheiro" && (
+                                    <Banknote className="h-3 w-3 mr-1" />
+                                  )}
+                                  {method === "Pix" && <QrCode className="h-3 w-3 mr-1" />}
+                                  {method.includes("Cartão") && (
+                                    <CreditCard className="h-3 w-3 mr-1" />
+                                  )}
+                                  {method}
+                                </Button>
+                              )
+                            )}
+                          </div>
 
-                        <Button
-                          className="h-12 w-14 bg-emerald-600 hover:bg-emerald-700"
-                          onClick={addPayment}
-                        >
-                          <Plus className="h-6 w-6" />
-                        </Button>
-                      </div>
+                          <div className="flex gap-2">
+                            <div className="relative flex-1">
+                              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground font-bold">
+                                R$
+                              </span>
+                              <Input
+                                className="pl-10 h-12 text-xl font-bold bg-white"
+                                placeholder="0,00"
+                                inputMode="decimal"
+                                value={currentPayAmount}
+                                onChange={(e) => setCurrentPayAmount(e.target.value)}
+                              />
+                            </div>
 
-                      <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-none">
-                        {[10, 20, 50, 100].map((val) => (
-                          <Button
-                            key={val}
-                            variant="outline"
-                            size="sm"
-                            className="text-xs whitespace-nowrap bg-white"
-                            onClick={() => setCurrentPayAmount(val.toString())}
-                          >
-                            R$ {val}
-                          </Button>
-                        ))}
-                      </div>
-                    </div>
+                            {remaining > 0 && (
+                              <Button
+                                variant="secondary"
+                                className="h-12 w-14 border"
+                                onClick={autoFillRemaining}
+                              >
+                                <Calculator className="h-5 w-5" />
+                              </Button>
+                            )}
+
+                            <Button
+                              className="h-12 w-14 bg-emerald-600 hover:bg-emerald-700"
+                              onClick={addPayment}
+                            >
+                              <Plus className="h-6 w-6" />
+                            </Button>
+                          </div>
+
+                          <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-none">
+                            {[10, 20, 50, 100].map((val) => (
+                              <Button
+                                key={val}
+                                variant="outline"
+                                size="sm"
+                                className="text-xs whitespace-nowrap bg-white"
+                                onClick={() => setCurrentPayAmount(val.toString())}
+                              >
+                                R$ {val}
+                              </Button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </>
                   )}
                 </TabsContent>
 
@@ -995,19 +1136,21 @@ export default function PDV() {
                 <div className="p-6 border-t mt-auto bg-white">
                   <Button
                     className={`w-full h-14 text-xl shadow-lg transition-all ${
-                      isPaid ? "bg-emerald-600 hover:bg-emerald-700" : "bg-gray-400"
+                      canFinish ? "bg-emerald-600 hover:bg-emerald-700" : "bg-gray-400"
                     }`}
-                    disabled={!isPaid || processing}
+                    disabled={!canFinish || processing}
                     onClick={handleFinish}
                   >
                     {processing ? (
                       <>
                         <RefreshCw className="mr-2 h-6 w-6 animate-spin" /> Processando...
                       </>
-                    ) : isPaid ? (
+                    ) : canFinish ? (
                       <>
                         <CheckCircle className="mr-2 h-6 w-6" /> CONCLUIR VENDA
                       </>
+                    ) : saleType === "prazo" ? (
+                      <>Defina o vencimento</>
                     ) : (
                       <>Falta {formatCurrency(remaining)}</>
                     )}
@@ -1037,6 +1180,22 @@ export default function PDV() {
               <span>Total</span>
               <span className="font-bold">{formatCurrency(lastSaleData?.total)}</span>
             </div>
+
+            <div className="flex justify-between text-sm">
+              <span>Comissão</span>
+              <span className="font-bold">
+                {Number(lastSaleData?.commissionRate || 0)}% (
+                {formatCurrency(Number(lastSaleData?.commissionValue || 0))})
+              </span>
+            </div>
+
+            {lastSaleData?.saleType === "prazo" && (
+              <div className="flex justify-between text-sm">
+                <span>Vencimento</span>
+                <span className="font-bold">{lastSaleData?.dueDate || "-"}</span>
+              </div>
+            )}
+
             {lastSaleData?.change > 0 && (
               <div className="flex justify-between text-lg text-blue-600 font-bold border-t pt-2">
                 <span>Troco</span>
