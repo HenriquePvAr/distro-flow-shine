@@ -104,25 +104,24 @@ const mapPayMethod = (method: string) => {
   return "cash";
 };
 
-const OFFLINE_QUEUE_KEY = "offline_queue_v2_rpc";
+const OFFLINE_QUEUE_KEY = "offline_queue_v3_create_sale";
 
 type OfflineQueueEntry =
   | {
       type: "create_sale";
       payload: {
         p_customer_id: string | null;
-        p_seller_name: string | null;
+        p_seller_id: string | null;
         p_items: Array<{
-          product_id: string; // ✅ certo pro banco
+          product_id: string;
           quantity: number;
-          unit_price: number; // ✅ certo pro banco
-          total_price: number; // ✅ NOT NULL no banco
+          unit_price: number;
+          total_price: number;
           sale_mode: "unidade" | "caixa" | "kg";
         }>;
         p_payment_method: string;
         p_discount: number;
         p_surcharge: number;
-        p_created_by: string | null;
         p_sale_type: "vista" | "prazo";
         p_due_date: string | null;
         p_commission_rate: number;
@@ -208,7 +207,8 @@ export default function PDV() {
   const filteredProducts = useMemo(() => {
     const s = search.toLowerCase();
     return products.filter(
-      (p) => p.name.toLowerCase().includes(s) || p.sku?.toLowerCase().includes(s)
+      (p) =>
+        p.name.toLowerCase().includes(s) || p.sku?.toLowerCase().includes(s)
     );
   }, [products, search]);
 
@@ -361,29 +361,42 @@ export default function PDV() {
     if (product.stock <= 0) return toast.error("Sem estoque!");
 
     setCart((prev) => {
-      const defaultMode: CartItem["saleMode"] = product.sellsByKg ? "kg" : "unidade";
-      const existing = prev.find((i) => i.id === product.id && i.saleMode === defaultMode);
+      const defaultMode: CartItem["saleMode"] = product.sellsByKg
+        ? "kg"
+        : "unidade";
+      const existing = prev.find(
+        (i) => i.id === product.id && i.saleMode === defaultMode
+      );
 
       const step = defaultMode === "kg" ? 0.1 : 1;
 
       if (existing) {
-        return prev.map((i) => (i === existing ? { ...i, quantity: i.quantity + step } : i));
+        return prev.map((i) =>
+          i === existing ? { ...i, quantity: i.quantity + step } : i
+        );
       }
 
       return [
         ...prev,
-        { ...product, quantity: defaultMode === "kg" ? 0.1 : 1, saleMode: defaultMode },
+        {
+          ...product,
+          quantity: defaultMode === "kg" ? 0.1 : 1,
+          saleMode: defaultMode,
+        },
       ];
     });
 
     toast.success("Adicionado!");
   };
 
-  const removeItem = (index: number) => setCart((prev) => prev.filter((_, i) => i !== index));
+  const removeItem = (index: number) =>
+    setCart((prev) => prev.filter((_, i) => i !== index));
 
   const updateItemQty = (index: number, val: number) => {
     if (val <= 0) return removeItem(index);
-    setCart((prev) => prev.map((item, i) => (i === index ? { ...item, quantity: val } : item)));
+    setCart((prev) =>
+      prev.map((item, i) => (i === index ? { ...item, quantity: val } : item))
+    );
   };
 
   const toggleItemMode = (index: number) => {
@@ -401,7 +414,11 @@ export default function PDV() {
           newMode = "unidade";
         }
 
-        return { ...item, saleMode: newMode, quantity: newMode === "kg" ? 0.1 : 1 };
+        return {
+          ...item,
+          saleMode: newMode,
+          quantity: newMode === "kg" ? 0.1 : 1,
+        };
       })
     );
   };
@@ -415,36 +432,44 @@ export default function PDV() {
 
     setPayments((prev) => [
       ...prev,
-      { id: Math.random().toString(36).slice(2, 11), method: currentPayMethod, amount: val },
+      {
+        id: Math.random().toString(36).slice(2, 11),
+        method: currentPayMethod,
+        amount: val,
+      },
     ]);
 
     setCurrentPayAmount("");
   };
 
-  const removePayment = (id: string) => setPayments((prev) => prev.filter((p) => p.id !== id));
+  const removePayment = (id: string) =>
+    setPayments((prev) => prev.filter((p) => p.id !== id));
 
   const autoFillRemaining = () => {
     if (remaining > 0) setCurrentPayAmount(remaining.toFixed(2));
   };
 
   // --------------------------
-  // PREPARAR PAYLOAD (RPC) ✅ CORRIGIDO PRO SEU BANCO
+  // PREPARAR PAYLOAD (RPC) - COMPATÍVEL COM A FUNÇÃO 1
   // --------------------------
   const buildRpcPayload = () => {
-    const customerId = selectedCustomerId === "padrao" ? null : selectedCustomerId;
+    const customerId =
+      selectedCustomerId === "padrao" ? null : selectedCustomerId;
 
-    const sellerObj = sellers.find((s) => s.id === selectedSellerId);
-    const sellerName = sellerObj ? sellerObj.name : null;
+    const sellerId =
+      selectedSellerId === "padrao" ? null : selectedSellerId;
 
     const items = cart.map((i) => {
       const unitPrice =
-        i.saleMode === "caixa" && i.qtyPerBox ? i.salePrice * i.qtyPerBox : i.salePrice;
+        i.saleMode === "caixa" && i.qtyPerBox
+          ? i.salePrice * i.qtyPerBox
+          : i.salePrice;
 
       return {
-        product_id: i.id, // ✅ certo
+        product_id: i.id,
         quantity: i.quantity,
-        unit_price: unitPrice, // ✅ certo
-        total_price: unitPrice * i.quantity, // ✅ nunca null
+        unit_price: unitPrice,
+        total_price: unitPrice * i.quantity,
         sale_mode: i.saleMode,
       };
     });
@@ -466,15 +491,14 @@ export default function PDV() {
 
     return {
       p_customer_id: customerId,
-      p_seller_name: sellerName,
-      p_items: items,
+      p_seller_id: sellerId,              // ✅ agora é seller_id
+      p_items: items,                      // ✅ agora é product_id/unit_price/total_price
       p_payment_method: paymentMethod,
       p_discount: discount,
       p_surcharge: surcharge,
       p_sale_type: saleType,
       p_due_date: dueISO,
       p_commission_rate: Number(commissionRate || 0),
-      p_created_by: user?.id ?? null,
     };
   };
 
@@ -498,6 +522,7 @@ export default function PDV() {
       payload,
     });
 
+    setProcessing(false);
     setIsCheckoutOpen(false);
     setShowSuccessModal(true);
     resetSale();
@@ -511,6 +536,7 @@ export default function PDV() {
     setCurrentPayAmount("");
     setSelectedCustomerId("padrao");
     setSelectedSellerId("padrao");
+
     setSaleType("vista");
     setDueDate("");
     setCommissionRate(0);
@@ -521,12 +547,15 @@ export default function PDV() {
     q.push(entry);
     writeQueue(q);
 
+    // Atualiza estoque local visualmente
     setProducts((prev) =>
       prev.map((p) => {
         const it = cart.find((c) => c.id === p.id);
         if (!it) return p;
         const deduction =
-          it.saleMode === "caixa" && it.qtyPerBox ? it.quantity * it.qtyPerBox : it.quantity;
+          it.saleMode === "caixa" && it.qtyPerBox
+            ? it.quantity * it.qtyPerBox
+            : it.quantity;
         return { ...p, stock: p.stock - deduction };
       })
     );
@@ -563,6 +592,7 @@ export default function PDV() {
     } catch (err: any) {
       console.error(err);
 
+      // Se está online, mostra erro real do banco
       if (navigator.onLine) {
         toast.error(err?.message || "Erro ao salvar a venda no servidor.");
         return;
@@ -683,11 +713,17 @@ export default function PDV() {
               onClick={handleSync}
               disabled={processing || !isOnline}
             >
-              <RefreshCw className={`h-4 w-4 mr-2 ${processing ? "animate-spin" : ""}`} />
+              <RefreshCw
+                className={`h-4 w-4 mr-2 ${processing ? "animate-spin" : ""}`}
+              />
               {offlineSalesCount}
             </Button>
           )}
-          <div className={`h-3 w-3 rounded-full ${isOnline ? "bg-emerald-500" : "bg-red-500"}`} />
+          <div
+            className={`h-3 w-3 rounded-full ${
+              isOnline ? "bg-emerald-500" : "bg-red-500"
+            }`}
+          />
         </div>
       </header>
 
@@ -715,19 +751,29 @@ export default function PDV() {
       <div className="fixed bottom-0 left-0 right-0 bg-white border-t p-4 shadow-[0_-5px_20px_-5px_rgba(0,0,0,0.1)] z-20 md:pl-64">
         <div className="max-w-7xl mx-auto flex items-center justify-between gap-4">
           <div className="flex flex-col">
-            <span className="text-xs text-muted-foreground font-medium">{cart.length} itens no carrinho</span>
-            <span className="text-2xl font-bold text-gray-900">{formatCurrency(subTotal)}</span>
+            <span className="text-xs text-muted-foreground font-medium">
+              {cart.length} itens no carrinho
+            </span>
+            <span className="text-2xl font-bold text-gray-900">
+              {formatCurrency(subTotal)}
+            </span>
           </div>
 
           <Sheet open={isCheckoutOpen} onOpenChange={setIsCheckoutOpen}>
             <SheetTrigger asChild>
-              <Button size="lg" className="h-12 px-8 text-lg shadow-lg font-bold bg-primary hover:bg-primary/90">
+              <Button
+                size="lg"
+                className="h-12 px-8 text-lg shadow-lg font-bold bg-primary hover:bg-primary/90"
+              >
                 Ver / Pagar
                 <ChevronUp className="ml-2 h-5 w-5" />
               </Button>
             </SheetTrigger>
 
-            <SheetContent side="bottom" className="h-[95vh] sm:h-[90vh] rounded-t-xl flex flex-col p-0 gap-0">
+            <SheetContent
+              side="bottom"
+              className="h-[95vh] sm:h-[90vh] rounded-t-xl flex flex-col p-0 gap-0"
+            >
               <SheetHeader className="px-6 py-4 border-b bg-muted/5">
                 <div className="flex justify-between items-center">
                   <SheetTitle className="text-xl">Checkout</SheetTitle>
@@ -748,7 +794,10 @@ export default function PDV() {
                 </div>
 
                 {/* TAB CARRINHO */}
-                <TabsContent value="cart" className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
+                <TabsContent
+                  value="cart"
+                  className="flex-1 overflow-y-auto px-6 py-4 space-y-4"
+                >
                   {cart.length === 0 ? (
                     <div className="text-center py-10 text-muted-foreground">
                       <ShoppingCart className="h-12 w-12 mx-auto mb-3 opacity-20" />
@@ -756,7 +805,10 @@ export default function PDV() {
                     </div>
                   ) : (
                     cart.map((item, idx) => (
-                      <div key={`${item.id}-${idx}`} className="flex gap-3 py-3 border-b last:border-0 items-center">
+                      <div
+                        key={`${item.id}-${idx}`}
+                        className="flex gap-3 py-3 border-b last:border-0 items-center"
+                      >
                         <div className="flex-1 min-w-0">
                           <div className="font-medium truncate">{item.name}</div>
                           <div className="text-sm text-muted-foreground flex items-center gap-2 mt-1">
@@ -769,7 +821,9 @@ export default function PDV() {
                             <span>
                               x{" "}
                               {formatCurrency(
-                                item.saleMode === "caixa" && item.qtyPerBox ? item.salePrice * item.qtyPerBox : item.salePrice
+                                item.saleMode === "caixa" && item.qtyPerBox
+                                  ? item.salePrice * item.qtyPerBox
+                                  : item.salePrice
                               )}
                             </span>
                           </div>
@@ -780,7 +834,12 @@ export default function PDV() {
                             variant="ghost"
                             size="icon"
                             className="h-8 w-8"
-                            onClick={() => updateItemQty(idx, item.quantity - (item.saleMode === "kg" ? 0.1 : 1))}
+                            onClick={() =>
+                              updateItemQty(
+                                idx,
+                                item.quantity - (item.saleMode === "kg" ? 0.1 : 1)
+                              )
+                            }
                           >
                             <Minus className="h-4 w-4" />
                           </Button>
@@ -791,7 +850,12 @@ export default function PDV() {
                             variant="ghost"
                             size="icon"
                             className="h-8 w-8"
-                            onClick={() => updateItemQty(idx, item.quantity + (item.saleMode === "kg" ? 0.1 : 1))}
+                            onClick={() =>
+                              updateItemQty(
+                                idx,
+                                item.quantity + (item.saleMode === "kg" ? 0.1 : 1)
+                              )
+                            }
                           >
                             <Plus className="h-4 w-4" />
                           </Button>
@@ -800,10 +864,17 @@ export default function PDV() {
                         <div className="text-right min-w-[70px]">
                           <div className="font-bold">
                             {formatCurrency(
-                              (item.saleMode === "caixa" && item.qtyPerBox ? item.salePrice * item.qtyPerBox : item.salePrice) * item.quantity
+                              (item.saleMode === "caixa" && item.qtyPerBox
+                                ? item.salePrice * item.qtyPerBox
+                                : item.salePrice) * item.quantity
                             )}
                           </div>
-                          <Button variant="ghost" size="icon" className="h-6 w-6 text-destructive -mr-2" onClick={() => removeItem(idx)}>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-6 w-6 text-destructive -mr-2"
+                            onClick={() => removeItem(idx)}
+                          >
                             <Trash2 className="h-4 w-4" />
                           </Button>
                         </div>
@@ -815,7 +886,10 @@ export default function PDV() {
                     <div className="grid grid-cols-2 gap-3">
                       <div>
                         <label className="text-xs font-medium mb-1 block">Cliente</label>
-                        <Select value={selectedCustomerId} onValueChange={setSelectedCustomerId}>
+                        <Select
+                          value={selectedCustomerId}
+                          onValueChange={setSelectedCustomerId}
+                        >
                           <SelectTrigger className="h-9">
                             <SelectValue />
                           </SelectTrigger>
@@ -850,22 +924,39 @@ export default function PDV() {
 
                     <div className="grid grid-cols-2 gap-3">
                       <div className="relative">
-                        <label className="text-xs font-medium mb-1 block text-green-600">Desconto (R$)</label>
+                        <label className="text-xs font-medium mb-1 block text-green-600">
+                          Desconto (R$)
+                        </label>
                         <Minus className="absolute left-2 top-8 h-3 w-3 text-green-600" />
-                        <Input className="pl-6 h-9" placeholder="0,00" value={globalDiscount} onChange={(e) => setGlobalDiscount(e.target.value)} />
+                        <Input
+                          className="pl-6 h-9"
+                          placeholder="0,00"
+                          value={globalDiscount}
+                          onChange={(e) => setGlobalDiscount(e.target.value)}
+                        />
                       </div>
 
                       <div className="relative">
-                        <label className="text-xs font-medium mb-1 block text-red-600">Acréscimo (R$)</label>
+                        <label className="text-xs font-medium mb-1 block text-red-600">
+                          Acréscimo (R$)
+                        </label>
                         <Plus className="absolute left-2 top-8 h-3 w-3 text-red-600" />
-                        <Input className="pl-6 h-9" placeholder="0,00" value={globalSurcharge} onChange={(e) => setGlobalSurcharge(e.target.value)} />
+                        <Input
+                          className="pl-6 h-9"
+                          placeholder="0,00"
+                          value={globalSurcharge}
+                          onChange={(e) => setGlobalSurcharge(e.target.value)}
+                        />
                       </div>
                     </div>
                   </div>
                 </TabsContent>
 
                 {/* TAB PAGAMENTO */}
-                <TabsContent value="pay" className="flex-1 overflow-y-auto px-6 py-4 flex flex-col">
+                <TabsContent
+                  value="pay"
+                  className="flex-1 overflow-y-auto px-6 py-4 flex flex-col"
+                >
                   <div className="bg-white p-3 rounded-xl border mb-4 space-y-3 shadow-sm">
                     <div className="flex gap-2">
                       <Button
@@ -875,8 +966,6 @@ export default function PDV() {
                       >
                         À Vista
                       </Button>
-
-                      {/* ✅ Tirado “Fiado” do texto, mas mantém a lógica a prazo */}
                       <Button
                         variant={saleType === "prazo" ? "default" : "outline"}
                         className="flex-1"
@@ -933,20 +1022,40 @@ export default function PDV() {
 
                   <div className="grid grid-cols-3 gap-2 mb-6">
                     <div className="bg-muted/30 p-3 rounded-lg border text-center">
-                      <div className="text-[10px] uppercase text-muted-foreground font-bold">Total</div>
-                      <div className="text-lg font-bold">{formatCurrency(totalPayable)}</div>
+                      <div className="text-[10px] uppercase text-muted-foreground font-bold">
+                        Total
+                      </div>
+                      <div className="text-lg font-bold">
+                        {formatCurrency(totalPayable)}
+                      </div>
                     </div>
 
                     <div className="bg-emerald-50 p-3 rounded-lg border border-emerald-100 text-center">
-                      <div className="text-[10px] uppercase text-emerald-700 font-bold">Pago</div>
-                      <div className="text-lg font-bold text-emerald-700">{formatCurrency(totalPaid)}</div>
+                      <div className="text-[10px] uppercase text-emerald-700 font-bold">
+                        Pago
+                      </div>
+                      <div className="text-lg font-bold text-emerald-700">
+                        {formatCurrency(totalPaid)}
+                      </div>
                     </div>
 
-                    <div className={`p-3 rounded-lg border text-center ${remaining > 0 ? "bg-red-50 border-red-100" : "bg-blue-50 border-blue-100"}`}>
-                      <div className={`text-[10px] uppercase font-bold ${remaining > 0 ? "text-red-700" : "text-blue-700"}`}>
+                    <div
+                      className={`p-3 rounded-lg border text-center ${
+                        remaining > 0 ? "bg-red-50 border-red-100" : "bg-blue-50 border-blue-100"
+                      }`}
+                    >
+                      <div
+                        className={`text-[10px] uppercase font-bold ${
+                          remaining > 0 ? "text-red-700" : "text-blue-700"
+                        }`}
+                      >
                         {remaining > 0 ? "Falta" : "Troco"}
                       </div>
-                      <div className={`text-lg font-bold ${remaining > 0 ? "text-red-700" : "text-blue-700"}`}>
+                      <div
+                        className={`text-lg font-bold ${
+                          remaining > 0 ? "text-red-700" : "text-blue-700"
+                        }`}
+                      >
                         {formatCurrency(remaining > 0 ? remaining : change)}
                       </div>
                     </div>
@@ -955,16 +1064,23 @@ export default function PDV() {
                   {saleType === "prazo" ? (
                     <div className="text-center py-6 text-muted-foreground bg-amber-50 rounded-lg border border-amber-200">
                       <p className="font-medium text-amber-900">Venda a Prazo Selecionada</p>
-                      <p className="text-xs mt-1 text-amber-800/80">O pagamento ficará pendente até o vencimento.</p>
+                      <p className="text-xs mt-1 text-amber-800/80">
+                        O pagamento ficará pendente até o vencimento.
+                      </p>
                     </div>
                   ) : (
                     <>
                       {payments.length > 0 && (
                         <div className="mb-6 space-y-2">
-                          <label className="text-xs font-medium text-muted-foreground uppercase">Pagamentos Realizados</label>
+                          <label className="text-xs font-medium text-muted-foreground uppercase">
+                            Pagamentos Realizados
+                          </label>
 
                           {payments.map((p) => (
-                            <div key={p.id} className="flex justify-between items-center bg-white border p-2 rounded-md shadow-sm">
+                            <div
+                              key={p.id}
+                              className="flex justify-between items-center bg-white border p-2 rounded-md shadow-sm"
+                            >
                               <div className="flex items-center gap-2">
                                 <Badge variant="outline">{p.method}</Badge>
                                 <span className="font-bold">{formatCurrency(p.amount)}</span>
@@ -985,24 +1101,34 @@ export default function PDV() {
                       {remaining > 0.01 && (
                         <div className="space-y-4 bg-muted/20 p-4 rounded-xl border">
                           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                            {["Dinheiro", "Pix", "Cartão Crédito", "Cartão Débito"].map((method) => (
-                              <Button
-                                key={method}
-                                variant={currentPayMethod === method ? "default" : "outline"}
-                                className={`h-9 text-xs ${currentPayMethod === method ? "ring-2 ring-offset-1" : ""}`}
-                                onClick={() => setCurrentPayMethod(method)}
-                              >
-                                {method === "Dinheiro" && <Banknote className="h-3 w-3 mr-1" />}
-                                {method === "Pix" && <QrCode className="h-3 w-3 mr-1" />}
-                                {method.includes("Cartão") && <CreditCard className="h-3 w-3 mr-1" />}
-                                {method}
-                              </Button>
-                            ))}
+                            {["Dinheiro", "Pix", "Cartão Crédito", "Cartão Débito"].map(
+                              (method) => (
+                                <Button
+                                  key={method}
+                                  variant={currentPayMethod === method ? "default" : "outline"}
+                                  className={`h-9 text-xs ${
+                                    currentPayMethod === method ? "ring-2 ring-offset-1" : ""
+                                  }`}
+                                  onClick={() => setCurrentPayMethod(method)}
+                                >
+                                  {method === "Dinheiro" && (
+                                    <Banknote className="h-3 w-3 mr-1" />
+                                  )}
+                                  {method === "Pix" && <QrCode className="h-3 w-3 mr-1" />}
+                                  {method.includes("Cartão") && (
+                                    <CreditCard className="h-3 w-3 mr-1" />
+                                  )}
+                                  {method}
+                                </Button>
+                              )
+                            )}
                           </div>
 
                           <div className="flex gap-2">
                             <div className="relative flex-1">
-                              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground font-bold">R$</span>
+                              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground font-bold">
+                                R$
+                              </span>
                               <Input
                                 className="pl-10 h-12 text-xl font-bold bg-white"
                                 placeholder="0,00"
@@ -1013,12 +1139,19 @@ export default function PDV() {
                             </div>
 
                             {remaining > 0 && (
-                              <Button variant="secondary" className="h-12 w-14 border" onClick={autoFillRemaining}>
+                              <Button
+                                variant="secondary"
+                                className="h-12 w-14 border"
+                                onClick={autoFillRemaining}
+                              >
                                 <Calculator className="h-5 w-5" />
                               </Button>
                             )}
 
-                            <Button className="h-12 w-14 bg-emerald-600 hover:bg-emerald-700" onClick={addPayment}>
+                            <Button
+                              className="h-12 w-14 bg-emerald-600 hover:bg-emerald-700"
+                              onClick={addPayment}
+                            >
                               <Plus className="h-6 w-6" />
                             </Button>
                           </div>
@@ -1045,7 +1178,9 @@ export default function PDV() {
                 {/* FOOTER */}
                 <div className="p-6 border-t mt-auto bg-white">
                   <Button
-                    className={`w-full h-14 text-xl shadow-lg transition-all ${canFinish ? "bg-emerald-600 hover:bg-emerald-700" : "bg-gray-400"}`}
+                    className={`w-full h-14 text-xl shadow-lg transition-all ${
+                      canFinish ? "bg-emerald-600 hover:bg-emerald-700" : "bg-gray-400"
+                    }`}
                     disabled={!canFinish || processing}
                     onClick={handleFinish}
                   >
@@ -1077,7 +1212,9 @@ export default function PDV() {
             <div className="mx-auto bg-emerald-100 p-3 rounded-full w-fit mb-3">
               <CheckCircle className="h-10 w-10 text-emerald-600" />
             </div>
-            <DialogTitle className="text-2xl text-emerald-700">Venda Realizada!</DialogTitle>
+            <DialogTitle className="text-2xl text-emerald-700">
+              Venda Realizada!
+            </DialogTitle>
             <DialogDescription>A venda foi registrada com sucesso.</DialogDescription>
           </DialogHeader>
 
@@ -1122,9 +1259,10 @@ export default function PDV() {
                     lastSaleData.total
                   )} foi confirmada!`;
                   window.open(
-                    `https://wa.me/55${String(lastSaleData.customer.phone).replace(/\D/g, "")}?text=${encodeURIComponent(
-                      text
-                    )}`,
+                    `https://wa.me/55${String(lastSaleData.customer.phone).replace(
+                      /\D/g,
+                      ""
+                    )}?text=${encodeURIComponent(text)}`,
                     "_blank"
                   );
                 }}
