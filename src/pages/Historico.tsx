@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState, useDeferredValue, useRef, useCallback } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import {
@@ -16,6 +16,7 @@ import {
   Info,
   ShoppingBasket,
   BadgePercent,
+  Loader2,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -42,8 +43,8 @@ type AuditLog = {
   actor_user_id: string | null;
   actor_name: string | null;
 
-  event_type: string; // sale_created, sale_cancelled, stock_...
-  entity_type: string; // sale, product...
+  event_type: string;
+  entity_type: string;
   entity_id: string | null;
 
   title: string;
@@ -59,18 +60,12 @@ type AuditLog = {
 type Sale = {
   id: string;
   customer_id: string | null;
-
-  // operador do sistema (quem clicou e registrou)
-  user_id: string | null;
-
-  // vendedor da venda (quem recebe comissão)
-  seller_id: string | null;
-
+  user_id: string | null; // operador
+  seller_id: string | null; // vendedor (comissão)
   total_amount: number | null;
 
-  // comissão (por venda)
-  commission_rate: number | null; // ex: 5 (%)
-  commission_value: number | null; // ex: 12.50
+  commission_rate: number | null;
+  commission_value: number | null;
 
   status: string | null;
   payment_method: string | null;
@@ -104,14 +99,12 @@ type ChipFilter = "all" | "sales" | "cancelled" | "stock";
 type DateFilter = "7d" | "30d" | "this-month" | "this-year" | "all";
 
 function formatCurrency(v: number) {
-  return (v || 0).toLocaleString("pt-BR", {
-    style: "currency",
-    currency: "BRL",
-  });
+  return (v || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 }
 
 function formatDateTime(iso: string) {
   const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
   return d.toLocaleString("pt-BR");
 }
 
@@ -172,12 +165,13 @@ export default function Historico() {
 
   const [logs, setLogs] = useState<AuditLog[]>([]);
   const [salesById, setSalesById] = useState<Record<string, Sale>>({});
-  const [customersById, setCustomersById] = useState<Record<string, Customer>>(
-    {}
-  );
+  const [customersById, setCustomersById] = useState<Record<string, Customer>>({});
   const [profilesById, setProfilesById] = useState<Record<string, Profile>>({});
 
+  // ✅ perf: busca com deferred value (não trava digitando)
   const [search, setSearch] = useState("");
+  const deferredSearch = useDeferredValue(search);
+
   const [chip, setChip] = useState<ChipFilter>("all");
   const [dateFilter, setDateFilter] = useState<DateFilter>("30d");
 
@@ -192,126 +186,125 @@ export default function Historico() {
   const [detailsItemsLoading, setDetailsItemsLoading] = useState(false);
   const [detailsItems, setDetailsItems] = useState<SaleItemView[]>([]);
 
-  const fetchData = async () => {
+  // ✅ evita setState de request antiga
+  const requestIdRef = useRef(0);
+
+  // ✅ cache de itens por sale_id (não refaz query toda vez)
+  const itemsCacheRef = useRef<Record<string, SaleItemView[]>>({});
+
+  const fetchData = useCallback(async () => {
+    const rid = ++requestIdRef.current;
     setLoading(true);
 
-    // 1) logs
-    const { data: logsData, error: logsErr } = await supabase
-      .from("audit_logs")
-      .select("*")
-      .eq("is_deleted", false)
-      .order("created_at", { ascending: false })
-      .limit(500);
+    try {
+      // 1) logs
+      const { data: logsData, error: logsErr } = await supabase
+        .from("audit_logs")
+        .select("*")
+        .eq("is_deleted", false)
+        .order("created_at", { ascending: false })
+        .limit(500);
 
-    if (logsErr) {
-      toast.error("Erro ao carregar histórico.");
-      setLoading(false);
-      return;
-    }
+      if (logsErr) throw logsErr;
 
-    const L = (logsData || []) as AuditLog[];
-    setLogs(L);
+      if (rid !== requestIdRef.current) return;
 
-    // 2) sales ids (pega entity_id e também metadata.sale_id)
-    const saleIds = Array.from(
-      new Set(
-        L.filter((l) => l.entity_type === "sale")
-          .map((l) => (l.entity_id || l.metadata?.sale_id) as string)
-          .filter(Boolean)
-      )
-    );
+      const L = (logsData || []) as AuditLog[];
+      setLogs(L);
 
-    // 3) fetch sales
-    let sales: Sale[] = [];
-    if (saleIds.length) {
-      const { data: salesData, error: salesErr } = await supabase
-        .from("sales")
-        .select(
-          "id, customer_id, user_id, seller_id, total_amount, commission_rate, commission_value, status, payment_method, created_at"
+      // 2) sale ids (entity_id e metadata.sale_id)
+      const saleIds = Array.from(
+        new Set(
+          L.filter((l) => l.entity_type === "sale")
+            .map((l) => (l.entity_id || l.metadata?.sale_id) as string)
+            .filter(Boolean)
         )
-        .in("id", saleIds);
+      );
 
-      if (salesErr) {
-        toast.error(
-          "Erro ao carregar vendas relacionadas. (confere se sales tem seller_id/commission_*)"
-        );
-        setLoading(false);
-        return;
+      // 3) fetch sales
+      let sales: Sale[] = [];
+      if (saleIds.length) {
+        const { data: salesData, error: salesErr } = await supabase
+          .from("sales")
+          .select(
+            "id, customer_id, user_id, seller_id, total_amount, commission_rate, commission_value, status, payment_method, created_at"
+          )
+          .in("id", saleIds);
+
+        if (salesErr) {
+          throw new Error(
+            "Erro ao carregar vendas relacionadas. (confere se sales tem seller_id/commission_*)"
+          );
+        }
+
+        sales = (salesData || []) as Sale[];
       }
 
-      sales = (salesData || []) as Sale[];
-    }
+      if (rid !== requestIdRef.current) return;
 
-    const sMap: Record<string, Sale> = {};
-    for (const s of sales) sMap[s.id] = s;
-    setSalesById(sMap);
+      const sMap: Record<string, Sale> = {};
+      for (const s of sales) sMap[s.id] = s;
+      setSalesById(sMap);
 
-    // 4) customers ids (de sales)
-    const customerIds = Array.from(
-      new Set(
-        sales.map((s) => s.customer_id).filter((id): id is string => Boolean(id))
-      )
-    );
+      // 4) customer ids (de sales)
+      const customerIds = Array.from(
+        new Set(sales.map((s) => s.customer_id).filter((id): id is string => Boolean(id)))
+      );
 
-    // 5) users ids (de sales) -> operador + vendedor
-    const userIds = Array.from(
-      new Set(
-        sales
-          .flatMap((s) => [s.user_id, s.seller_id])
-          .filter((id): id is string => Boolean(id))
-      )
-    );
+      // 5) users ids (operador + vendedor)
+      const userIds = Array.from(
+        new Set(
+          sales.flatMap((s) => [s.user_id, s.seller_id]).filter((id): id is string => Boolean(id))
+        )
+      );
 
-    // 6) fetch customers
-    if (customerIds.length) {
-      const { data: custData, error: custErr } = await supabase
-        .from("customers")
-        .select("id, name")
-        .in("id", customerIds);
+      // 6) fetch customers
+      if (customerIds.length) {
+        const { data: custData, error: custErr } = await supabase
+          .from("customers")
+          .select("id, name")
+          .in("id", customerIds);
 
-      if (custErr) {
-        toast.error("Erro ao carregar clientes.");
-        setLoading(false);
-        return;
+        if (custErr) throw custErr;
+
+        const cMap: Record<string, Customer> = {};
+        for (const c of (custData || []) as Customer[]) cMap[c.id] = c;
+        setCustomersById(cMap);
+      } else {
+        setCustomersById({});
       }
 
-      const cMap: Record<string, Customer> = {};
-      for (const c of (custData || []) as Customer[]) cMap[c.id] = c;
-      setCustomersById(cMap);
-    } else {
-      setCustomersById({});
-    }
+      if (rid !== requestIdRef.current) return;
 
-    // 7) fetch profiles (operador + vendedor)
-    if (userIds.length) {
-      const { data: profData, error: profErr } = await supabase
-        .from("profiles")
-        .select("id, name")
-        .in("id", userIds);
+      // 7) fetch profiles (operador + vendedor)
+      if (userIds.length) {
+        const { data: profData, error: profErr } = await supabase
+          .from("profiles")
+          .select("id, name")
+          .in("id", userIds);
 
-      if (profErr) {
-        toast.error("Erro ao carregar operadores/vendedores.");
-        setLoading(false);
-        return;
+        if (profErr) throw profErr;
+
+        const pMap: Record<string, Profile> = {};
+        for (const p of (profData || []) as Profile[]) pMap[p.id] = p;
+        setProfilesById(pMap);
+      } else {
+        setProfilesById({});
       }
-
-      const pMap: Record<string, Profile> = {};
-      for (const p of (profData || []) as Profile[]) pMap[p.id] = p;
-      setProfilesById(pMap);
-    } else {
-      setProfilesById({});
+    } catch (e: any) {
+      console.error(e);
+      toast.error(e?.message || "Erro ao carregar histórico.");
+    } finally {
+      if (rid === requestIdRef.current) setLoading(false);
     }
-
-    setLoading(false);
-  };
+  }, []);
 
   useEffect(() => {
     fetchData();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [fetchData]);
 
   const filtered = useMemo(() => {
-    const s = search.trim().toLowerCase();
+    const s = deferredSearch.trim().toLowerCase();
 
     const byChip = (l: AuditLog) => {
       if (chip === "all") return true;
@@ -344,16 +337,14 @@ export default function Historico() {
       const saleId = (l.entity_id || l.metadata?.sale_id) as string | undefined;
       const sale = saleId ? salesById[saleId] : undefined;
 
-      const customerName =
-        sale?.customer_id ? customersById[sale.customer_id]?.name : undefined;
+      const customerName = sale?.customer_id ? customersById[sale.customer_id]?.name : "";
+      const operatorName = sale?.user_id ? profilesById[sale.user_id]?.name : "";
+      const sellerName = sale?.seller_id ? profilesById[sale.seller_id]?.name : "";
+      const commissionValue = sale?.commission_value ?? "";
 
-      const operatorName =
-        sale?.user_id ? profilesById[sale.user_id]?.name : undefined;
-
-      const sellerName =
-        sale?.seller_id ? profilesById[sale.seller_id]?.name : undefined;
-
-      const commissionValue = sale?.commission_value ?? undefined;
+      // ✅ perf: evita JSON.stringify gigante em toda tecla
+      // só entra no metadata quando pesquisa tem "metadata:" ou "{"
+      const wantsMeta = s.includes("metadata:") || s.includes("{") || s.includes("}");
 
       const hay = [
         l.title,
@@ -367,16 +358,16 @@ export default function Historico() {
         sale?.payment_method ?? "",
         String(l.amount ?? ""),
         String(commissionValue ?? ""),
-        JSON.stringify(l.metadata ?? {}),
+        wantsMeta ? JSON.stringify(l.metadata ?? {}) : "",
       ]
         .join(" ")
         .toLowerCase();
 
-      return hay.includes(s);
+      return hay.includes(s.replace("metadata:", ""));
     };
 
     return logs.filter((l) => byChip(l) && byDate(l) && bySearch(l));
-  }, [logs, chip, dateFilter, search, salesById, customersById, profilesById]);
+  }, [logs, chip, dateFilter, deferredSearch, salesById, customersById, profilesById]);
 
   const openCancel = (log: AuditLog) => {
     setSelected(log);
@@ -395,8 +386,7 @@ export default function Historico() {
 
     try {
       if (confirmMode === "cancel") {
-        const saleId = (selected.entity_id ||
-          selected.metadata?.sale_id) as string | undefined;
+        const saleId = (selected.entity_id || selected.metadata?.sale_id) as string | undefined;
         if (!saleId) throw new Error("Não achei o ID da venda para cancelar.");
 
         const { error } = await supabase.rpc("cancel_sale", { p_sale_id: saleId });
@@ -430,35 +420,31 @@ export default function Historico() {
   };
 
   // helpers
-  const getSaleInfo = (log: AuditLog) => {
-    const saleId = (log.entity_id || log.metadata?.sale_id) as string | undefined;
-    const sale = saleId ? salesById[saleId] : undefined;
+  const getSaleInfo = useCallback(
+    (log: AuditLog) => {
+      const saleId = (log.entity_id || log.metadata?.sale_id) as string | undefined;
+      const sale = saleId ? salesById[saleId] : undefined;
 
-    const customerName =
-      sale?.customer_id ? customersById[sale.customer_id]?.name : null;
+      const customerName = sale?.customer_id ? customersById[sale.customer_id]?.name : null;
+      const operatorName = sale?.user_id ? profilesById[sale.user_id]?.name : null;
+      const sellerName = sale?.seller_id ? profilesById[sale.seller_id]?.name : null;
 
-    const operatorName =
-      sale?.user_id ? profilesById[sale.user_id]?.name : null;
+      const commissionValue = Number(sale?.commission_value || 0);
+      const commissionRate = sale?.commission_rate != null ? Number(sale.commission_rate) : null;
 
-    const sellerName =
-      sale?.seller_id ? profilesById[sale.seller_id]?.name : null;
+      return { saleId, sale, customerName, operatorName, sellerName, commissionValue, commissionRate };
+    },
+    [salesById, customersById, profilesById]
+  );
 
-    const commissionValue = Number(sale?.commission_value || 0);
-    const commissionRate =
-      sale?.commission_rate != null ? Number(sale.commission_rate) : null;
+  const loadSaleItemsForDetails = useCallback(async (saleId: string) => {
+    // ✅ cache
+    const cached = itemsCacheRef.current[saleId];
+    if (cached) {
+      setDetailsItems(cached);
+      return;
+    }
 
-    return {
-      saleId,
-      sale,
-      customerName,
-      operatorName,
-      sellerName,
-      commissionValue,
-      commissionRate,
-    };
-  };
-
-  const loadSaleItemsForDetails = async (saleId: string) => {
     setDetailsItemsLoading(true);
     setDetailsItems([]);
 
@@ -472,9 +458,7 @@ export default function Historico() {
 
       const items = (itemsData || []) as SaleItem[];
 
-      const productIds = Array.from(
-        new Set(items.map((i) => i.product_id).filter(Boolean))
-      );
+      const productIds = Array.from(new Set(items.map((i) => i.product_id).filter(Boolean)));
 
       let productsMap: Record<string, string> = {};
       if (productIds.length) {
@@ -485,9 +469,7 @@ export default function Historico() {
 
         if (prodErr) throw new Error(prodErr.message);
 
-        for (const p of (prodData || []) as Product[]) {
-          productsMap[p.id] = p.name;
-        }
+        for (const p of (prodData || []) as Product[]) productsMap[p.id] = p.name;
       }
 
       const view: SaleItemView[] = items.map((i) => ({
@@ -501,13 +483,14 @@ export default function Historico() {
 
       view.sort((a, b) => a.product_name.localeCompare(b.product_name));
 
+      itemsCacheRef.current[saleId] = view; // ✅ salva cache
       setDetailsItems(view);
     } catch (e: any) {
       toast.error(e?.message || "Erro ao carregar itens da venda.");
     } finally {
       setDetailsItemsLoading(false);
     }
-  };
+  }, []);
 
   const openDetails = async (log: AuditLog) => {
     setDetailsLog(log);
@@ -596,7 +579,8 @@ export default function Historico() {
 
       {/* LIST */}
       {loading ? (
-        <div className="text-center py-10 text-muted-foreground text-sm">
+        <div className="text-center py-10 text-muted-foreground text-sm flex items-center justify-center gap-2">
+          <Loader2 className="h-4 w-4 animate-spin" />
           Carregando...
         </div>
       ) : filtered.length === 0 ? (
@@ -609,19 +593,13 @@ export default function Historico() {
             const { saleId, sale, customerName, operatorName } = getSaleInfo(log);
 
             const canCancel =
-              log.event_type === "sale_created" &&
-              !!saleId &&
-              (sale?.status ?? "") !== "cancelled";
+              log.event_type === "sale_created" && !!saleId && (sale?.status ?? "") !== "cancelled";
 
             const isCancelled =
-              log.event_type === "sale_cancelled" ||
-              (sale?.status ?? "") === "cancelled";
+              log.event_type === "sale_cancelled" || (sale?.status ?? "") === "cancelled";
 
             return (
-              <Card
-                key={log.id}
-                className="border-none shadow-sm rounded-2xl overflow-hidden"
-              >
+              <Card key={log.id} className="border-none shadow-sm rounded-2xl overflow-hidden">
                 <CardContent className="p-3">
                   <div className="flex items-start justify-between gap-3 min-w-0">
                     {/* LEFT */}
@@ -665,19 +643,13 @@ export default function Historico() {
                       <div className="mt-2 flex items-center gap-2 flex-wrap">
                         {badgeFor(log.event_type)}
                         {isCancelled && (
-                          <Badge
-                            variant="destructive"
-                            className="text-[10px] px-2 py-0.5"
-                          >
+                          <Badge variant="destructive" className="text-[10px] px-2 py-0.5">
                             Cancelada
                           </Badge>
                         )}
                         {sale?.payment_method && (
-                          <Badge
-                            variant="outline"
-                            className="text-[10px] px-2 py-0.5"
-                          >
-                            {sale.payment_method.toUpperCase()}
+                          <Badge variant="outline" className="text-[10px] px-2 py-0.5">
+                            {String(sale.payment_method).toUpperCase()}
                           </Badge>
                         )}
                       </div>
@@ -763,9 +735,7 @@ export default function Historico() {
         <DialogContent className="max-w-sm w-[92vw] rounded-2xl p-4">
           <DialogHeader>
             <DialogTitle className="text-base">Detalhes</DialogTitle>
-            <DialogDescription className="text-xs">
-              Venda completa + itens.
-            </DialogDescription>
+            <DialogDescription className="text-xs">Venda completa + itens.</DialogDescription>
           </DialogHeader>
 
           {detailsLog ? (
@@ -800,8 +770,7 @@ export default function Historico() {
                         </div>
                         {detailsLog.amount != null && (
                           <div>
-                            <strong>Valor:</strong>{" "}
-                            {formatCurrency(Number(detailsLog.amount))}
+                            <strong>Valor:</strong> {formatCurrency(Number(detailsLog.amount))}
                           </div>
                         )}
                       </div>
@@ -842,10 +811,7 @@ export default function Historico() {
 
                           {showCommission && (
                             <div className="mt-2">
-                              <Badge
-                                variant="outline"
-                                className="text-[10px] px-2 py-0.5"
-                              >
+                              <Badge variant="outline" className="text-[10px] px-2 py-0.5">
                                 <BadgePercent className="h-3 w-3 mr-1" />
                                 Comissão: {formatCurrency(commissionValue)}
                                 {commissionRate != null ? ` (${commissionRate}%)` : ""}
@@ -865,7 +831,8 @@ export default function Historico() {
                             Itens
                           </p>
                           {detailsItemsLoading && (
-                            <span className="text-[11px] text-muted-foreground">
+                            <span className="text-[11px] text-muted-foreground flex items-center gap-1">
+                              <Loader2 className="h-3 w-3 animate-spin" />
                               carregando...
                             </span>
                           )}
@@ -887,9 +854,7 @@ export default function Historico() {
                                 className="flex items-start justify-between gap-3 bg-slate-50 border rounded-xl p-2"
                               >
                                 <div className="min-w-0">
-                                  <p className="text-xs font-medium truncate">
-                                    {it.product_name}
-                                  </p>
+                                  <p className="text-xs font-medium truncate">{it.product_name}</p>
                                   <p className="text-[11px] text-muted-foreground">
                                     Qtd: <strong>{it.quantity}</strong> • Unit:{" "}
                                     <strong>{formatCurrency(it.unit_price)}</strong>
@@ -897,9 +862,7 @@ export default function Historico() {
                                 </div>
 
                                 <div className="shrink-0 text-right">
-                                  <p className="text-xs font-bold">
-                                    {formatCurrency(it.total_price)}
-                                  </p>
+                                  <p className="text-xs font-bold">{formatCurrency(it.total_price)}</p>
                                 </div>
                               </div>
                             ))}
@@ -907,9 +870,7 @@ export default function Historico() {
                             <div className="pt-2 border-t flex items-center justify-between text-xs">
                               <span className="text-muted-foreground">Total (venda)</span>
                               <span className="font-bold">
-                                {formatCurrency(
-                                  Number(sale?.total_amount || detailsLog.amount || 0)
-                                )}
+                                {formatCurrency(Number(sale?.total_amount || detailsLog.amount || 0))}
                               </span>
                             </div>
                           </div>
@@ -917,21 +878,22 @@ export default function Historico() {
                       </div>
                     )}
 
-                    {/* METADATA (opcional) */}
+                    {/* METADATA */}
                     <div className="rounded-xl border p-3">
                       <p className="font-semibold mb-2">Metadata</p>
                       <pre className="text-[11px] bg-slate-50 border rounded-lg p-2 overflow-x-auto">
 {JSON.stringify(detailsLog.metadata ?? {}, null, 2)}
                       </pre>
+                      <p className="mt-2 text-[11px] text-muted-foreground">
+                        Dica: pra buscar dentro do metadata, use <b>metadata:</b> na pesquisa.
+                      </p>
                     </div>
                   </>
                 );
               })()}
             </div>
           ) : (
-            <div className="text-center text-muted-foreground text-sm py-6">
-              Sem dados.
-            </div>
+            <div className="text-center text-muted-foreground text-sm py-6">Sem dados.</div>
           )}
         </DialogContent>
       </Dialog>

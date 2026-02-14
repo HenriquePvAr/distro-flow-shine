@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useEffect, useState } from "react";
+import { useMemo, useEffect, useState, useRef, useCallback, useDeferredValue } from "react";
 import {
   Calculator,
   CreditCard,
@@ -56,7 +56,6 @@ interface FinancialEntry {
   entity_name?: string;
 }
 
-// UI
 interface StockLog {
   id: string;
   product_name: string;
@@ -65,7 +64,6 @@ interface StockLog {
   operator?: string | null;
 }
 
-// DB real (print)
 interface StockLogRow {
   id: string;
   product_id: string;
@@ -103,18 +101,30 @@ export default function Fechamento() {
   const [entries, setEntries] = useState<FinancialEntry[]>([]);
   const [stockLogs, setStockLogs] = useState<StockLog[]>([]);
   const [loading, setLoading] = useState(true);
+
+  // ✅ perf: input controlado com deferred (não “engasga”)
   const [physicalCash, setPhysicalCash] = useState<string>("");
+  const deferredPhysicalCash = useDeferredValue(physicalCash);
+
   const [isReconciled, setIsReconciled] = useState(false);
 
   // === Navegação rápida do calendário (Ano/Mês) ===
   const [calYear, setCalYear] = useState<number>(getYear(new Date()));
   const [calMonth, setCalMonth] = useState<number>(getMonth(new Date()));
 
+  // ✅ evita setState de request antiga
+  const requestIdRef = useRef(0);
+
+  // ✅ caches (evita bater no banco toda vez)
+  const productNameCacheRef = useRef<Map<string, string>>(new Map());
+  const userNameCacheRef = useRef<Map<string, string>>(new Map());
+
   useEffect(() => {
     setCalYear(getYear(date));
     setCalMonth(getMonth(date));
   }, [date]);
 
+  // reset quando muda dia
   useEffect(() => {
     fetchDataByDate(date);
     setPhysicalCash("");
@@ -122,115 +132,174 @@ export default function Fechamento() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [date]);
 
-  // Função auxiliar para buscar nomes de produtos em lote
-  const fetchProductNamesByIds = async (productIds: string[]) => {
+  // ---------- helpers cache ----------
+  const fetchProductNamesByIds = useCallback(async (productIds: string[]) => {
     const unique = Array.from(new Set(productIds)).filter(Boolean);
     if (unique.length === 0) return new Map<string, string>();
+
+    const missing = unique.filter((id) => !productNameCacheRef.current.has(String(id)));
+    if (missing.length === 0) return new Map(productNameCacheRef.current);
 
     const { data, error } = await supabase
       .from("products")
       .select("id,name")
-      .in("id", unique);
+      .in("id", missing);
 
     if (error) {
       console.error("Erro products (names):", error);
-      return new Map<string, string>();
+      return new Map(productNameCacheRef.current);
     }
 
-    const map = new Map<string, string>();
     (data || []).forEach((p: any) => {
-      // Força ID como string para evitar erro de tipo
-      map.set(String(p.id), p.name || "Produto Sem Nome");
+      productNameCacheRef.current.set(String(p.id), p.name || "Produto Sem Nome");
     });
-    return map;
-  };
 
-  // Função auxiliar para buscar nomes de usuários (Profiles) em lote
-  const fetchUserNamesByIds = async (userIds: string[]) => {
+    return new Map(productNameCacheRef.current);
+  }, []);
+
+  const fetchUserNamesByIds = useCallback(async (userIds: string[]) => {
     const unique = Array.from(new Set(userIds)).filter(Boolean);
     if (unique.length === 0) return new Map<string, string>();
 
-    // Tenta buscar da tabela profiles
+    const missing = unique.filter((id) => !userNameCacheRef.current.has(String(id)));
+    if (missing.length === 0) return new Map(userNameCacheRef.current);
+
     const { data, error } = await supabase
       .from("profiles")
       .select("id, name")
-      .in("id", unique);
+      .in("id", missing);
 
     if (error) {
       console.error("Erro profiles (names):", error);
-      return new Map<string, string>();
+      return new Map(userNameCacheRef.current);
     }
 
-    const map = new Map<string, string>();
     (data || []).forEach((u: any) => {
-      map.set(String(u.id), u.name || "Usuário");
+      userNameCacheRef.current.set(String(u.id), u.name || "Usuário");
     });
-    return map;
-  };
 
-  const fetchDataByDate = async (selectedDate: Date) => {
-    setLoading(true);
-    const start = startOfDay(selectedDate).toISOString();
-    const end = endOfDay(selectedDate).toISOString();
+    return new Map(userNameCacheRef.current);
+  }, []);
 
-    try {
-      // 1) Financeiro
-      const { data: financialData, error: financialError } = await supabase
-        .from("financial_entries")
-        .select("*")
-        .eq("status", "paid") // Apenas o que foi pago
-        .gte("due_date", start) // Usa a data de vencimento/pagamento como referência
-        .lte("due_date", end);
-
-      if (financialError) throw financialError;
-
-      // 2) Estoque
-      const { data: stockData, error: stockError } = await supabase
-        .from("stock_logs")
-        .select("id,product_id,user_id,change_amount,new_stock,reason,created_at")
-        .gte("created_at", start)
-        .lte("created_at", end);
-
-      if (stockError) {
-        console.error("Erro stock_logs:", stockError);
-        setStockLogs([]);
-      } else {
-        const rows = (stockData as unknown as StockLogRow[]) || [];
-        // Filtra apenas entradas positivas
-        const onlyEntries = rows.filter((r) => Number(r.change_amount || 0) > 0);
-
-        // Busca nomes dos produtos
-        const productIds = onlyEntries.map((r) => r.product_id);
-        const productMap = await fetchProductNamesByIds(productIds);
-
-        // Busca nomes dos operadores (usuários)
-        const userIds = onlyEntries.map((r) => r.user_id).filter((id): id is string => !!id);
-        const userMap = await fetchUserNamesByIds(userIds);
-
-        const mapped: StockLog[] = onlyEntries.map((r) => {
-          const pName = productMap.get(String(r.product_id)) || "Produto Desconhecido";
-          const operatorName = r.user_id ? (userMap.get(String(r.user_id)) || "Sistema") : "Sistema";
-
-          return {
-            id: r.id,
-            product_name: pName,
-            quantity: Number(r.change_amount || 0),
-            created_at: r.created_at,
-            operator: operatorName,
-          };
-        });
-
-        setStockLogs(mapped);
-      }
-
-      setEntries((financialData as FinancialEntry[]) || []);
-    } catch (error: any) {
-      console.error("Erro ao buscar dados:", error);
-      toast.error("Erro ao carregar dados do dia.");
-    } finally {
-      setLoading(false);
+  // ✅ pagamento: tenta pegar de "payment_method" se existir no registro; se não, faz fallback na descrição.
+  const detectPaymentMethod = (entry: FinancialEntry) => {
+    const anyEntry = entry as any;
+    const raw = String(anyEntry?.payment_method || "").trim().toLowerCase();
+    if (raw) {
+      if (raw.includes("pix")) return "Pix";
+      if (raw.includes("dinheiro") || raw === "cash") return "Dinheiro";
+      if (raw.includes("cart") || raw.includes("credit") || raw.includes("debit")) return "Cartão";
     }
+
+    const desc = String(entry.description || "").toLowerCase();
+    if (desc.includes("pix")) return "Pix";
+    if (desc.includes("dinheiro")) return "Dinheiro";
+    if (
+      desc.includes("crédito") ||
+      desc.includes("credito") ||
+      desc.includes("débito") ||
+      desc.includes("debito") ||
+      desc.includes("cartão") ||
+      desc.includes("cartao")
+    ) return "Cartão";
+
+    return "Dinheiro";
   };
+
+  const fetchDataByDate = useCallback(
+    async (selectedDate: Date) => {
+      const rid = ++requestIdRef.current;
+      setLoading(true);
+
+      const start = startOfDay(selectedDate).toISOString();
+      const end = endOfDay(selectedDate).toISOString();
+
+      try {
+        // 1) Financeiro (apenas pagos no dia)
+        // obs: se teu schema tiver payment_method, pode trocar o select("*") por select com colunas específicas.
+        const { data: financialData, error: financialError } = await supabase
+          .from("financial_entries")
+          .select("*")
+          .eq("status", "paid")
+          .gte("due_date", start)
+          .lte("due_date", end);
+
+        if (financialError) throw financialError;
+        if (rid !== requestIdRef.current) return;
+
+        // 2) Estoque (logs do dia)
+        const { data: stockData, error: stockError } = await supabase
+          .from("stock_logs")
+          .select("id,product_id,user_id,change_amount,new_stock,reason,created_at")
+          .gte("created_at", start)
+          .lte("created_at", end);
+
+        if (rid !== requestIdRef.current) return;
+
+        if (stockError) {
+          console.error("Erro stock_logs:", stockError);
+          setStockLogs([]);
+        } else {
+          const rows = (stockData as unknown as StockLogRow[]) || [];
+
+          // ✅ correção: mostrar movimentações relevantes (entrada e saída),
+          // mas excluir as que vieram de venda/cancelamento (pra não poluir o fechamento)
+          const filteredRows = rows.filter((r) => {
+            const amt = Number(r.change_amount || 0);
+            if (!Number.isFinite(amt) || amt === 0) return false;
+
+            const reason = String(r.reason || "").toLowerCase();
+            // Ajusta aqui se teus reasons forem diferentes:
+            const isFromSale =
+              reason.includes("sale") ||
+              reason.includes("venda") ||
+              reason.includes("pdv") ||
+              reason.includes("cancel") ||
+              reason.includes("cancelad") ||
+              reason.includes("repor estoque");
+
+            return !isFromSale;
+          });
+
+          const productIds = filteredRows.map((r) => String(r.product_id));
+          const userIds = filteredRows.map((r) => r.user_id).filter((id): id is string => !!id);
+
+          const productMap = await fetchProductNamesByIds(productIds);
+          const userMap = await fetchUserNamesByIds(userIds);
+
+          if (rid !== requestIdRef.current) return;
+
+          const mapped: StockLog[] = filteredRows.map((r) => {
+            const pName = productMap.get(String(r.product_id)) || "Produto Desconhecido";
+            const operatorName = r.user_id
+              ? userMap.get(String(r.user_id)) || "Sistema"
+              : "Sistema";
+
+            return {
+              id: r.id,
+              product_name: pName,
+              // pode ser negativo (saída)
+              quantity: Number(r.change_amount || 0),
+              created_at: r.created_at,
+              operator: operatorName,
+            };
+          });
+
+          // Ordena por hora
+          mapped.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+          setStockLogs(mapped);
+        }
+
+        setEntries((financialData as FinancialEntry[]) || []);
+      } catch (error: any) {
+        console.error("Erro ao buscar dados:", error);
+        toast.error("Erro ao carregar dados do dia.");
+      } finally {
+        if (rid === requestIdRef.current) setLoading(false);
+      }
+    },
+    [fetchProductNamesByIds, fetchUserNamesByIds]
+  );
 
   const todaySales = useMemo(
     () => entries.filter((e) => e.type === "receivable"),
@@ -241,42 +310,58 @@ export default function Fechamento() {
     [entries]
   );
 
+  // ✅ totals por forma de pagamento (com melhor fallback)
   const paymentTotals = useMemo(() => {
-    const totals: Record<string, number> = { Dinheiro: 0, Pix: 0, Cartão: 0 };
-    todaySales.forEach((sale) => {
-      const desc = (sale.description || "").toLowerCase();
-      // Lógica simples de detecção baseada na descrição (idealmente teria coluna payment_method)
-      if (desc.includes("pix")) totals["Pix"] += Number(sale.total_amount);
-      else if (desc.includes("dinheiro"))
-        totals["Dinheiro"] += Number(sale.total_amount);
-      else if (
-        desc.includes("crédito") ||
-        desc.includes("credito") ||
-        desc.includes("débito") ||
-        desc.includes("debito") ||
-        desc.includes("cartão") ||
-        desc.includes("cartao")
-      )
-        totals["Cartão"] += Number(sale.total_amount);
-      else totals["Dinheiro"] += Number(sale.total_amount); // Fallback padrão
-    });
+    const totals: Record<"Dinheiro" | "Pix" | "Cartão", number> = {
+      Dinheiro: 0,
+      Pix: 0,
+      Cartão: 0,
+    };
+
+    for (let i = 0; i < todaySales.length; i++) {
+      const sale = todaySales[i];
+      const method = detectPaymentMethod(sale);
+      totals[method as "Dinheiro" | "Pix" | "Cartão"] += Number(sale.total_amount || 0);
+    }
+
     return totals;
   }, [todaySales]);
 
-  const totalSalesValue = todaySales.reduce(
-    (sum, s) => sum + Number(s.total_amount),
-    0
+  const totalSalesValue = useMemo(
+    () => todaySales.reduce((sum, s) => sum + Number(s.total_amount || 0), 0),
+    [todaySales]
   );
-  const totalExpensesValue = todayExpenses.reduce(
-    (sum, e) => sum + Number(e.total_amount),
-    0
+
+  const totalExpensesValue = useMemo(
+    () => todayExpenses.reduce((sum, e) => sum + Number(e.total_amount || 0), 0),
+    [todayExpenses]
   );
+
   const netResult = totalSalesValue - totalExpensesValue;
 
-  const physicalCashValue =
-    parseFloat((physicalCash || "").toString().replace(",", ".")) || 0;
+  // ✅ parse correto pt-BR (aceita "1.234,56" ou "1234.56")
+  const parseMoneyPt = (s: string) => {
+    const raw = String(s || "").trim();
+    if (!raw) return 0;
+    const normalized = raw.replace(/\./g, "").replace(",", ".");
+    const n = Number(normalized);
+    return Number.isFinite(n) ? n : 0;
+  };
+
+  const physicalCashValue = useMemo(
+    () => parseMoneyPt(deferredPhysicalCash),
+    [deferredPhysicalCash]
+  );
+
   const cashDifference = physicalCashValue - paymentTotals["Dinheiro"];
-  const hasDifference = physicalCash !== "" && Math.abs(cashDifference) > 0.01;
+  const hasDifference =
+    deferredPhysicalCash.trim() !== "" && Math.abs(cashDifference) > 0.01;
+
+  // ✅ bloqueia validar se tem diferença (evita “validar” caixa quebrado)
+  const canValidate =
+    deferredPhysicalCash.trim() !== "" && !isReconciled && !hasDifference;
+
+  const isCurrentDay = isToday(date);
 
   const handleSendWhatsApp = () => {
     const formattedDate = format(date, "dd/MM/yyyy");
@@ -288,12 +373,12 @@ export default function Fechamento() {
     const mercadorias =
       stockLogs.length > 0
         ? stockLogs
-            .map(
-              (l) =>
-                `- ${l.quantity}x ${l.product_name} (Rec: ${l.operator})`
-            )
+            .map((l) => {
+              const sign = l.quantity >= 0 ? "+" : "-";
+              return `- ${sign}${Math.abs(l.quantity)}x ${l.product_name} (Resp: ${l.operator || "Sistema"})`;
+            })
             .join("\n")
-        : "Nenhuma entrada de estoque.";
+        : "Nenhuma movimentação de estoque (manual) nesta data.";
 
     const contasPagas =
       todayExpenses.length > 0
@@ -315,11 +400,16 @@ export default function Fechamento() {
 💠 Pix: ${formatCurrency(paymentTotals["Pix"])}
 💳 Cartão: ${formatCurrency(paymentTotals["Cartão"])}
 
-*📦 CHEGADA DE MERCADORIA*
+*🧾 CONFERÊNCIA DE GAVETA*
+Sistema (Dinheiro): ${formatCurrency(paymentTotals["Dinheiro"])}
+Gaveta (Contado): ${formatCurrency(physicalCashValue)}
+Diferença: ${formatCurrency(cashDifference)}
+
+*📦 MOVIMENTAÇÕES DE ESTOQUE (manual)*
 ${mercadorias}
 
 *👥 CLIENTES ATENDIDOS*
-${clientes}
+${clientes || "—"}
 
 *🧾 CONTAS PAGAS*
 ${contasPagas}
@@ -331,8 +421,6 @@ _Gerado automaticamente pelo Sistema_
     const encodedMessage = encodeURIComponent(message);
     window.open(`https://wa.me/?text=${encodedMessage}`, "_blank");
   };
-
-  const isCurrentDay = isToday(date);
 
   const yearOptions = useMemo(() => {
     const arr: number[] = [];
@@ -355,9 +443,7 @@ _Gerado automaticamente pelo Sistema_
             <Calculator className="h-8 w-8 text-primary" />
           </div>
           <div>
-            <h1 className="text-2xl font-bold text-foreground">
-              Fechamento de Caixa
-            </h1>
+            <h1 className="text-2xl font-bold text-foreground">Fechamento de Caixa</h1>
             <p className="text-sm text-muted-foreground flex items-center gap-1">
               {isCurrentDay ? "Prévia em Tempo Real" : "Histórico de Fechamento"}
             </p>
@@ -375,11 +461,7 @@ _Gerado automaticamente pelo Sistema_
                 )}
               >
                 <CalendarIcon className="mr-2 h-4 w-4" />
-                {date ? (
-                  format(date, "PPP", { locale: ptBR })
-                ) : (
-                  <span>Selecione uma data</span>
-                )}
+                {date ? format(date, "PPP", { locale: ptBR }) : <span>Selecione uma data</span>}
               </Button>
             </PopoverTrigger>
 
@@ -435,10 +517,7 @@ _Gerado automaticamente pelo Sistema_
             </PopoverContent>
           </Popover>
 
-          <Button
-            onClick={handleSendWhatsApp}
-            className="bg-green-600 hover:bg-green-700 text-white gap-2"
-          >
+          <Button onClick={handleSendWhatsApp} className="bg-green-600 hover:bg-green-700 text-white gap-2">
             <Share2 className="h-4 w-4" /> WhatsApp
           </Button>
         </div>
@@ -505,6 +584,7 @@ _Gerado automaticamente pelo Sistema_
                       : "Simulação de conferência para data passada."}
                   </CardDescription>
                 </CardHeader>
+
                 <CardContent className="space-y-4 pt-6">
                   <div className="space-y-2">
                     <Label htmlFor="physical-cash">Valor Contado (Dinheiro)</Label>
@@ -514,8 +594,8 @@ _Gerado automaticamente pelo Sistema_
                       </span>
                       <Input
                         id="physical-cash"
-                        type="number"
-                        step="0.01"
+                        type="text"
+                        inputMode="decimal"
                         placeholder="0,00"
                         value={physicalCash}
                         onChange={(e) => {
@@ -525,22 +605,21 @@ _Gerado automaticamente pelo Sistema_
                         className="pl-10 text-lg font-bold h-12"
                       />
                     </div>
+                    <p className="text-[11px] text-muted-foreground">
+                      Pode digitar assim: <b>1234,56</b> ou <b>1.234,56</b>
+                    </p>
                   </div>
 
-                  {physicalCash !== "" && (
+                  {deferredPhysicalCash.trim() !== "" && (
                     <div className="p-4 rounded-lg bg-background border animate-in slide-in-from-top-2">
                       <div className="flex justify-between items-center mb-2">
-                        <span className="text-sm text-muted-foreground">
-                          Sistema (Dinheiro):
-                        </span>
+                        <span className="text-sm text-muted-foreground">Sistema (Dinheiro):</span>
                         <span className="font-mono font-medium">
                           {formatCurrency(paymentTotals["Dinheiro"])}
                         </span>
                       </div>
                       <div className="flex justify-between items-center mb-3">
-                        <span className="text-sm text-muted-foreground">
-                          Gaveta (Informado):
-                        </span>
+                        <span className="text-sm text-muted-foreground">Gaveta (Informado):</span>
                         <span className="font-mono font-medium">
                           {formatCurrency(physicalCashValue)}
                         </span>
@@ -554,18 +633,14 @@ _Gerado automaticamente pelo Sistema_
                           <AlertDescription>
                             {cashDifference > 0
                               ? `Sobrando ${formatCurrency(cashDifference)}`
-                              : `Faltando ${formatCurrency(
-                                  Math.abs(cashDifference)
-                                )}`}
+                              : `Faltando ${formatCurrency(Math.abs(cashDifference))}`}
                           </AlertDescription>
                         </Alert>
                       ) : (
                         <Alert className="border-emerald-500 bg-emerald-50 text-emerald-900">
                           <CheckCircle2 className="h-4 w-4 text-emerald-600" />
                           <AlertTitle>Caixa Batendo!</AlertTitle>
-                          <AlertDescription>
-                            Tudo correto com o dinheiro.
-                          </AlertDescription>
+                          <AlertDescription>Tudo correto com o dinheiro.</AlertDescription>
                         </Alert>
                       )}
                     </div>
@@ -577,9 +652,10 @@ _Gerado automaticamente pelo Sistema_
                       setIsReconciled(true);
                       toast.success("Caixa validado!");
                     }}
-                    disabled={physicalCash === "" || isReconciled}
+                    disabled={!canValidate}
+                    title={hasDifference ? "Corrija a diferença para validar" : undefined}
                   >
-                    {isReconciled ? "Validado ✓" : "Validar Caixa"}
+                    {isReconciled ? "Validado ✓" : hasDifference ? "Ajuste a diferença" : "Validar Caixa"}
                   </Button>
                 </CardContent>
               </Card>
@@ -592,26 +668,20 @@ _Gerado automaticamente pelo Sistema_
                 </CardHeader>
                 <CardContent className="space-y-4">
                   <div className="flex justify-between items-center p-3 rounded-lg bg-emerald-50 border border-emerald-100">
-                    <span className="text-emerald-700 font-medium">
-                      Entradas (Vendas)
-                    </span>
+                    <span className="text-emerald-700 font-medium">Entradas (Vendas)</span>
                     <span className="font-mono font-bold text-lg text-emerald-700">
                       {formatCurrency(totalSalesValue)}
                     </span>
                   </div>
                   <div className="flex justify-between items-center p-3 rounded-lg bg-red-50 border border-red-100">
-                    <span className="text-red-700 font-medium">
-                      Saídas (Despesas)
-                    </span>
+                    <span className="text-red-700 font-medium">Saídas (Despesas)</span>
                     <span className="font-mono font-bold text-lg text-red-700">
                       -{formatCurrency(totalExpensesValue)}
                     </span>
                   </div>
                   <Separator />
                   <div className="flex justify-between items-center p-4 rounded-lg bg-slate-100 border border-slate-200">
-                    <span className="font-bold text-slate-800">
-                      Resultado Líquido
-                    </span>
+                    <span className="font-bold text-slate-800">Resultado Líquido</span>
                     <span
                       className={`font-mono font-bold text-xl ${
                         netResult >= 0 ? "text-emerald-600" : "text-red-600"
@@ -629,13 +699,16 @@ _Gerado automaticamente pelo Sistema_
                 <CardHeader>
                   <CardTitle className="flex items-center gap-2 text-base">
                     <PackageOpen className="h-5 w-5 text-blue-500" />
-                    Entrada de Mercadorias
+                    Movimentações de Estoque (manual)
                   </CardTitle>
+                  <CardDescription>
+                    Mostra entradas/saídas registradas manualmente (não inclui baixa automática de venda/cancelamento).
+                  </CardDescription>
                 </CardHeader>
                 <CardContent>
                   {stockLogs.length === 0 ? (
                     <p className="text-sm text-muted-foreground text-center py-4">
-                      Nenhuma mercadoria chegou nesta data.
+                      Nenhuma movimentação manual nesta data.
                     </p>
                   ) : (
                     <ul className="space-y-3">
@@ -644,13 +717,15 @@ _Gerado automaticamente pelo Sistema_
                           key={log.id}
                           className="flex justify-between items-center text-sm p-2 bg-muted/50 rounded-md"
                         >
-                          <div>
-                            <p className="font-medium">{log.product_name}</p>
+                          <div className="min-w-0">
+                            <p className="font-medium truncate">{log.product_name}</p>
                             <p className="text-xs text-muted-foreground">
-                              Recebido por: {log.operator}
+                              Resp: {log.operator || "Sistema"}
                             </p>
                           </div>
-                          <Badge variant="secondary">+{log.quantity} un</Badge>
+                          <Badge variant="secondary">
+                            {log.quantity >= 0 ? `+${log.quantity}` : `-${Math.abs(log.quantity)}`} un
+                          </Badge>
                         </li>
                       ))}
                     </ul>
@@ -677,13 +752,13 @@ _Gerado automaticamente pelo Sistema_
                           key={expense.id}
                           className="flex justify-between items-start text-sm border-b pb-2 last:border-0"
                         >
-                          <div>
-                            <p className="font-medium">{expense.description}</p>
+                          <div className="min-w-0 pr-2">
+                            <p className="font-medium truncate">{expense.description}</p>
                             <p className="text-xs text-muted-foreground">
                               {expense.entity_name || "Despesa Operacional"}
                             </p>
                           </div>
-                          <span className="font-mono font-medium text-red-600">
+                          <span className="font-mono font-medium text-red-600 whitespace-nowrap">
                             -{formatCurrency(expense.total_amount)}
                           </span>
                         </li>
@@ -702,13 +777,13 @@ _Gerado automaticamente pelo Sistema_
                 </CardHeader>
                 <CardContent>
                   <div className="flex flex-wrap gap-2">
-                    {Array.from(
-                      new Set(todaySales.map((s) => s.entity_name || "Não Identificado"))
-                    ).map((cliente, i) => (
-                      <Badge key={i} variant="outline" className="text-xs">
-                        {cliente}
-                      </Badge>
-                    ))}
+                    {Array.from(new Set(todaySales.map((s) => s.entity_name || "Não Identificado"))).map(
+                      (cliente, i) => (
+                        <Badge key={i} variant="outline" className="text-xs">
+                          {cliente}
+                        </Badge>
+                      )
+                    )}
                     {todaySales.length === 0 && (
                       <p className="text-sm text-muted-foreground w-full text-center">
                         Nenhuma venda registrada.

@@ -1,6 +1,6 @@
 "use client";
 
-import {
+import React, {
   useEffect,
   useMemo,
   useState,
@@ -61,6 +61,7 @@ interface Sale {
   description: string;
   created_at: string;
   seller_name: string;
+  seller_key: string; // ✅ cache p/ filtros e ranking
   commission_value: number;
   reference?: string | null;
 }
@@ -113,6 +114,10 @@ const normalizeSellerName = (name?: string) => {
   return cleaned || "Venda Balcão";
 };
 
+// chave normalizada (p/ comparar rápido)
+const normalizeSellerKey = (name?: string) =>
+  normalizeSellerName(name).trim().toLowerCase();
+
 // Fallback: tenta pegar vendedor da descrição se a coluna seller_name for nula (vendas antigas)
 const extractSellerName = (description?: string) => {
   const desc = String(description || "");
@@ -157,9 +162,7 @@ function KpiCard({
       </CardHeader>
       <CardContent className="pb-4">
         <div className="text-2xl font-bold tracking-tight">{value}</div>
-        {sub ? (
-          <div className="mt-1 text-xs text-muted-foreground">{sub}</div>
-        ) : null}
+        {sub ? <div className="mt-1 text-xs text-muted-foreground">{sub}</div> : null}
       </CardContent>
     </Card>
   );
@@ -191,7 +194,7 @@ export default function Performance() {
   const [sales, setSales] = useState<Sale[]>([]);
   const [loading, setLoading] = useState(true);
 
-  // 🔥 vendedores CADASTRADOS (profiles)
+  // vendedores CADASTRADOS (profiles)
   const [allSellers, setAllSellers] = useState<Person[]>([]);
 
   // filtros
@@ -210,8 +213,10 @@ export default function Performance() {
   // limite do fetch (DB)
   const DEFAULT_FETCH_LIMIT = 800;
   const MAX_FETCH_LIMIT = 3000;
+  const STEP_FETCH = 700;
   const [fetchLimit, setFetchLimit] = useState(DEFAULT_FETCH_LIMIT);
 
+  // controle de “request mais recente” (evita setState fora de ordem)
   const requestIdRef = useRef(0);
 
   const resetPaging = useCallback(() => {
@@ -219,19 +224,12 @@ export default function Performance() {
     setSellerLimit(12);
   }, []);
 
-  const buildFromDateIso = (rk: RangeKey) => {
+  const buildFromDateIso = useCallback((rk: RangeKey) => {
     if (rk === "all") return null;
 
     const now = new Date();
     if (rk === "today") {
-      const start = new Date(
-        now.getFullYear(),
-        now.getMonth(),
-        now.getDate(),
-        0,
-        0,
-        0
-      );
+      const start = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0);
       return start.toISOString();
     }
 
@@ -253,24 +251,17 @@ export default function Performance() {
     const from = new Date();
     from.setDate(from.getDate() - days);
     return from.toISOString();
-  };
+  }, []);
 
   // ✅ buscar vendedores do cadastro (profiles)
   const fetchSellers = useCallback(async () => {
     try {
-      const { data, error } = await supabase
-        .from("profiles")
-        .select("id,name")
-        .order("name");
-
+      const { data, error } = await supabase.from("profiles").select("id,name").order("name");
       if (error) throw error;
 
       const mapped: Person[] = (data || [])
         .filter((p: any) => String(p?.name || "").trim().length > 0)
-        .map((p: any) => ({
-          id: String(p.id),
-          name: String(p.name),
-        }));
+        .map((p: any) => ({ id: String(p.id), name: String(p.name) }));
 
       setAllSellers(mapped);
     } catch (err) {
@@ -279,45 +270,56 @@ export default function Performance() {
     }
   }, []);
 
+  /**
+   * ✅ Perf fix:
+   * - suporte a limitOverride (evita “stale state” do fetchLimit)
+   * - mapeia seller_key pra não normalizar em loop várias vezes
+   */
   const fetchSales = useCallback(
-    async (opts?: { keepLimit?: boolean }) => {
+    async (opts?: { keepLimit?: boolean; limitOverride?: number }) => {
       const currentRequest = ++requestIdRef.current;
 
       setLoading(true);
       try {
-        if (!opts?.keepLimit) setFetchLimit(DEFAULT_FETCH_LIMIT);
+        const limitToUse =
+          typeof opts?.limitOverride === "number"
+            ? opts.limitOverride
+            : opts?.keepLimit
+            ? fetchLimit
+            : DEFAULT_FETCH_LIMIT;
+
+        // quando troca período (e não pediu keepLimit), volta pro padrão
+        if (!opts?.keepLimit && typeof opts?.limitOverride !== "number") {
+          setFetchLimit(DEFAULT_FETCH_LIMIT);
+        }
 
         const fromIso = buildFromDateIso(range);
 
-        // ✅ pega vendas antigas (PDV-...) e novas (UUID / qualquer reference não nula)
         let q = supabase
           .from("financial_entries")
           .select(
             "id,total_amount,entity_name,description,created_at,seller_name,commission_value,reference"
           )
           .eq("type", "receivable")
+          // pega vendas antigas (PDV-...) e novas (reference não nula)
           .or("reference.ilike.PDV-%,reference.not.is.null")
           .order("created_at", { ascending: false })
-          .limit(opts?.keepLimit ? fetchLimit : DEFAULT_FETCH_LIMIT);
+          .limit(limitToUse);
 
         if (fromIso) q = q.gte("created_at", fromIso);
 
         const { data, error } = await q;
         if (error) throw error;
 
+        // se chegou outra request depois, ignora essa
         if (currentRequest !== requestIdRef.current) return;
 
         const mapped: Sale[] = (data || []).map((s: any) => {
           const description = String(s.description || "");
 
-          // Lógica híbrida: pega do banco OU extrai da descrição (antigas)
-          let finalSellerName = s.seller_name
-            ? normalizeSellerName(s.seller_name)
-            : "";
-
-          if (!finalSellerName) {
-            finalSellerName = normalizeSellerName(extractSellerName(description));
-          }
+          // pega do banco OU extrai da descrição (antigas)
+          let finalSellerName = s.seller_name ? normalizeSellerName(s.seller_name) : "";
+          if (!finalSellerName) finalSellerName = normalizeSellerName(extractSellerName(description));
 
           return {
             id: String(s.id),
@@ -326,6 +328,7 @@ export default function Performance() {
             description,
             created_at: String(s.created_at || ""),
             seller_name: finalSellerName,
+            seller_key: normalizeSellerKey(finalSellerName),
             commission_value: toNumber(s.commission_value),
             reference: s.reference ?? null,
           };
@@ -340,7 +343,7 @@ export default function Performance() {
         if (currentRequest === requestIdRef.current) setLoading(false);
       }
     },
-    [range, fetchLimit, resetPaging]
+    [range, fetchLimit, buildFromDateIso, resetPaging]
   );
 
   useEffect(() => {
@@ -348,12 +351,20 @@ export default function Performance() {
     fetchSellers();
   }, [fetchSales, fetchSellers]);
 
-  const loadMoreFromDb = useCallback(async () => {
-    setFetchLimit((prev) => Math.min(prev + 700, MAX_FETCH_LIMIT));
-    Promise.resolve().then(() => fetchSales({ keepLimit: true }));
-  }, [fetchSales]);
+  // ✅ loadMore corrigido (sem race/stale state)
+  const loadMoreFromDb = useCallback(() => {
+    const nextLimit = Math.min(fetchLimit + STEP_FETCH, MAX_FETCH_LIMIT);
+    setFetchLimit(nextLimit);
+    fetchSales({ keepLimit: true, limitOverride: nextLimit });
+  }, [fetchLimit, fetchSales]);
 
-  // ✅ Lista de vendedores: agora vem do CADASTRO + também inclui nomes que existirem nas vendas antigas
+  // Normaliza o filtro 1x
+  const sellerFilterKey = useMemo(() => {
+    if (sellerFilter === "all") return "all";
+    return normalizeSellerKey(sellerFilter);
+  }, [sellerFilter]);
+
+  // ✅ Lista de vendedores: CADASTRO + vendedores nas vendas
   const sellersList = useMemo(() => {
     const set = new Set<string>();
 
@@ -363,26 +374,22 @@ export default function Performance() {
     return ["all", ...Array.from(set).sort((a, b) => a.localeCompare(b))];
   }, [allSellers, sales]);
 
-  // Vendas filtradas
+  // Vendas filtradas por vendedor (usa seller_key cache)
   const salesFilteredBySeller = useMemo(() => {
-    if (sellerFilter === "all") return sales;
-    return sales.filter((s) => normalizeSellerName(s.seller_name) === normalizeSellerName(sellerFilter));
-  }, [sales, sellerFilter]);
+    if (sellerFilterKey === "all") return sales;
+    return sales.filter((s) => s.seller_key === sellerFilterKey);
+  }, [sales, sellerFilterKey]);
 
-  // Totais Gerais
+  // Totais Gerais (loops rápidos)
   const totalRevenue = useMemo(() => {
     let sum = 0;
-    for (let i = 0; i < salesFilteredBySeller.length; i++) {
-      sum += salesFilteredBySeller[i].total_amount;
-    }
+    for (let i = 0; i < salesFilteredBySeller.length; i++) sum += salesFilteredBySeller[i].total_amount;
     return sum;
   }, [salesFilteredBySeller]);
 
   const totalCommissions = useMemo(() => {
     let sum = 0;
-    for (let i = 0; i < salesFilteredBySeller.length; i++) {
-      sum += salesFilteredBySeller[i].commission_value;
-    }
+    for (let i = 0; i < salesFilteredBySeller.length; i++) sum += salesFilteredBySeller[i].commission_value;
     return sum;
   }, [salesFilteredBySeller]);
 
@@ -393,10 +400,7 @@ export default function Performance() {
 
   // --- RANKING VENDEDORES ---
   const sellerStats = useMemo(() => {
-    const map = new Map<
-      string,
-      { totalRevenue: number; totalCommission: number; salesCount: number }
-    >();
+    const map = new Map<string, { totalRevenue: number; totalCommission: number; salesCount: number }>();
 
     for (let i = 0; i < salesFilteredBySeller.length; i++) {
       const sale = salesFilteredBySeller[i];
@@ -427,7 +431,6 @@ export default function Performance() {
       });
     }
 
-    // ✅ mantém no ranking só quem tem vendas (normal), mas o SELECT mostra todos
     stats.sort((a, b) => b.totalRevenue - a.totalRevenue);
     return stats;
   }, [salesFilteredBySeller]);
@@ -435,9 +438,7 @@ export default function Performance() {
   const maxRevenue = useMemo(() => {
     if (!sellerStats.length) return 1;
     let max = 1;
-    for (let i = 0; i < sellerStats.length; i++) {
-      if (sellerStats[i].totalRevenue > max) max = sellerStats[i].totalRevenue;
-    }
+    for (let i = 0; i < sellerStats.length; i++) if (sellerStats[i].totalRevenue > max) max = sellerStats[i].totalRevenue;
     return max || 1;
   }, [sellerStats]);
 
@@ -468,15 +469,12 @@ export default function Performance() {
       }
     }
 
-    const customers = Array.from(customerMap.values()).sort(
-      (a, b) => b.totalSpent - a.totalSpent
-    );
+    const customers = Array.from(customerMap.values()).sort((a, b) => b.totalSpent - a.totalSpent);
 
     let total = 0;
     for (let i = 0; i < customers.length; i++) total += customers[i].totalSpent;
 
     let accumulated = 0;
-
     for (let i = 0; i < customers.length; i++) {
       const c = customers[i];
       accumulated += c.totalSpent;
@@ -498,9 +496,7 @@ export default function Performance() {
   }, [salesFilteredBySeller]);
 
   const classificationCounts = useMemo(() => {
-    let A = 0,
-      B = 0,
-      C = 0;
+    let A = 0, B = 0, C = 0;
     for (let i = 0; i < customerStats.length; i++) {
       const cls = customerStats[i].classification;
       if (cls === "A") A++;
@@ -516,12 +512,11 @@ export default function Performance() {
     return customerStats.filter((c) => (c.name || "").toLowerCase().includes(s));
   }, [customerStats, deferredCustomerSearch]);
 
-  // Paginação
+  // Paginação (render)
   const customerVisible = useMemo(
     () => customerStatsFiltered.slice(0, customerLimit),
     [customerStatsFiltered, customerLimit]
   );
-
   const sellerVisible = useMemo(
     () => sellerStats.slice(0, sellerLimit),
     [sellerStats, sellerLimit]
@@ -685,8 +680,7 @@ export default function Performance() {
           value={`${salesFilteredBySeller.length}`}
           sub={
             <>
-              Fat:{" "}
-              <span className="font-semibold">{formatCurrency(totalRevenue)}</span>
+              Fat: <span className="font-semibold">{formatCurrency(totalRevenue)}</span>
             </>
           }
         />
@@ -915,17 +909,13 @@ export default function Performance() {
             <div className="flex items-center gap-3 p-3 rounded-xl bg-emerald-500/5 border border-emerald-500/20">
               <Badge className="bg-emerald-500 text-white">A</Badge>
               <div className="text-sm">
-                <span className="font-bold text-emerald-700">
-                  VIPs (80% da receita)
-                </span>
+                <span className="font-bold text-emerald-700">VIPs (80% da receita)</span>
               </div>
             </div>
             <div className="flex items-center gap-3 p-3 rounded-xl bg-amber-500/5 border border-amber-500/20">
               <Badge className="bg-amber-500 text-white">B</Badge>
               <div className="text-sm">
-                <span className="font-bold text-amber-700">
-                  Regulares (15% da receita)
-                </span>
+                <span className="font-bold text-amber-700">Regulares (15% da receita)</span>
               </div>
             </div>
             <div className="flex items-center gap-3 p-3 rounded-xl bg-slate-500/5 border border-slate-500/20">
