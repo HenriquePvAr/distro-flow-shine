@@ -49,7 +49,6 @@ import {
 } from "@/components/ui/sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { supabase } from "@/integrations/supabase/client";
-import { useAuth } from "@/hooks/useAuth";
 
 // --- TIPAGEM ---
 interface Product {
@@ -130,8 +129,6 @@ type OfflineQueueEntry =
   | any;
 
 export default function PDV() {
-  const { user } = useAuth();
-
   // --- ESTADOS DE DADOS ---
   const [products, setProducts] = useState<Product[]>([]);
   const [customers, setCustomers] = useState<Person[]>([]);
@@ -207,15 +204,14 @@ export default function PDV() {
   const filteredProducts = useMemo(() => {
     const s = search.toLowerCase();
     return products.filter(
-      (p) =>
-        p.name.toLowerCase().includes(s) || p.sku?.toLowerCase().includes(s)
+      (p) => p.name.toLowerCase().includes(s) || p.sku?.toLowerCase().includes(s)
     );
   }, [products, search]);
 
   const canFinish = useMemo(() => {
     if (cart.length === 0) return false;
     if (saleType === "vista") return isPaid;
-    return !!dueDate;
+    return !!dueDate; // a prazo só exige vencimento
   }, [cart.length, saleType, isPaid, dueDate]);
 
   // --------------------------
@@ -280,6 +276,7 @@ export default function PDV() {
 
       const [pRes, cRes, sRes] = await Promise.race([task, timeout]);
 
+      // se chegou uma chamada antiga, ignora (mas deixa a chamada mais nova finalizar)
       if (myLoadId !== loadIdRef.current) return;
 
       if (pRes?.data) {
@@ -361,19 +358,13 @@ export default function PDV() {
     if (product.stock <= 0) return toast.error("Sem estoque!");
 
     setCart((prev) => {
-      const defaultMode: CartItem["saleMode"] = product.sellsByKg
-        ? "kg"
-        : "unidade";
-      const existing = prev.find(
-        (i) => i.id === product.id && i.saleMode === defaultMode
-      );
+      const defaultMode: CartItem["saleMode"] = product.sellsByKg ? "kg" : "unidade";
+      const existing = prev.find((i) => i.id === product.id && i.saleMode === defaultMode);
 
       const step = defaultMode === "kg" ? 0.1 : 1;
 
       if (existing) {
-        return prev.map((i) =>
-          i === existing ? { ...i, quantity: i.quantity + step } : i
-        );
+        return prev.map((i) => (i === existing ? { ...i, quantity: i.quantity + step } : i));
       }
 
       return [
@@ -389,14 +380,11 @@ export default function PDV() {
     toast.success("Adicionado!");
   };
 
-  const removeItem = (index: number) =>
-    setCart((prev) => prev.filter((_, i) => i !== index));
+  const removeItem = (index: number) => setCart((prev) => prev.filter((_, i) => i !== index));
 
   const updateItemQty = (index: number, val: number) => {
     if (val <= 0) return removeItem(index);
-    setCart((prev) =>
-      prev.map((item, i) => (i === index ? { ...item, quantity: val } : item))
-    );
+    setCart((prev) => prev.map((item, i) => (i === index ? { ...item, quantity: val } : item)));
   };
 
   const toggleItemMode = (index: number) => {
@@ -442,35 +430,32 @@ export default function PDV() {
     setCurrentPayAmount("");
   };
 
-  const removePayment = (id: string) =>
-    setPayments((prev) => prev.filter((p) => p.id !== id));
+  const removePayment = (id: string) => setPayments((prev) => prev.filter((p) => p.id !== id));
 
   const autoFillRemaining = () => {
     if (remaining > 0) setCurrentPayAmount(remaining.toFixed(2));
   };
 
   // --------------------------
-  // PREPARAR PAYLOAD (RPC) - COMPATÍVEL COM A FUNÇÃO 1
+  // PREPARAR PAYLOAD (RPC) - compatível com create_sale(
+  // p_customer_id uuid, p_seller_id uuid, p_items jsonb, p_payment_method text,
+  // p_discount numeric, p_surcharge numeric, p_sale_type text, p_due_date timestamptz, p_commission_rate numeric
+  // )
   // --------------------------
   const buildRpcPayload = () => {
-    const customerId =
-      selectedCustomerId === "padrao" ? null : selectedCustomerId;
-
-    const sellerId =
-      selectedSellerId === "padrao" ? null : selectedSellerId;
+    const customerId = selectedCustomerId === "padrao" ? null : selectedCustomerId;
+    const sellerId = selectedSellerId === "padrao" ? null : selectedSellerId;
 
     const items = cart.map((i) => {
       const unitPrice =
-        i.saleMode === "caixa" && i.qtyPerBox
-          ? i.salePrice * i.qtyPerBox
-          : i.salePrice;
+        i.saleMode === "caixa" && i.qtyPerBox ? i.salePrice * i.qtyPerBox : i.salePrice;
 
       return {
         product_id: i.id,
-        quantity: i.quantity,
-        unit_price: unitPrice,
-        total_price: unitPrice * i.quantity,
-        sale_mode: i.saleMode,
+        quantity: Number(i.quantity),
+        unit_price: Number(unitPrice),
+        total_price: Number(unitPrice) * Number(i.quantity),
+        sale_mode: i.saleMode, // pode manter (mesmo que o SQL ignore)
       };
     });
 
@@ -491,8 +476,8 @@ export default function PDV() {
 
     return {
       p_customer_id: customerId,
-      p_seller_id: sellerId,              // ✅ agora é seller_id
-      p_items: items,                      // ✅ agora é product_id/unit_price/total_price
+      p_seller_id: sellerId,
+      p_items: items,
       p_payment_method: paymentMethod,
       p_discount: discount,
       p_surcharge: surcharge,
@@ -522,7 +507,6 @@ export default function PDV() {
       payload,
     });
 
-    setProcessing(false);
     setIsCheckoutOpen(false);
     setShowSuccessModal(true);
     resetSale();
@@ -536,7 +520,6 @@ export default function PDV() {
     setCurrentPayAmount("");
     setSelectedCustomerId("padrao");
     setSelectedSellerId("padrao");
-
     setSaleType("vista");
     setDueDate("");
     setCommissionRate(0);
@@ -552,10 +535,10 @@ export default function PDV() {
       prev.map((p) => {
         const it = cart.find((c) => c.id === p.id);
         if (!it) return p;
+
         const deduction =
-          it.saleMode === "caixa" && it.qtyPerBox
-            ? it.quantity * it.qtyPerBox
-            : it.quantity;
+          it.saleMode === "caixa" && it.qtyPerBox ? it.quantity * it.qtyPerBox : it.quantity;
+
         return { ...p, stock: p.stock - deduction };
       })
     );
@@ -592,7 +575,7 @@ export default function PDV() {
     } catch (err: any) {
       console.error(err);
 
-      // Se está online, mostra erro real do banco
+      // Se está online, mostra erro real do banco (não salva offline)
       if (navigator.onLine) {
         toast.error(err?.message || "Erro ao salvar a venda no servidor.");
         return;
@@ -713,17 +696,11 @@ export default function PDV() {
               onClick={handleSync}
               disabled={processing || !isOnline}
             >
-              <RefreshCw
-                className={`h-4 w-4 mr-2 ${processing ? "animate-spin" : ""}`}
-              />
+              <RefreshCw className={`h-4 w-4 mr-2 ${processing ? "animate-spin" : ""}`} />
               {offlineSalesCount}
             </Button>
           )}
-          <div
-            className={`h-3 w-3 rounded-full ${
-              isOnline ? "bg-emerald-500" : "bg-red-500"
-            }`}
-          />
+          <div className={`h-3 w-3 rounded-full ${isOnline ? "bg-emerald-500" : "bg-red-500"}`} />
         </div>
       </header>
 
@@ -754,9 +731,7 @@ export default function PDV() {
             <span className="text-xs text-muted-foreground font-medium">
               {cart.length} itens no carrinho
             </span>
-            <span className="text-2xl font-bold text-gray-900">
-              {formatCurrency(subTotal)}
-            </span>
+            <span className="text-2xl font-bold text-gray-900">{formatCurrency(subTotal)}</span>
           </div>
 
           <Sheet open={isCheckoutOpen} onOpenChange={setIsCheckoutOpen}>
@@ -794,10 +769,7 @@ export default function PDV() {
                 </div>
 
                 {/* TAB CARRINHO */}
-                <TabsContent
-                  value="cart"
-                  className="flex-1 overflow-y-auto px-6 py-4 space-y-4"
-                >
+                <TabsContent value="cart" className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
                   {cart.length === 0 ? (
                     <div className="text-center py-10 text-muted-foreground">
                       <ShoppingCart className="h-12 w-12 mx-auto mb-3 opacity-20" />
@@ -835,10 +807,7 @@ export default function PDV() {
                             size="icon"
                             className="h-8 w-8"
                             onClick={() =>
-                              updateItemQty(
-                                idx,
-                                item.quantity - (item.saleMode === "kg" ? 0.1 : 1)
-                              )
+                              updateItemQty(idx, item.quantity - (item.saleMode === "kg" ? 0.1 : 1))
                             }
                           >
                             <Minus className="h-4 w-4" />
@@ -851,10 +820,7 @@ export default function PDV() {
                             size="icon"
                             className="h-8 w-8"
                             onClick={() =>
-                              updateItemQty(
-                                idx,
-                                item.quantity + (item.saleMode === "kg" ? 0.1 : 1)
-                              )
+                              updateItemQty(idx, item.quantity + (item.saleMode === "kg" ? 0.1 : 1))
                             }
                           >
                             <Plus className="h-4 w-4" />
@@ -886,10 +852,7 @@ export default function PDV() {
                     <div className="grid grid-cols-2 gap-3">
                       <div>
                         <label className="text-xs font-medium mb-1 block">Cliente</label>
-                        <Select
-                          value={selectedCustomerId}
-                          onValueChange={setSelectedCustomerId}
-                        >
+                        <Select value={selectedCustomerId} onValueChange={setSelectedCustomerId}>
                           <SelectTrigger className="h-9">
                             <SelectValue />
                           </SelectTrigger>
@@ -953,10 +916,7 @@ export default function PDV() {
                 </TabsContent>
 
                 {/* TAB PAGAMENTO */}
-                <TabsContent
-                  value="pay"
-                  className="flex-1 overflow-y-auto px-6 py-4 flex flex-col"
-                >
+                <TabsContent value="pay" className="flex-1 overflow-y-auto px-6 py-4 flex flex-col">
                   <div className="bg-white p-3 rounded-xl border mb-4 space-y-3 shadow-sm">
                     <div className="flex gap-2">
                       <Button
@@ -1025,15 +985,11 @@ export default function PDV() {
                       <div className="text-[10px] uppercase text-muted-foreground font-bold">
                         Total
                       </div>
-                      <div className="text-lg font-bold">
-                        {formatCurrency(totalPayable)}
-                      </div>
+                      <div className="text-lg font-bold">{formatCurrency(totalPayable)}</div>
                     </div>
 
                     <div className="bg-emerald-50 p-3 rounded-lg border border-emerald-100 text-center">
-                      <div className="text-[10px] uppercase text-emerald-700 font-bold">
-                        Pago
-                      </div>
+                      <div className="text-[10px] uppercase text-emerald-700 font-bold">Pago</div>
                       <div className="text-lg font-bold text-emerald-700">
                         {formatCurrency(totalPaid)}
                       </div>
@@ -1101,27 +1057,23 @@ export default function PDV() {
                       {remaining > 0.01 && (
                         <div className="space-y-4 bg-muted/20 p-4 rounded-xl border">
                           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                            {["Dinheiro", "Pix", "Cartão Crédito", "Cartão Débito"].map(
-                              (method) => (
-                                <Button
-                                  key={method}
-                                  variant={currentPayMethod === method ? "default" : "outline"}
-                                  className={`h-9 text-xs ${
-                                    currentPayMethod === method ? "ring-2 ring-offset-1" : ""
-                                  }`}
-                                  onClick={() => setCurrentPayMethod(method)}
-                                >
-                                  {method === "Dinheiro" && (
-                                    <Banknote className="h-3 w-3 mr-1" />
-                                  )}
-                                  {method === "Pix" && <QrCode className="h-3 w-3 mr-1" />}
-                                  {method.includes("Cartão") && (
-                                    <CreditCard className="h-3 w-3 mr-1" />
-                                  )}
-                                  {method}
-                                </Button>
-                              )
-                            )}
+                            {["Dinheiro", "Pix", "Cartão Crédito", "Cartão Débito"].map((method) => (
+                              <Button
+                                key={method}
+                                variant={currentPayMethod === method ? "default" : "outline"}
+                                className={`h-9 text-xs ${
+                                  currentPayMethod === method ? "ring-2 ring-offset-1" : ""
+                                }`}
+                                onClick={() => setCurrentPayMethod(method)}
+                              >
+                                {method === "Dinheiro" && <Banknote className="h-3 w-3 mr-1" />}
+                                {method === "Pix" && <QrCode className="h-3 w-3 mr-1" />}
+                                {method.includes("Cartão") && (
+                                  <CreditCard className="h-3 w-3 mr-1" />
+                                )}
+                                {method}
+                              </Button>
+                            ))}
                           </div>
 
                           <div className="flex gap-2">
@@ -1212,9 +1164,7 @@ export default function PDV() {
             <div className="mx-auto bg-emerald-100 p-3 rounded-full w-fit mb-3">
               <CheckCircle className="h-10 w-10 text-emerald-600" />
             </div>
-            <DialogTitle className="text-2xl text-emerald-700">
-              Venda Realizada!
-            </DialogTitle>
+            <DialogTitle className="text-2xl text-emerald-700">Venda Realizada!</DialogTitle>
             <DialogDescription>A venda foi registrada com sucesso.</DialogDescription>
           </DialogHeader>
 
@@ -1236,7 +1186,7 @@ export default function PDV() {
                 <span>Vencimento</span>
                 <span>
                   {lastSaleData?.dueDate
-                    ? new Date(lastSaleData.dueDate).toLocaleDateString("pt-BR")
+                    ? new Date(`${lastSaleData.dueDate}T00:00:00`).toLocaleDateString("pt-BR")
                     : "-"}
                 </span>
               </div>
