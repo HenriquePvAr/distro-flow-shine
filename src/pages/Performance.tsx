@@ -60,14 +60,15 @@ interface Sale {
   entity_name: string;
   description: string;
   created_at: string;
-  seller_name: string; // Agora prioritariamente do banco
-  commission_value: number; // Nova coluna
+  seller_name: string;
+  commission_value: number;
+  reference?: string | null;
 }
 
 interface SellerStat {
   name: string;
   totalRevenue: number;
-  totalCommission: number; // Novo campo
+  totalCommission: number;
   salesCount: number;
   averageTicket: number;
 }
@@ -80,6 +81,11 @@ interface CustomerStat {
   classification?: "A" | "B" | "C";
   percentageOfTotal?: number;
   cumulativePct?: number;
+}
+
+interface Person {
+  id: string;
+  name: string;
 }
 
 // -----------------------------
@@ -100,9 +106,16 @@ const toNumber = (v: any) => {
   return Number.isFinite(n) ? n : 0;
 };
 
+// remove lixo tipo "[CANCELADO por ...]" do final
+const normalizeSellerName = (name?: string) => {
+  const n = String(name || "").trim();
+  const cleaned = n.replace(/\s*\[CANCELADO.*?\]\s*$/i, "").trim();
+  return cleaned || "Venda Balcão";
+};
+
 // Fallback: tenta pegar vendedor da descrição se a coluna seller_name for nula (vendas antigas)
 const extractSellerName = (description?: string) => {
-  const desc = description || "";
+  const desc = String(description || "");
   const match =
     desc.match(/Vend:\s*([^|]+)/i) || desc.match(/Vendedor:\s*([^|]+)/i);
   const sellerName = match ? match[1].trim() : "";
@@ -178,6 +191,9 @@ export default function Performance() {
   const [sales, setSales] = useState<Sale[]>([]);
   const [loading, setLoading] = useState(true);
 
+  // 🔥 vendedores CADASTRADOS (profiles)
+  const [allSellers, setAllSellers] = useState<Person[]>([]);
+
   // filtros
   type RangeKey = "today" | "week" | "month" | "7" | "30" | "90" | "all";
   const [range, setRange] = useState<RangeKey>("month");
@@ -239,6 +255,30 @@ export default function Performance() {
     return from.toISOString();
   };
 
+  // ✅ buscar vendedores do cadastro (profiles)
+  const fetchSellers = useCallback(async () => {
+    try {
+      const { data, error } = await supabase
+        .from("profiles")
+        .select("id,name")
+        .order("name");
+
+      if (error) throw error;
+
+      const mapped: Person[] = (data || [])
+        .filter((p: any) => String(p?.name || "").trim().length > 0)
+        .map((p: any) => ({
+          id: String(p.id),
+          name: String(p.name),
+        }));
+
+      setAllSellers(mapped);
+    } catch (err) {
+      console.error(err);
+      toast.error("Erro ao carregar vendedores cadastrados");
+    }
+  }, []);
+
   const fetchSales = useCallback(
     async (opts?: { keepLimit?: boolean }) => {
       const currentRequest = ++requestIdRef.current;
@@ -249,12 +289,14 @@ export default function Performance() {
 
         const fromIso = buildFromDateIso(range);
 
-        // ATENÇÃO: Adicionado seller_name e commission_value no select
+        // ✅ pega vendas antigas (PDV-...) e novas (UUID / qualquer reference não nula)
         let q = supabase
           .from("financial_entries")
-          .select("id,total_amount,entity_name,description,created_at,seller_name,commission_value")
+          .select(
+            "id,total_amount,entity_name,description,created_at,seller_name,commission_value,reference"
+          )
           .eq("type", "receivable")
-          .ilike("reference", "PDV%")
+          .or("reference.ilike.PDV-%,reference.not.is.null")
           .order("created_at", { ascending: false })
           .limit(opts?.keepLimit ? fetchLimit : DEFAULT_FETCH_LIMIT);
 
@@ -267,11 +309,14 @@ export default function Performance() {
 
         const mapped: Sale[] = (data || []).map((s: any) => {
           const description = String(s.description || "");
-          
-          // Lógica híbrida: Pega do banco OU extrai da descrição se for antigo
-          let finalSellerName = s.seller_name;
+
+          // Lógica híbrida: pega do banco OU extrai da descrição (antigas)
+          let finalSellerName = s.seller_name
+            ? normalizeSellerName(s.seller_name)
+            : "";
+
           if (!finalSellerName) {
-             finalSellerName = extractSellerName(description);
+            finalSellerName = normalizeSellerName(extractSellerName(description));
           }
 
           return {
@@ -282,6 +327,7 @@ export default function Performance() {
             created_at: String(s.created_at || ""),
             seller_name: finalSellerName,
             commission_value: toNumber(s.commission_value),
+            reference: s.reference ?? null,
           };
         });
 
@@ -299,27 +345,28 @@ export default function Performance() {
 
   useEffect(() => {
     fetchSales();
-  }, [fetchSales]);
+    fetchSellers();
+  }, [fetchSales, fetchSellers]);
 
   const loadMoreFromDb = useCallback(async () => {
-    setFetchLimit((prev) => {
-      const next = Math.min(prev + 700, MAX_FETCH_LIMIT);
-      return next;
-    });
+    setFetchLimit((prev) => Math.min(prev + 700, MAX_FETCH_LIMIT));
     Promise.resolve().then(() => fetchSales({ keepLimit: true }));
   }, [fetchSales]);
 
-  // Lista de vendedores única
+  // ✅ Lista de vendedores: agora vem do CADASTRO + também inclui nomes que existirem nas vendas antigas
   const sellersList = useMemo(() => {
     const set = new Set<string>();
-    for (let i = 0; i < sales.length; i++) set.add(sales[i].seller_name);
+
+    for (const s of allSellers) set.add(normalizeSellerName(s.name));
+    for (let i = 0; i < sales.length; i++) set.add(normalizeSellerName(sales[i].seller_name));
+
     return ["all", ...Array.from(set).sort((a, b) => a.localeCompare(b))];
-  }, [sales]);
+  }, [allSellers, sales]);
 
   // Vendas filtradas
   const salesFilteredBySeller = useMemo(() => {
     if (sellerFilter === "all") return sales;
-    return sales.filter((s) => s.seller_name === sellerFilter);
+    return sales.filter((s) => normalizeSellerName(s.seller_name) === normalizeSellerName(sellerFilter));
   }, [sales, sellerFilter]);
 
   // Totais Gerais
@@ -346,11 +393,14 @@ export default function Performance() {
 
   // --- RANKING VENDEDORES ---
   const sellerStats = useMemo(() => {
-    const map = new Map<string, { totalRevenue: number; totalCommission: number; salesCount: number }>();
+    const map = new Map<
+      string,
+      { totalRevenue: number; totalCommission: number; salesCount: number }
+    >();
 
     for (let i = 0; i < salesFilteredBySeller.length; i++) {
       const sale = salesFilteredBySeller[i];
-      const name = sale.seller_name;
+      const name = normalizeSellerName(sale.seller_name);
 
       const prev = map.get(name);
       if (prev) {
@@ -358,10 +408,10 @@ export default function Performance() {
         prev.totalCommission += sale.commission_value;
         prev.salesCount += 1;
       } else {
-        map.set(name, { 
-            totalRevenue: sale.total_amount, 
-            totalCommission: sale.commission_value,
-            salesCount: 1 
+        map.set(name, {
+          totalRevenue: sale.total_amount,
+          totalCommission: sale.commission_value,
+          salesCount: 1,
         });
       }
     }
@@ -377,6 +427,7 @@ export default function Performance() {
       });
     }
 
+    // ✅ mantém no ranking só quem tem vendas (normal), mas o SELECT mostra todos
     stats.sort((a, b) => b.totalRevenue - a.totalRevenue);
     return stats;
   }, [salesFilteredBySeller]);
@@ -447,7 +498,9 @@ export default function Performance() {
   }, [salesFilteredBySeller]);
 
   const classificationCounts = useMemo(() => {
-    let A = 0, B = 0, C = 0;
+    let A = 0,
+      B = 0,
+      C = 0;
     for (let i = 0; i < customerStats.length; i++) {
       const cls = customerStats[i].classification;
       if (cls === "A") A++;
@@ -457,14 +510,10 @@ export default function Performance() {
     return { A, B, C };
   }, [customerStats]);
 
-  const identifiedCustomers = customerStats.length;
-
   const customerStatsFiltered = useMemo(() => {
     const s = deferredCustomerSearch.trim().toLowerCase();
     if (!s) return customerStats;
-    return customerStats.filter((c) =>
-      (c.name || "").toLowerCase().includes(s)
-    );
+    return customerStats.filter((c) => (c.name || "").toLowerCase().includes(s));
   }, [customerStats, deferredCustomerSearch]);
 
   // Paginação
@@ -480,9 +529,12 @@ export default function Performance() {
 
   const getRankIcon = (index: number) => {
     switch (index) {
-      case 0: return <Crown className="h-5 w-5 text-amber-500" />;
-      case 1: return <Medal className="h-5 w-5 text-slate-400" />;
-      case 2: return <Award className="h-5 w-5 text-amber-700" />;
+      case 0:
+        return <Crown className="h-5 w-5 text-amber-500" />;
+      case 1:
+        return <Medal className="h-5 w-5 text-slate-400" />;
+      case 2:
+        return <Award className="h-5 w-5 text-amber-700" />;
       default:
         return (
           <span className="w-6 text-center text-sm font-bold text-muted-foreground">
@@ -493,17 +545,12 @@ export default function Performance() {
   };
 
   const getClassificationBadge = (classification: "A" | "B" | "C") => {
-    if (classification === "A") return "bg-emerald-500/10 text-emerald-600 border-emerald-500/20";
-    if (classification === "B") return "bg-amber-500/10 text-amber-600 border-amber-500/20";
+    if (classification === "A")
+      return "bg-emerald-500/10 text-emerald-600 border-emerald-500/20";
+    if (classification === "B")
+      return "bg-amber-500/10 text-amber-600 border-amber-500/20";
     return "bg-slate-500/10 text-slate-600 border-slate-500/20";
   };
-
-  const rangeLabel =
-    range === "all" ? "Tudo"
-    : range === "today" ? "Hoje"
-    : range === "week" ? "Esta semana"
-    : range === "month" ? "Este mês"
-    : `${range} dias`;
 
   const showReset = range !== "month" || sellerFilter !== "all";
 
@@ -512,15 +559,24 @@ export default function Performance() {
       <div className="flex min-h-[60vh] items-center justify-center px-4">
         <div className="flex flex-col items-center gap-3">
           <Loader2 className="h-9 w-9 animate-spin text-primary" />
-          <p className="text-sm text-muted-foreground">Calculando comissões e performance...</p>
+          <p className="text-sm text-muted-foreground">
+            Calculando comissões e performance...
+          </p>
         </div>
       </div>
     );
   }
 
   return (
-    <div className={clsx("mx-auto w-full max-w-6xl", "px-3 sm:px-4", "pb-6", "space-y-5 sm:space-y-6", "pt-[max(12px,env(safe-area-inset-top))]")}>
-      
+    <div
+      className={clsx(
+        "mx-auto w-full max-w-6xl",
+        "px-3 sm:px-4",
+        "pb-6",
+        "space-y-5 sm:space-y-6",
+        "pt-[max(12px,env(safe-area-inset-top))]"
+      )}
+    >
       {/* HEADER */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div className="flex items-center gap-3">
@@ -528,8 +584,12 @@ export default function Performance() {
             <Trophy className="h-6 w-6 text-primary" />
           </div>
           <div className="min-w-0">
-            <h1 className="text-xl sm:text-2xl font-semibold leading-tight">Performance</h1>
-            <p className="text-sm text-muted-foreground">Comissões, Ranking e Curva ABC</p>
+            <h1 className="text-xl sm:text-2xl font-semibold leading-tight">
+              Performance
+            </h1>
+            <p className="text-sm text-muted-foreground">
+              Comissões, Ranking e Curva ABC
+            </p>
           </div>
         </div>
 
@@ -584,7 +644,12 @@ export default function Performance() {
               </div>
 
               <div className="sm:col-span-3 grid grid-cols-2 gap-2">
-                <Button variant="outline" className="w-full" onClick={() => fetchSales({ keepLimit: true })} title="Atualizar">
+                <Button
+                  variant="outline"
+                  className="w-full"
+                  onClick={() => fetchSales({ keepLimit: true })}
+                  title="Atualizar"
+                >
                   <RefreshCcw className="h-4 w-4" />
                 </Button>
                 <Button
@@ -603,11 +668,11 @@ export default function Performance() {
                 </Button>
               </div>
             </div>
-            
+
             {sellerFilter !== "all" && (
-                <div className="mt-2 text-xs text-muted-foreground">
-                    Exibindo apenas vendas de <b>{sellerFilter}</b>
-                </div>
+              <div className="mt-2 text-xs text-muted-foreground">
+                Exibindo apenas vendas de <b>{sellerFilter}</b>
+              </div>
             )}
           </CardContent>
         </Card>
@@ -618,7 +683,12 @@ export default function Performance() {
         <KpiCard
           title="Total de vendas"
           value={`${salesFilteredBySeller.length}`}
-          sub={<>Fat: <span className="font-semibold">{formatCurrency(totalRevenue)}</span></>}
+          sub={
+            <>
+              Fat:{" "}
+              <span className="font-semibold">{formatCurrency(totalRevenue)}</span>
+            </>
+          }
         />
         <KpiCard
           title="Ticket médio"
@@ -648,12 +718,16 @@ export default function Performance() {
               <TrendingUp className="h-5 w-5 text-primary" />
               <CardTitle>Ranking de Vendedores</CardTitle>
             </div>
-            <p className="text-sm text-muted-foreground">Por faturamento e comissão</p>
+            <p className="text-sm text-muted-foreground">
+              Por faturamento e comissão
+            </p>
           </CardHeader>
 
           <CardContent className="space-y-3">
             {sellerStats.length === 0 ? (
-              <p className="text-center text-muted-foreground py-8">Nenhuma venda encontrada.</p>
+              <p className="text-center text-muted-foreground py-8">
+                Nenhuma venda encontrada.
+              </p>
             ) : (
               <>
                 {sellerVisible.map((stat, index) => {
@@ -671,23 +745,28 @@ export default function Performance() {
                               <div className="font-medium truncate">{stat.name}</div>
                               <div className="mt-1 flex flex-wrap gap-2">
                                 <Pill className="bg-background">{stat.salesCount} vendas</Pill>
-                                {/* Exibição da comissão individual */}
                                 <Pill className="bg-emerald-50 text-emerald-700 border-emerald-200">
-                                   <DollarSign className="w-3 h-3 mr-1"/>
-                                   {formatCurrency(stat.totalCommission)}
+                                  <DollarSign className="w-3 h-3 mr-1" />
+                                  {formatCurrency(stat.totalCommission)}
                                 </Pill>
                               </div>
                             </div>
 
                             <div className="text-right shrink-0">
-                              <div className="text-sm text-muted-foreground">Total Vendido</div>
-                              <div className="font-bold whitespace-nowrap">{formatCurrency(stat.totalRevenue)}</div>
+                              <div className="text-sm text-muted-foreground">
+                                Total Vendido
+                              </div>
+                              <div className="font-bold whitespace-nowrap">
+                                {formatCurrency(stat.totalRevenue)}
+                              </div>
                             </div>
                           </div>
 
                           <div className="mt-3">
                             <Progress value={pct} className="h-2" />
-                            <div className="mt-1 text-[11px] text-muted-foreground">{pct.toFixed(0)}% do líder</div>
+                            <div className="mt-1 text-[11px] text-muted-foreground">
+                              {pct.toFixed(0)}% do líder
+                            </div>
                           </div>
                         </div>
                       </div>
@@ -696,7 +775,11 @@ export default function Performance() {
                 })}
 
                 {sellerStats.length > sellerLimit && (
-                  <Button variant="outline" className="w-full" onClick={() => setSellerLimit((v) => v + 12)}>
+                  <Button
+                    variant="outline"
+                    className="w-full"
+                    onClick={() => setSellerLimit((v) => v + 12)}
+                  >
                     Ver mais <ChevronDown className="h-4 w-4 ml-2" />
                   </Button>
                 )}
@@ -712,7 +795,9 @@ export default function Performance() {
               <Users className="h-5 w-5 text-primary" />
               <CardTitle>Melhores Clientes</CardTitle>
             </div>
-            <p className="text-sm text-muted-foreground">Classificação ABC por valor de compra</p>
+            <p className="text-sm text-muted-foreground">
+              Classificação ABC por valor de compra
+            </p>
           </CardHeader>
 
           <CardContent className="space-y-3">
@@ -730,7 +815,9 @@ export default function Performance() {
             </div>
 
             {customerStatsFiltered.length === 0 ? (
-              <p className="text-center text-muted-foreground py-8">Nenhum cliente encontrado.</p>
+              <p className="text-center text-muted-foreground py-8">
+                Nenhum cliente encontrado.
+              </p>
             ) : (
               <>
                 {/* Mobile View */}
@@ -740,16 +827,23 @@ export default function Performance() {
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0">
                           <div className="font-medium truncate">{c.name}</div>
-                          <div className="mt-1 text-xs text-muted-foreground">Última: {formatDate(c.lastPurchase)}</div>
+                          <div className="mt-1 text-xs text-muted-foreground">
+                            Última: {formatDate(c.lastPurchase)}
+                          </div>
                           <div className="mt-2 flex flex-wrap gap-2">
-                             <Pill className="bg-background">{c.purchaseCount} compras</Pill>
+                            <Pill className="bg-background">{c.purchaseCount} compras</Pill>
                           </div>
                         </div>
                         <div className="text-right shrink-0">
-                          <Badge variant="outline" className={getClassificationBadge(c.classification || "C")}>
+                          <Badge
+                            variant="outline"
+                            className={getClassificationBadge(c.classification || "C")}
+                          >
                             {c.classification}
                           </Badge>
-                          <div className="mt-2 font-mono font-semibold whitespace-nowrap">{formatCurrency(c.totalSpent)}</div>
+                          <div className="mt-2 font-mono font-semibold whitespace-nowrap">
+                            {formatCurrency(c.totalSpent)}
+                          </div>
                         </div>
                       </div>
                     </div>
@@ -779,12 +873,17 @@ export default function Performance() {
                             </div>
                           </TableCell>
                           <TableCell className="text-center">
-                            <Badge variant="outline" className={getClassificationBadge(customer.classification || "C")}>
+                            <Badge
+                              variant="outline"
+                              className={getClassificationBadge(customer.classification || "C")}
+                            >
                               {customer.classification}
                             </Badge>
                           </TableCell>
                           <TableCell className="text-center">{customer.purchaseCount}</TableCell>
-                          <TableCell className="text-right font-mono font-medium">{formatCurrency(customer.totalSpent)}</TableCell>
+                          <TableCell className="text-right font-mono font-medium">
+                            {formatCurrency(customer.totalSpent)}
+                          </TableCell>
                         </TableRow>
                       ))}
                     </TableBody>
@@ -792,7 +891,11 @@ export default function Performance() {
                 </div>
 
                 {customerStatsFiltered.length > customerLimit && (
-                  <Button variant="outline" className="w-full" onClick={() => setCustomerLimit((v) => v + 15)}>
+                  <Button
+                    variant="outline"
+                    className="w-full"
+                    onClick={() => setCustomerLimit((v) => v + 15)}
+                  >
                     Ver mais <ChevronDown className="h-4 w-4 ml-2" />
                   </Button>
                 )}
@@ -805,20 +908,24 @@ export default function Performance() {
       {/* LEGENDA ABC */}
       <Card className="overflow-hidden">
         <CardHeader className="pb-3">
-            <CardTitle className="text-base">Entenda a Classificação</CardTitle>
+          <CardTitle className="text-base">Entenda a Classificação</CardTitle>
         </CardHeader>
         <CardContent>
           <div className="grid gap-3 sm:gap-4 md:grid-cols-3">
             <div className="flex items-center gap-3 p-3 rounded-xl bg-emerald-500/5 border border-emerald-500/20">
               <Badge className="bg-emerald-500 text-white">A</Badge>
               <div className="text-sm">
-                <span className="font-bold text-emerald-700">VIPs (80% da receita)</span>
+                <span className="font-bold text-emerald-700">
+                  VIPs (80% da receita)
+                </span>
               </div>
             </div>
             <div className="flex items-center gap-3 p-3 rounded-xl bg-amber-500/5 border border-amber-500/20">
               <Badge className="bg-amber-500 text-white">B</Badge>
               <div className="text-sm">
-                <span className="font-bold text-amber-700">Regulares (15% da receita)</span>
+                <span className="font-bold text-amber-700">
+                  Regulares (15% da receita)
+                </span>
               </div>
             </div>
             <div className="flex items-center gap-3 p-3 rounded-xl bg-slate-500/5 border border-slate-500/20">
@@ -833,7 +940,7 @@ export default function Performance() {
 
       <div className="space-y-2 text-center sm:text-left">
         <div className="text-xs text-muted-foreground px-1">
-          Carregadas <strong>{sales.length}</strong> vendas. 
+          Carregadas <strong>{sales.length}</strong> vendas.
           {fetchLimit < MAX_FETCH_LIMIT && " Se necessário, carregue mais abaixo."}
         </div>
         {fetchLimit < MAX_FETCH_LIMIT && (
