@@ -108,7 +108,7 @@ export default function Fechamento() {
 
   // === Navegação rápida do calendário (Ano/Mês) ===
   const [calYear, setCalYear] = useState<number>(getYear(new Date()));
-  const [calMonth, setCalMonth] = useState<number>(getMonth(new Date())); // 0-11
+  const [calMonth, setCalMonth] = useState<number>(getMonth(new Date()));
 
   useEffect(() => {
     setCalYear(getYear(date));
@@ -122,6 +122,7 @@ export default function Fechamento() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [date]);
 
+  // Função auxiliar para buscar nomes de produtos em lote
   const fetchProductNamesByIds = async (productIds: string[]) => {
     const unique = Array.from(new Set(productIds)).filter(Boolean);
     if (unique.length === 0) return new Map<string, string>();
@@ -138,7 +139,31 @@ export default function Fechamento() {
 
     const map = new Map<string, string>();
     (data || []).forEach((p: any) => {
-      map.set(p.id, p.name || p.id);
+      // Força ID como string para evitar erro de tipo
+      map.set(String(p.id), p.name || "Produto Sem Nome");
+    });
+    return map;
+  };
+
+  // Função auxiliar para buscar nomes de usuários (Profiles) em lote
+  const fetchUserNamesByIds = async (userIds: string[]) => {
+    const unique = Array.from(new Set(userIds)).filter(Boolean);
+    if (unique.length === 0) return new Map<string, string>();
+
+    // Tenta buscar da tabela profiles
+    const { data, error } = await supabase
+      .from("profiles")
+      .select("id, name")
+      .in("id", unique);
+
+    if (error) {
+      console.error("Erro profiles (names):", error);
+      return new Map<string, string>();
+    }
+
+    const map = new Map<string, string>();
+    (data || []).forEach((u: any) => {
+      map.set(String(u.id), u.name || "Usuário");
     });
     return map;
   };
@@ -153,13 +178,13 @@ export default function Fechamento() {
       const { data: financialData, error: financialError } = await supabase
         .from("financial_entries")
         .select("*")
-        .eq("status", "paid")
-        .gte("due_date", start)
+        .eq("status", "paid") // Apenas o que foi pago
+        .gte("due_date", start) // Usa a data de vencimento/pagamento como referência
         .lte("due_date", end);
 
       if (financialError) throw financialError;
 
-      // 2) Estoque (sem JOIN pra não dar 400)
+      // 2) Estoque
       const { data: stockData, error: stockError } = await supabase
         .from("stock_logs")
         .select("id,product_id,user_id,change_amount,new_stock,reason,created_at")
@@ -171,19 +196,29 @@ export default function Fechamento() {
         setStockLogs([]);
       } else {
         const rows = (stockData as unknown as StockLogRow[]) || [];
+        // Filtra apenas entradas positivas
         const onlyEntries = rows.filter((r) => Number(r.change_amount || 0) > 0);
 
-        const namesMap = await fetchProductNamesByIds(
-          onlyEntries.map((r) => r.product_id)
-        );
+        // Busca nomes dos produtos
+        const productIds = onlyEntries.map((r) => r.product_id);
+        const productMap = await fetchProductNamesByIds(productIds);
 
-        const mapped: StockLog[] = onlyEntries.map((r) => ({
-          id: r.id,
-          product_name: namesMap.get(r.product_id) || r.product_id || "Produto",
-          quantity: Number(r.change_amount || 0),
-          created_at: r.created_at,
-          operator: r.user_id || "Sistema",
-        }));
+        // Busca nomes dos operadores (usuários)
+        const userIds = onlyEntries.map((r) => r.user_id).filter((id): id is string => !!id);
+        const userMap = await fetchUserNamesByIds(userIds);
+
+        const mapped: StockLog[] = onlyEntries.map((r) => {
+          const pName = productMap.get(String(r.product_id)) || "Produto Desconhecido";
+          const operatorName = r.user_id ? (userMap.get(String(r.user_id)) || "Sistema") : "Sistema";
+
+          return {
+            id: r.id,
+            product_name: pName,
+            quantity: Number(r.change_amount || 0),
+            created_at: r.created_at,
+            operator: operatorName,
+          };
+        });
 
         setStockLogs(mapped);
       }
@@ -210,6 +245,7 @@ export default function Fechamento() {
     const totals: Record<string, number> = { Dinheiro: 0, Pix: 0, Cartão: 0 };
     todaySales.forEach((sale) => {
       const desc = (sale.description || "").toLowerCase();
+      // Lógica simples de detecção baseada na descrição (idealmente teria coluna payment_method)
       if (desc.includes("pix")) totals["Pix"] += Number(sale.total_amount);
       else if (desc.includes("dinheiro"))
         totals["Dinheiro"] += Number(sale.total_amount);
@@ -222,7 +258,7 @@ export default function Fechamento() {
         desc.includes("cartao")
       )
         totals["Cartão"] += Number(sale.total_amount);
-      else totals["Dinheiro"] += Number(sale.total_amount);
+      else totals["Dinheiro"] += Number(sale.total_amount); // Fallback padrão
     });
     return totals;
   }, [todaySales]);
@@ -254,7 +290,7 @@ export default function Fechamento() {
         ? stockLogs
             .map(
               (l) =>
-                `- ${l.product_name} (${l.quantity}un) por ${l.operator || "Sistema"}`
+                `- ${l.quantity}x ${l.product_name} (Rec: ${l.operator})`
             )
             .join("\n")
         : "Nenhuma entrada de estoque.";
@@ -279,7 +315,7 @@ export default function Fechamento() {
 💠 Pix: ${formatCurrency(paymentTotals["Pix"])}
 💳 Cartão: ${formatCurrency(paymentTotals["Cartão"])}
 
-*📦 MERCADORIAS CHEGADAS*
+*📦 CHEGADA DE MERCADORIA*
 ${mercadorias}
 
 *👥 CLIENTES ATENDIDOS*
@@ -611,7 +647,7 @@ _Gerado automaticamente pelo Sistema_
                           <div>
                             <p className="font-medium">{log.product_name}</p>
                             <p className="text-xs text-muted-foreground">
-                              Recebido por: {log.operator || "Sistema"}
+                              Recebido por: {log.operator}
                             </p>
                           </div>
                           <Badge variant="secondary">+{log.quantity} un</Badge>

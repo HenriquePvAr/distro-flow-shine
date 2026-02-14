@@ -22,6 +22,7 @@ import {
   X,
   RefreshCcw,
   ChevronDown,
+  DollarSign,
 } from "lucide-react";
 
 import { supabase } from "@/integrations/supabase/client";
@@ -59,12 +60,14 @@ interface Sale {
   entity_name: string;
   description: string;
   created_at: string;
-  seller_name: string; // pré-processado
+  seller_name: string; // Agora prioritariamente do banco
+  commission_value: number; // Nova coluna
 }
 
 interface SellerStat {
   name: string;
   totalRevenue: number;
+  totalCommission: number; // Novo campo
   salesCount: number;
   averageTicket: number;
 }
@@ -97,7 +100,7 @@ const toNumber = (v: any) => {
   return Number.isFinite(n) ? n : 0;
 };
 
-// tenta pegar vendedor de "Vend: João" ou "Vendedor: João", até antes do "|" ou fim
+// Fallback: tenta pegar vendedor da descrição se a coluna seller_name for nula (vendas antigas)
 const extractSellerName = (description?: string) => {
   const desc = description || "";
   const match =
@@ -169,7 +172,7 @@ function Pill({
 }
 
 // -----------------------------
-// COMPONENTE
+// COMPONENTE PRINCIPAL
 // -----------------------------
 export default function Performance() {
   const [sales, setSales] = useState<Sale[]>([]);
@@ -188,12 +191,11 @@ export default function Performance() {
   const [customerLimit, setCustomerLimit] = useState(15);
   const [sellerLimit, setSellerLimit] = useState(12);
 
-  // limite do fetch (DB) — começa leve e você pode aumentar
+  // limite do fetch (DB)
   const DEFAULT_FETCH_LIMIT = 800;
   const MAX_FETCH_LIMIT = 3000;
   const [fetchLimit, setFetchLimit] = useState(DEFAULT_FETCH_LIMIT);
 
-  // evita race-condition: se clicar atualizar / trocar filtro rápido
   const requestIdRef = useRef(0);
 
   const resetPaging = useCallback(() => {
@@ -218,8 +220,8 @@ export default function Performance() {
     }
 
     if (rk === "week") {
-      const day = now.getDay(); // 0 dom, 1 seg...
-      const diff = (day === 0 ? -6 : 1) - day; // volta até segunda
+      const day = now.getDay();
+      const diff = (day === 0 ? -6 : 1) - day;
       const start = new Date(now);
       start.setDate(now.getDate() + diff);
       start.setHours(0, 0, 0, 0);
@@ -231,7 +233,6 @@ export default function Performance() {
       return start.toISOString();
     }
 
-    // últimos X dias
     const days = Number(rk);
     const from = new Date();
     from.setDate(from.getDate() - days);
@@ -244,14 +245,14 @@ export default function Performance() {
 
       setLoading(true);
       try {
-        // opcional: quando troca filtro, volta limite padrão
         if (!opts?.keepLimit) setFetchLimit(DEFAULT_FETCH_LIMIT);
 
         const fromIso = buildFromDateIso(range);
 
+        // ATENÇÃO: Adicionado seller_name e commission_value no select
         let q = supabase
           .from("financial_entries")
-          .select("id,total_amount,entity_name,description,created_at")
+          .select("id,total_amount,entity_name,description,created_at,seller_name,commission_value")
           .eq("type", "receivable")
           .ilike("reference", "PDV%")
           .order("created_at", { ascending: false })
@@ -262,18 +263,25 @@ export default function Performance() {
         const { data, error } = await q;
         if (error) throw error;
 
-        // se chegou uma resposta antiga, ignora
         if (currentRequest !== requestIdRef.current) return;
 
         const mapped: Sale[] = (data || []).map((s: any) => {
           const description = String(s.description || "");
+          
+          // Lógica híbrida: Pega do banco OU extrai da descrição se for antigo
+          let finalSellerName = s.seller_name;
+          if (!finalSellerName) {
+             finalSellerName = extractSellerName(description);
+          }
+
           return {
             id: String(s.id),
             total_amount: toNumber(s.total_amount),
             entity_name: String(s.entity_name || ""),
             description,
             created_at: String(s.created_at || ""),
-            seller_name: extractSellerName(description),
+            seller_name: finalSellerName,
+            commission_value: toNumber(s.commission_value),
           };
         });
 
@@ -283,49 +291,50 @@ export default function Performance() {
         console.error(err);
         toast.error("Erro ao carregar dados de performance");
       } finally {
-        // só finaliza loading se ainda for a request atual
         if (currentRequest === requestIdRef.current) setLoading(false);
       }
     },
     [range, fetchLimit, resetPaging]
   );
 
-  // quando muda range, refaz fetch e volta limite leve
   useEffect(() => {
     fetchSales();
   }, [fetchSales]);
 
   const loadMoreFromDb = useCallback(async () => {
-    // aumenta limite e refaz mantendo limite
     setFetchLimit((prev) => {
       const next = Math.min(prev + 700, MAX_FETCH_LIMIT);
       return next;
     });
-
-    // espera o setFetchLimit aplicar? não precisa: chama com keepLimit e usa o valor atual + requestId;
-    // pra garantir, chamamos no próximo microtask:
     Promise.resolve().then(() => fetchSales({ keepLimit: true }));
   }, [fetchSales]);
 
-  // lista de vendedores
+  // Lista de vendedores única
   const sellersList = useMemo(() => {
     const set = new Set<string>();
     for (let i = 0; i < sales.length; i++) set.add(sales[i].seller_name);
     return ["all", ...Array.from(set).sort((a, b) => a.localeCompare(b))];
   }, [sales]);
 
-  // vendas filtradas por vendedor
+  // Vendas filtradas
   const salesFilteredBySeller = useMemo(() => {
     if (sellerFilter === "all") return sales;
-    // filter simples
     return sales.filter((s) => s.seller_name === sellerFilter);
   }, [sales, sellerFilter]);
 
-  // KPIs
+  // Totais Gerais
   const totalRevenue = useMemo(() => {
     let sum = 0;
     for (let i = 0; i < salesFilteredBySeller.length; i++) {
       sum += salesFilteredBySeller[i].total_amount;
+    }
+    return sum;
+  }, [salesFilteredBySeller]);
+
+  const totalCommissions = useMemo(() => {
+    let sum = 0;
+    for (let i = 0; i < salesFilteredBySeller.length; i++) {
+      sum += salesFilteredBySeller[i].commission_value;
     }
     return sum;
   }, [salesFilteredBySeller]);
@@ -335,9 +344,9 @@ export default function Performance() {
     return totalRevenue / count;
   }, [totalRevenue, salesFilteredBySeller.length]);
 
-  // ranking vendedores
+  // --- RANKING VENDEDORES ---
   const sellerStats = useMemo(() => {
-    const map = new Map<string, { totalRevenue: number; salesCount: number }>();
+    const map = new Map<string, { totalRevenue: number; totalCommission: number; salesCount: number }>();
 
     for (let i = 0; i < salesFilteredBySeller.length; i++) {
       const sale = salesFilteredBySeller[i];
@@ -346,9 +355,14 @@ export default function Performance() {
       const prev = map.get(name);
       if (prev) {
         prev.totalRevenue += sale.total_amount;
+        prev.totalCommission += sale.commission_value;
         prev.salesCount += 1;
       } else {
-        map.set(name, { totalRevenue: sale.total_amount, salesCount: 1 });
+        map.set(name, { 
+            totalRevenue: sale.total_amount, 
+            totalCommission: sale.commission_value,
+            salesCount: 1 
+        });
       }
     }
 
@@ -357,6 +371,7 @@ export default function Performance() {
       stats.push({
         name,
         totalRevenue: v.totalRevenue,
+        totalCommission: v.totalCommission,
         salesCount: v.salesCount,
         averageTicket: v.salesCount ? v.totalRevenue / v.salesCount : 0,
       });
@@ -375,7 +390,7 @@ export default function Performance() {
     return max || 1;
   }, [sellerStats]);
 
-  // curva ABC
+  // --- CURVA ABC ---
   const customerStats = useMemo(() => {
     const customerMap = new Map<string, CustomerStat>();
 
@@ -389,8 +404,6 @@ export default function Performance() {
       if (existing) {
         existing.totalSpent += sale.total_amount;
         existing.purchaseCount += 1;
-
-        // compara por data
         if (new Date(sale.created_at) > new Date(existing.lastPurchase)) {
           existing.lastPurchase = sale.created_at;
         }
@@ -434,9 +447,7 @@ export default function Performance() {
   }, [salesFilteredBySeller]);
 
   const classificationCounts = useMemo(() => {
-    let A = 0,
-      B = 0,
-      C = 0;
+    let A = 0, B = 0, C = 0;
     for (let i = 0; i < customerStats.length; i++) {
       const cls = customerStats[i].classification;
       if (cls === "A") A++;
@@ -448,7 +459,6 @@ export default function Performance() {
 
   const identifiedCustomers = customerStats.length;
 
-  // busca clientes
   const customerStatsFiltered = useMemo(() => {
     const s = deferredCustomerSearch.trim().toLowerCase();
     if (!s) return customerStats;
@@ -457,7 +467,7 @@ export default function Performance() {
     );
   }, [customerStats, deferredCustomerSearch]);
 
-  // paginação render
+  // Paginação
   const customerVisible = useMemo(
     () => customerStatsFiltered.slice(0, customerLimit),
     [customerStatsFiltered, customerLimit]
@@ -470,12 +480,9 @@ export default function Performance() {
 
   const getRankIcon = (index: number) => {
     switch (index) {
-      case 0:
-        return <Crown className="h-5 w-5 text-amber-500" />;
-      case 1:
-        return <Medal className="h-5 w-5 text-slate-400" />;
-      case 2:
-        return <Award className="h-5 w-5 text-amber-700" />;
+      case 0: return <Crown className="h-5 w-5 text-amber-500" />;
+      case 1: return <Medal className="h-5 w-5 text-slate-400" />;
+      case 2: return <Award className="h-5 w-5 text-amber-700" />;
       default:
         return (
           <span className="w-6 text-center text-sm font-bold text-muted-foreground">
@@ -486,23 +493,17 @@ export default function Performance() {
   };
 
   const getClassificationBadge = (classification: "A" | "B" | "C") => {
-    if (classification === "A")
-      return "bg-emerald-500/10 text-emerald-600 border-emerald-500/20";
-    if (classification === "B")
-      return "bg-amber-500/10 text-amber-600 border-amber-500/20";
+    if (classification === "A") return "bg-emerald-500/10 text-emerald-600 border-emerald-500/20";
+    if (classification === "B") return "bg-amber-500/10 text-amber-600 border-amber-500/20";
     return "bg-slate-500/10 text-slate-600 border-slate-500/20";
   };
 
   const rangeLabel =
-    range === "all"
-      ? "Tudo"
-      : range === "today"
-      ? "Hoje"
-      : range === "week"
-      ? "Esta semana"
-      : range === "month"
-      ? "Este mês"
-      : `${range} dias`;
+    range === "all" ? "Tudo"
+    : range === "today" ? "Hoje"
+    : range === "week" ? "Esta semana"
+    : range === "month" ? "Este mês"
+    : `${range} dias`;
 
   const showReset = range !== "month" || sellerFilter !== "all";
 
@@ -511,22 +512,15 @@ export default function Performance() {
       <div className="flex min-h-[60vh] items-center justify-center px-4">
         <div className="flex flex-col items-center gap-3">
           <Loader2 className="h-9 w-9 animate-spin text-primary" />
-          <p className="text-sm text-muted-foreground">Carregando performance…</p>
+          <p className="text-sm text-muted-foreground">Calculando comissões e performance...</p>
         </div>
       </div>
     );
   }
 
   return (
-    <div
-      className={clsx(
-        "mx-auto w-full max-w-6xl",
-        "px-3 sm:px-4",
-        "pb-6",
-        "space-y-5 sm:space-y-6",
-        "pt-[max(12px,env(safe-area-inset-top))]"
-      )}
-    >
+    <div className={clsx("mx-auto w-full max-w-6xl", "px-3 sm:px-4", "pb-6", "space-y-5 sm:space-y-6", "pt-[max(12px,env(safe-area-inset-top))]")}>
+      
       {/* HEADER */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div className="flex items-center gap-3">
@@ -534,12 +528,8 @@ export default function Performance() {
             <Trophy className="h-6 w-6 text-primary" />
           </div>
           <div className="min-w-0">
-            <h1 className="text-xl sm:text-2xl font-semibold leading-tight">
-              Performance
-            </h1>
-            <p className="text-sm text-muted-foreground">
-              Ranking de vendedores + Curva ABC de clientes
-            </p>
+            <h1 className="text-xl sm:text-2xl font-semibold leading-tight">Performance</h1>
+            <p className="text-sm text-muted-foreground">Comissões, Ranking e Curva ABC</p>
           </div>
         </div>
 
@@ -547,13 +537,11 @@ export default function Performance() {
         <Card className="sm:min-w-[520px]">
           <CardContent className="p-3 sm:p-4">
             <div className="grid grid-cols-1 sm:grid-cols-12 gap-2">
-              {/* período */}
               <div className="sm:col-span-4">
                 <Select
                   value={range}
                   onValueChange={(v) => {
                     setRange(v as any);
-                    // quando muda range, volta limite
                     setFetchLimit(DEFAULT_FETCH_LIMIT);
                   }}
                 >
@@ -573,7 +561,6 @@ export default function Performance() {
                 </Select>
               </div>
 
-              {/* vendedor */}
               <div className="sm:col-span-5">
                 <Select
                   value={sellerFilter}
@@ -596,18 +583,10 @@ export default function Performance() {
                 </Select>
               </div>
 
-              {/* ações */}
               <div className="sm:col-span-3 grid grid-cols-2 gap-2">
-                <Button
-                  variant="outline"
-                  className="w-full"
-                  onClick={() => fetchSales({ keepLimit: true })}
-                  title="Atualizar"
-                >
-                  <RefreshCcw className="h-4 w-4 mr-2" />
-                  Atualizar
+                <Button variant="outline" className="w-full" onClick={() => fetchSales({ keepLimit: true })} title="Atualizar">
+                  <RefreshCcw className="h-4 w-4" />
                 </Button>
-
                 <Button
                   variant="outline"
                   className={clsx("w-full", !showReset && "opacity-50")}
@@ -620,56 +599,43 @@ export default function Performance() {
                     resetPaging();
                   }}
                 >
-                  <X className="h-4 w-4 mr-2" />
-                  Reset
+                  <X className="h-4 w-4" />
                 </Button>
               </div>
             </div>
-
-            {sellerFilter !== "all" ? (
-              <div className="mt-3 flex flex-wrap gap-2">
-                <Pill className="bg-muted/30">
-                  <span className="text-muted-foreground mr-1">Filtro:</span>
-                  <span className="font-medium">{sellerFilter}</span>
-                </Pill>
-                <Pill className="bg-muted/30">
-                  <span className="text-muted-foreground mr-1">Período:</span>
-                  <span className="font-medium">{rangeLabel}</span>
-                </Pill>
-              </div>
-            ) : null}
+            
+            {sellerFilter !== "all" && (
+                <div className="mt-2 text-xs text-muted-foreground">
+                    Exibindo apenas vendas de <b>{sellerFilter}</b>
+                </div>
+            )}
           </CardContent>
         </Card>
       </div>
 
-      {/* KPIS */}
+      {/* KPIS GERAIS */}
       <div className="grid gap-3 sm:gap-4 grid-cols-2 lg:grid-cols-4">
         <KpiCard
           title="Total de vendas"
           value={`${salesFilteredBySeller.length}`}
-          sub={
-            <>
-              Faturamento:{" "}
-              <span className="font-semibold">{formatCurrency(totalRevenue)}</span>
-            </>
-          }
+          sub={<>Fat: <span className="font-semibold">{formatCurrency(totalRevenue)}</span></>}
         />
         <KpiCard
           title="Ticket médio"
           value={formatCurrency(overallTicket)}
-          sub="Considerando período e filtros"
+          sub="Por venda realizada"
           accentClass="border-slate-500/20"
         />
         <KpiCard
-          title="Clientes identificados"
-          value={`${identifiedCustomers}`}
-          sub="Avulsos/balcão ignorados"
-          accentClass="border-emerald-500/30"
+          title="Comissões Geradas"
+          value={formatCurrency(totalCommissions)}
+          sub="Total a pagar no período"
+          accentClass="border-green-500/30 bg-green-500/5"
         />
         <KpiCard
           title="Curva ABC"
           value={`${classificationCounts.A}/${classificationCounts.B}/${classificationCounts.C}`}
-          sub="A até 80%, B até 95%"
+          sub="Clientes A, B e C"
           accentClass="border-amber-500/30"
         />
       </div>
@@ -682,25 +648,18 @@ export default function Performance() {
               <TrendingUp className="h-5 w-5 text-primary" />
               <CardTitle>Ranking de Vendedores</CardTitle>
             </div>
-            <p className="text-sm text-muted-foreground">
-              Por faturamento total (com filtros aplicados)
-            </p>
+            <p className="text-sm text-muted-foreground">Por faturamento e comissão</p>
           </CardHeader>
 
           <CardContent className="space-y-3">
             {sellerStats.length === 0 ? (
-              <p className="text-center text-muted-foreground py-8">
-                Nenhuma venda encontrada nesse filtro.
-              </p>
+              <p className="text-center text-muted-foreground py-8">Nenhuma venda encontrada.</p>
             ) : (
               <>
                 {sellerVisible.map((stat, index) => {
                   const pct = Math.min(100, (stat.totalRevenue / maxRevenue) * 100);
                   return (
-                    <div
-                      key={stat.name}
-                      className="rounded-xl border bg-muted/20 p-3"
-                    >
+                    <div key={stat.name} className="rounded-xl border bg-muted/20 p-3">
                       <div className="flex items-start gap-3">
                         <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-background">
                           {getRankIcon(index)}
@@ -711,30 +670,24 @@ export default function Performance() {
                             <div className="min-w-0">
                               <div className="font-medium truncate">{stat.name}</div>
                               <div className="mt-1 flex flex-wrap gap-2">
-                                <Pill className="bg-background">
-                                  {stat.salesCount} vendas
-                                </Pill>
-                                <Pill className="bg-background">
-                                  Ticket: {formatCurrency(stat.averageTicket)}
+                                <Pill className="bg-background">{stat.salesCount} vendas</Pill>
+                                {/* Exibição da comissão individual */}
+                                <Pill className="bg-emerald-50 text-emerald-700 border-emerald-200">
+                                   <DollarSign className="w-3 h-3 mr-1"/>
+                                   {formatCurrency(stat.totalCommission)}
                                 </Pill>
                               </div>
                             </div>
 
                             <div className="text-right shrink-0">
-                              <div className="text-sm text-muted-foreground">
-                                Total
-                              </div>
-                              <div className="font-bold whitespace-nowrap">
-                                {formatCurrency(stat.totalRevenue)}
-                              </div>
+                              <div className="text-sm text-muted-foreground">Total Vendido</div>
+                              <div className="font-bold whitespace-nowrap">{formatCurrency(stat.totalRevenue)}</div>
                             </div>
                           </div>
 
                           <div className="mt-3">
                             <Progress value={pct} className="h-2" />
-                            <div className="mt-1 text-[11px] text-muted-foreground">
-                              {pct.toFixed(0)}% do líder
-                            </div>
+                            <div className="mt-1 text-[11px] text-muted-foreground">{pct.toFixed(0)}% do líder</div>
                           </div>
                         </div>
                       </div>
@@ -743,11 +696,7 @@ export default function Performance() {
                 })}
 
                 {sellerStats.length > sellerLimit && (
-                  <Button
-                    variant="outline"
-                    className="w-full"
-                    onClick={() => setSellerLimit((v) => v + 12)}
-                  >
+                  <Button variant="outline" className="w-full" onClick={() => setSellerLimit((v) => v + 12)}>
                     Ver mais <ChevronDown className="h-4 w-4 ml-2" />
                   </Button>
                 )}
@@ -761,20 +710,17 @@ export default function Performance() {
           <CardHeader className="pb-3">
             <div className="flex items-center gap-2">
               <Users className="h-5 w-5 text-primary" />
-              <CardTitle>Melhores Clientes (Curva ABC)</CardTitle>
+              <CardTitle>Melhores Clientes</CardTitle>
             </div>
-            <p className="text-sm text-muted-foreground">
-              Classificação por valor de compras (com acumulado)
-            </p>
+            <p className="text-sm text-muted-foreground">Classificação ABC por valor de compra</p>
           </CardHeader>
 
           <CardContent className="space-y-3">
-            {/* busca */}
             <div className="relative">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
               <Input
                 className="pl-9"
-                placeholder="Buscar cliente pelo nome…"
+                placeholder="Buscar cliente..."
                 value={customerSearch}
                 onChange={(e) => {
                   setCustomerSearch(e.target.value);
@@ -784,177 +730,115 @@ export default function Performance() {
             </div>
 
             {customerStatsFiltered.length === 0 ? (
-              <p className="text-center text-muted-foreground py-8">
-                Nenhum cliente identificado nesse filtro.
-              </p>
+              <p className="text-center text-muted-foreground py-8">Nenhum cliente encontrado.</p>
             ) : (
               <>
-                {/* MOBILE: cards */}
+                {/* Mobile View */}
                 <div className="space-y-2 sm:hidden">
                   {customerVisible.map((c) => (
                     <div key={c.name} className="rounded-xl border bg-muted/20 p-3">
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0">
                           <div className="font-medium truncate">{c.name}</div>
-                          <div className="mt-1 text-xs text-muted-foreground">
-                            Última: {formatDate(c.lastPurchase)}
-                          </div>
-
+                          <div className="mt-1 text-xs text-muted-foreground">Última: {formatDate(c.lastPurchase)}</div>
                           <div className="mt-2 flex flex-wrap gap-2">
-                            <Pill className="bg-background">{c.purchaseCount} compras</Pill>
-                            <Pill className="bg-background">
-                              {c.percentageOfTotal?.toFixed(1)}% do total
-                            </Pill>
-                            <Pill className="bg-background">
-                              Acum.: {c.cumulativePct?.toFixed(1)}%
-                            </Pill>
+                             <Pill className="bg-background">{c.purchaseCount} compras</Pill>
                           </div>
                         </div>
-
                         <div className="text-right shrink-0">
-                          <Badge
-                            variant="outline"
-                            className={getClassificationBadge(c.classification || "C")}
-                          >
+                          <Badge variant="outline" className={getClassificationBadge(c.classification || "C")}>
                             {c.classification}
                           </Badge>
-                          <div className="mt-2 font-mono font-semibold whitespace-nowrap">
-                            {formatCurrency(c.totalSpent)}
-                          </div>
+                          <div className="mt-2 font-mono font-semibold whitespace-nowrap">{formatCurrency(c.totalSpent)}</div>
                         </div>
                       </div>
                     </div>
                   ))}
                 </div>
 
-                {/* DESKTOP: tabela */}
+                {/* Desktop View */}
                 <div className="hidden sm:block rounded-md border overflow-x-auto">
                   <Table>
                     <TableHeader>
                       <TableRow>
                         <TableHead>Cliente</TableHead>
                         <TableHead className="text-center">Classe</TableHead>
-                        <TableHead className="text-center">Compras</TableHead>
+                        <TableHead className="text-center">Qtd</TableHead>
                         <TableHead className="text-right">Total</TableHead>
                       </TableRow>
                     </TableHeader>
-
                     <TableBody>
                       {customerVisible.map((customer) => (
                         <TableRow key={customer.name}>
                           <TableCell>
                             <div className="space-y-0.5">
                               <p className="font-medium">{customer.name}</p>
-                              <div className="text-xs text-muted-foreground flex flex-wrap gap-x-2">
-                                <span>{customer.percentageOfTotal?.toFixed(1)}% do total</span>
-                                <span>•</span>
-                                <span>Acum.: {customer.cumulativePct?.toFixed(1)}%</span>
-                                <span>•</span>
-                                <span>Última: {formatDate(customer.lastPurchase)}</span>
+                              <div className="text-xs text-muted-foreground">
+                                {customer.percentageOfTotal?.toFixed(1)}% do total
                               </div>
                             </div>
                           </TableCell>
-
                           <TableCell className="text-center">
-                            <Badge
-                              variant="outline"
-                              className={getClassificationBadge(customer.classification || "C")}
-                            >
+                            <Badge variant="outline" className={getClassificationBadge(customer.classification || "C")}>
                               {customer.classification}
                             </Badge>
                           </TableCell>
-
-                          <TableCell className="text-center">
-                            {customer.purchaseCount}
-                          </TableCell>
-
-                          <TableCell className="text-right font-mono font-medium">
-                            {formatCurrency(customer.totalSpent)}
-                          </TableCell>
+                          <TableCell className="text-center">{customer.purchaseCount}</TableCell>
+                          <TableCell className="text-right font-mono font-medium">{formatCurrency(customer.totalSpent)}</TableCell>
                         </TableRow>
                       ))}
                     </TableBody>
                   </Table>
                 </div>
 
-                {/* ver mais */}
                 {customerStatsFiltered.length > customerLimit && (
-                  <Button
-                    variant="outline"
-                    className="w-full"
-                    onClick={() => setCustomerLimit((v) => v + 15)}
-                  >
+                  <Button variant="outline" className="w-full" onClick={() => setCustomerLimit((v) => v + 15)}>
                     Ver mais <ChevronDown className="h-4 w-4 ml-2" />
                   </Button>
                 )}
-
-                <div className="text-xs text-muted-foreground">
-                  Mostrando {Math.min(customerLimit, customerStatsFiltered.length)} de{" "}
-                  {customerStatsFiltered.length}.
-                </div>
               </>
             )}
           </CardContent>
         </Card>
       </div>
 
-      {/* EXPLICAÇÃO ABC */}
+      {/* LEGENDA ABC */}
       <Card className="overflow-hidden">
         <CardHeader className="pb-3">
-          <CardTitle className="text-base">Sobre a Curva ABC</CardTitle>
+            <CardTitle className="text-base">Entenda a Classificação</CardTitle>
         </CardHeader>
         <CardContent>
           <div className="grid gap-3 sm:gap-4 md:grid-cols-3">
-            <div className="flex items-start gap-3 p-3 rounded-xl bg-emerald-500/5 border border-emerald-500/20">
+            <div className="flex items-center gap-3 p-3 rounded-xl bg-emerald-500/5 border border-emerald-500/20">
               <Badge className="bg-emerald-500 text-white">A</Badge>
-              <div>
-                <p className="font-medium text-emerald-700">Clientes Premium</p>
-                <p className="text-sm text-muted-foreground">
-                  Somam até <strong>80%</strong> do faturamento acumulado. Prioridade máxima.
-                </p>
+              <div className="text-sm">
+                <span className="font-bold text-emerald-700">VIPs (80% da receita)</span>
               </div>
             </div>
-
-            <div className="flex items-start gap-3 p-3 rounded-xl bg-amber-500/5 border border-amber-500/20">
+            <div className="flex items-center gap-3 p-3 rounded-xl bg-amber-500/5 border border-amber-500/20">
               <Badge className="bg-amber-500 text-white">B</Badge>
-              <div>
-                <p className="font-medium text-amber-700">Clientes Regulares</p>
-                <p className="text-sm text-muted-foreground">
-                  Entre <strong>80%</strong> e <strong>95%</strong>. Potencial de crescimento.
-                </p>
+              <div className="text-sm">
+                <span className="font-bold text-amber-700">Regulares (15% da receita)</span>
               </div>
             </div>
-
-            <div className="flex items-start gap-3 p-3 rounded-xl bg-slate-500/5 border border-slate-500/20">
+            <div className="flex items-center gap-3 p-3 rounded-xl bg-slate-500/5 border border-slate-500/20">
               <Badge variant="secondary">C</Badge>
-              <div>
-                <p className="font-medium">Clientes Ocasionais</p>
-                <p className="text-sm text-muted-foreground">
-                  Acima de <strong>95%</strong>. Manter relacionamento.
-                </p>
+              <div className="text-sm">
+                <span className="font-bold">Ocasionais (5% da receita)</span>
               </div>
             </div>
           </div>
         </CardContent>
       </Card>
 
-      {/* avisos e load more */}
-      <div className="space-y-2">
+      <div className="space-y-2 text-center sm:text-left">
         <div className="text-xs text-muted-foreground px-1">
-          Carregadas <strong>{sales.length}</strong> vendas (limite atual:{" "}
-          <strong>{fetchLimit}</strong>).{" "}
-          {fetchLimit < MAX_FETCH_LIMIT ? (
-            <>
-              Se quiser mais histórico pra análise, clique em “Carregar mais vendas”.
-            </>
-          ) : (
-            <>Você já está no limite máximo.</>
-          )}
+          Carregadas <strong>{sales.length}</strong> vendas. 
+          {fetchLimit < MAX_FETCH_LIMIT && " Se necessário, carregue mais abaixo."}
         </div>
-
         {fetchLimit < MAX_FETCH_LIMIT && (
-          <Button variant="outline" className="w-full" onClick={loadMoreFromDb}>
-            Carregar mais vendas <ChevronDown className="h-4 w-4 ml-2" />
+          <Button variant="outline" className="w-full sm:w-auto" onClick={loadMoreFromDb}>
+            Carregar mais histórico <ChevronDown className="h-4 w-4 ml-2" />
           </Button>
         )}
       </div>

@@ -16,6 +16,8 @@ import {
   Banknote,
   CreditCard,
   QrCode,
+  Calendar, // Ícone novo
+  User,     // Ícone novo
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -47,6 +49,7 @@ import {
 } from "@/components/ui/sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { supabase } from "@/integrations/supabase/client";
+import { useAuth } from "@/hooks/useAuth"; // IMPORTANTE: Para pegar o usuário logado
 
 // --- TIPAGEM ---
 interface Product {
@@ -61,7 +64,7 @@ interface Product {
 }
 
 interface CartItem extends Product {
-  quantity: number; // pode ser decimal (kg)
+  quantity: number;
   saleMode: "unidade" | "caixa" | "kg";
 }
 
@@ -101,32 +104,35 @@ const mapPayMethod = (method: string) => {
   return "cash";
 };
 
-const OFFLINE_QUEUE_KEY = "offline_queue_v2_rpc"; // mantém o mesmo do teu
+const OFFLINE_QUEUE_KEY = "offline_queue_v2_rpc";
 
 type OfflineQueueEntry =
   | {
       type: "create_sale";
       payload: {
         p_customer_id: string | null;
-        p_seller_id: string | null;
+        p_seller_name: string | null; // CORRIGIDO: Agora manda o nome
         p_items: Array<{
-          product_id: string;
+          id: string;        // CORRIGIDO: Era product_id
           quantity: number;
-          unit_price: number;
+          price: number;     // CORRIGIDO: Era unit_price
           total_price: number;
           sale_mode: "unidade" | "caixa" | "kg";
         }>;
-        p_payment_method: string; // cash|pix|credit|debit|mixed|credit_store
+        p_payment_method: string;
         p_discount: number;
         p_surcharge: number;
+        p_created_by: string; // CORRIGIDO: Adicionado
         p_sale_type: "vista" | "prazo";
-        p_due_date: string | null; // timestamptz ISO
-        p_commission_rate: number; // 0|5|10
+        p_due_date: string | null;
+        p_commission_rate: number;
       };
     }
   | any;
 
 export default function PDV() {
+  const { user } = useAuth(); // Pega usuário logado
+
   // --- ESTADOS DE DADOS ---
   const [products, setProducts] = useState<Product[]>([]);
   const [customers, setCustomers] = useState<Person[]>([]);
@@ -137,10 +143,10 @@ export default function PDV() {
   const [selectedCustomerId, setSelectedCustomerId] = useState<string>("padrao");
   const [selectedSellerId, setSelectedSellerId] = useState<string>("padrao");
 
-  // Venda à vista / a prazo + comissão por venda
+  // Venda à vista / a prazo + comissão
   const [saleType, setSaleType] = useState<"vista" | "prazo">("vista");
-  const [dueDate, setDueDate] = useState<string>(""); // YYYY-MM-DD
-  const [commissionRate, setCommissionRate] = useState<number>(0); // 0|5|10
+  const [dueDate, setDueDate] = useState<string>(""); 
+  const [commissionRate, setCommissionRate] = useState<number>(0); 
 
   // Valores Extras
   const [globalDiscount, setGlobalDiscount] = useState<string>("");
@@ -207,16 +213,11 @@ export default function PDV() {
     );
   }, [products, search]);
 
-  // Pode finalizar?
   const canFinish = useMemo(() => {
     if (cart.length === 0) return false;
-
-    // se quiser OBRIGAR vendedor, descomenta:
-    // if (selectedSellerId === "padrao") return false;
-
     if (saleType === "vista") return isPaid;
-    return !!dueDate; // prazo exige vencimento
-  }, [cart.length, saleType, isPaid, dueDate, selectedSellerId]);
+    return !!dueDate; // A prazo exige data
+  }, [cart.length, saleType, isPaid, dueDate]);
 
   // --------------------------
   // OFFLINE QUEUE
@@ -254,7 +255,6 @@ export default function PDV() {
       window.removeEventListener("online", handleStatus);
       window.removeEventListener("offline", handleStatus);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const loadFromCache = () => {
@@ -280,7 +280,7 @@ export default function PDV() {
       const [pRes, cRes, sRes] = await Promise.all([
         supabase.from("products").select("*").order("name"),
         supabase.from("customers").select("*").order("name"),
-        supabase.from("sellers").select("*").order("name"),
+        supabase.from("profiles").select("id, name").order("name"), // Busca vendedores de 'profiles' ou 'sellers'
       ]);
 
       if (pRes.data) {
@@ -304,8 +304,10 @@ export default function PDV() {
       }
 
       if (sRes.data) {
-        setSellers(sRes.data);
-        localStorage.setItem("pdv_sellers_cache", JSON.stringify(sRes.data));
+        // Mapeia para garantir estrutura {id, name}
+        const mappedSellers = sRes.data.map((s:any) => ({ id: s.id, name: s.name || "Sem Nome"}));
+        setSellers(mappedSellers);
+        localStorage.setItem("pdv_sellers_cache", JSON.stringify(mappedSellers));
       }
     } catch (e) {
       console.error(e);
@@ -322,9 +324,7 @@ export default function PDV() {
     if (product.stock <= 0) return toast.error("Sem estoque!");
 
     setCart((prev) => {
-      const defaultMode: CartItem["saleMode"] = product.sellsByKg
-        ? "kg"
-        : "unidade";
+      const defaultMode: CartItem["saleMode"] = product.sellsByKg ? "kg" : "unidade";
       const existing = prev.find(
         (i) => i.id === product.id && i.saleMode === defaultMode
       );
@@ -411,20 +411,23 @@ export default function PDV() {
   };
 
   // --------------------------
-  // BUILD RPC PAYLOAD (create_sale)
+  // PREPARAR PAYLOAD (RPC)
   // --------------------------
   const buildRpcPayload = () => {
     const customerId = selectedCustomerId === "padrao" ? null : selectedCustomerId;
-    const sellerId = selectedSellerId === "padrao" ? null : selectedSellerId;
+    
+    // CORREÇÃO: Busca o nome do vendedor para mandar p_seller_name
+    const sellerObj = sellers.find(s => s.id === selectedSellerId);
+    const sellerName = sellerObj ? sellerObj.name : null;
 
     const items = cart.map((i) => {
       const unitPrice =
         i.saleMode === "caixa" && i.qtyPerBox ? i.salePrice * i.qtyPerBox : i.salePrice;
 
       return {
-        product_id: i.id,
+        id: i.id, // CORRIGIDO: SQL espera 'id', não 'product_id'
         quantity: i.quantity,
-        unit_price: unitPrice,
+        price: unitPrice, // CORRIGIDO: SQL espera 'price', não 'unit_price'
         total_price: unitPrice * i.quantity,
         sale_mode: i.saleMode,
       };
@@ -433,7 +436,6 @@ export default function PDV() {
     const discount = parseBRNumber(globalDiscount);
     const surcharge = parseBRNumber(globalSurcharge);
 
-    // pagamento: se for prazo, ignora pagamentos e força credit_store (ou outro que você quiser)
     const paymentMethod =
       saleType === "prazo"
         ? "credit_store"
@@ -448,7 +450,7 @@ export default function PDV() {
 
     return {
       p_customer_id: customerId,
-      p_seller_id: sellerId,
+      p_seller_name: sellerName, // Agora manda o nome correto
       p_items: items,
       p_payment_method: paymentMethod,
       p_discount: discount,
@@ -456,6 +458,7 @@ export default function PDV() {
       p_sale_type: saleType,
       p_due_date: dueISO,
       p_commission_rate: Number(commissionRate || 0),
+      p_created_by: user?.id // Manda o ID do usuário logado
     };
   };
 
@@ -504,15 +507,13 @@ export default function PDV() {
     q.push(entry);
     writeQueue(q);
 
-    // Atualiza estoque local visualmente (otimista)
+    // Atualiza estoque local visualmente
     setProducts((prev) =>
       prev.map((p) => {
         const it = cart.find((c) => c.id === p.id);
         if (!it) return p;
-
         const deduction =
           it.saleMode === "caixa" && it.qtyPerBox ? it.quantity * it.qtyPerBox : it.quantity;
-
         return { ...p, stock: p.stock - deduction };
       })
     );
@@ -523,9 +524,6 @@ export default function PDV() {
 
   const handleFinish = async () => {
     if (cart.length === 0) return toast.error("Carrinho vazio");
-
-    // se quiser obrigar vendedor:
-    // if (selectedSellerId === "padrao") return toast.error("Selecione um vendedor");
 
     if (saleType === "vista" && !isPaid) {
       return toast.error("Pagamento incompleto para venda à vista!");
@@ -544,7 +542,7 @@ export default function PDV() {
         const { data: saleId, error } = await supabase.rpc("create_sale", payload);
         if (error) throw error;
 
-        toast.success("Venda registrada! Agora aparece no Histórico ✅");
+        toast.success("Venda registrada! ✅");
         finishSuccess({ saleId, ...payload });
       } else {
         saveOffline({ type: "create_sale", payload });
@@ -552,7 +550,6 @@ export default function PDV() {
     } catch (err: any) {
       console.error(err);
       toast.error("Erro ao salvar online. Salvando offline...");
-
       const payload = buildRpcPayload();
       saveOffline({ type: "create_sale", payload });
     } finally {
@@ -911,8 +908,7 @@ export default function PDV() {
                   value="pay"
                   className="flex-1 overflow-y-auto px-6 py-4 flex flex-col"
                 >
-                  {/* À vista / A prazo + Comissão */}
-                  <div className="bg-white p-3 rounded-xl border mb-4 space-y-3">
+                  <div className="bg-white p-3 rounded-xl border mb-4 space-y-3 shadow-sm">
                     <div className="flex gap-2">
                       <Button
                         variant={saleType === "vista" ? "default" : "outline"}
@@ -928,36 +924,37 @@ export default function PDV() {
                         className="flex-1"
                         onClick={() => {
                           setSaleType("prazo");
-                          // limpa pagamentos (prazo não usa pagamento agora)
                           setPayments([]);
                           setCurrentPayAmount("");
                         }}
                       >
-                        A Prazo
+                        A Prazo (Fiado)
                       </Button>
                     </div>
 
                     {saleType === "prazo" && (
-                      <div className="space-y-1">
-                        <label className="text-xs font-semibold text-muted-foreground">
-                          Data de Pagamento (Vencimento)
+                      <div className="space-y-1 animate-in slide-in-from-top-2">
+                        <label className="text-xs font-semibold text-muted-foreground flex items-center gap-1">
+                          <Calendar className="h-3 w-3" /> Data de Vencimento
                         </label>
                         <Input
                           type="date"
                           value={dueDate}
                           onChange={(e) => setDueDate(e.target.value)}
+                          className="border-amber-400 bg-amber-50"
                         />
                       </div>
                     )}
 
                     <div className="pt-2 border-t space-y-2">
-                      <label className="text-xs font-semibold text-muted-foreground">
-                        Comissão nesta venda
+                      <label className="text-xs font-semibold text-muted-foreground flex items-center gap-1">
+                        <User className="h-3 w-3" /> Comissão do Vendedor
                       </label>
                       <div className="flex gap-2">
                         {[0, 5, 10].map((p) => (
                           <Button
                             key={p}
+                            size="sm"
                             variant={commissionRate === p ? "default" : "secondary"}
                             className="flex-1"
                             onClick={() => setCommissionRate(p)}
@@ -968,8 +965,8 @@ export default function PDV() {
                       </div>
 
                       <div className="text-xs text-right text-muted-foreground">
-                        Comissão:{" "}
-                        <span className="font-semibold">
+                        Valor da Comissão:{" "}
+                        <span className="font-semibold text-green-600">
                           {formatCurrency(commissionValue)}
                         </span>
                       </div>
@@ -1017,12 +1014,11 @@ export default function PDV() {
                     </div>
                   </div>
 
-                  {/* Se for prazo, não mostra blocos de pagamento */}
                   {saleType === "prazo" ? (
-                    <div className="text-center py-6 text-muted-foreground bg-muted/20 rounded-lg border">
-                      <p className="font-medium">Venda a prazo selecionada</p>
-                      <p className="text-sm">
-                        O estoque será baixado e o financeiro ficará <b>pendente</b> até o vencimento.
+                    <div className="text-center py-6 text-muted-foreground bg-amber-50 rounded-lg border border-amber-200">
+                      <p className="font-medium text-amber-900">Venda a Prazo Selecionada</p>
+                      <p className="text-xs mt-1 text-amber-800/80">
+                        O pagamento ficará pendente até o vencimento.
                       </p>
                     </div>
                   ) : (
@@ -1182,17 +1178,16 @@ export default function PDV() {
             </div>
 
             <div className="flex justify-between text-sm">
-              <span>Comissão</span>
-              <span className="font-bold">
-                {Number(lastSaleData?.commissionRate || 0)}% (
-                {formatCurrency(Number(lastSaleData?.commissionValue || 0))})
+              <span>Comissão ({lastSaleData?.commissionRate}%)</span>
+              <span className="font-bold text-green-600">
+                {formatCurrency(Number(lastSaleData?.commissionValue || 0))}
               </span>
             </div>
 
             {lastSaleData?.saleType === "prazo" && (
-              <div className="flex justify-between text-sm">
+              <div className="flex justify-between text-sm text-amber-700 font-medium">
                 <span>Vencimento</span>
-                <span className="font-bold">{lastSaleData?.dueDate || "-"}</span>
+                <span>{lastSaleData?.dueDate ? new Date(lastSaleData.dueDate).toLocaleDateString('pt-BR') : "-"}</span>
               </div>
             )}
 

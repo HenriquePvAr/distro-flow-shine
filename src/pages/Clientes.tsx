@@ -22,6 +22,10 @@ import {
   X,
   CheckCircle2,
   Download,
+  Wallet,     // Novo ícone
+  CheckCheck, // Novo ícone
+  Calendar,   // Novo ícone
+  DollarSign  // Novo ícone
 } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
@@ -84,6 +88,15 @@ interface Customer {
   created_at: string;
 }
 
+interface DebtEntry {
+  id: string;
+  created_at: string;
+  due_date: string | null;
+  description: string;
+  total_amount: number;
+  status: string;
+}
+
 // --- UTILS ---
 const onlyDigits = (v: string) => (v || "").replace(/\D/g, "");
 const normalizeNullable = (v: string | undefined | null) => {
@@ -112,6 +125,9 @@ const formatDocument = (value: string) => {
     .replace(/(\d{2})(\d{3})(\d{3})(\d{4})(\d{0,2})/, "$1.$2.$3/$4-$5")
     .trim();
 };
+
+const formatCurrency = (val: number) => 
+  val.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 
 const copyToClipboard = async (text: string) => {
   try {
@@ -184,15 +200,21 @@ export default function Clientes() {
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
+  // Estados de CRUD
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [editingCustomer, setEditingCustomer] = useState<Customer | null>(null);
   const [deleteCustomer, setDeleteCustomer] = useState<Customer | null>(null);
 
+  // Estados Financeiros (Carteira)
+  const [financialModalOpen, setFinancialModalOpen] = useState(false);
+  const [targetClient, setTargetClient] = useState<Customer | null>(null);
+  const [clientDebts, setClientDebts] = useState<DebtEntry[]>([]);
+  const [loadingDebts, setLoadingDebts] = useState(false);
+
+  // Estados de Filtro e Importação
   const [searchTerm, setSearchTerm] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
-
   const [statusFilter, setStatusFilter] = useState<"all" | "ativo" | "inativo">("all");
-
   const [importOpen, setImportOpen] = useState(false);
   const [importRows, setImportRows] = useState<ImportRow[]>([]);
   const [importing, setImporting] = useState(false);
@@ -232,6 +254,55 @@ export default function Clientes() {
     }
   };
 
+  // --- LÓGICA FINANCEIRA (CARTEIRA) ---
+  const openFinancialModal = async (customer: Customer) => {
+    setTargetClient(customer);
+    setFinancialModalOpen(true);
+    setLoadingDebts(true);
+    try {
+      // Busca débitos (vendas a prazo não pagas)
+      // Tenta bater pelo nome do cliente (entity_name)
+      const { data, error } = await supabase
+        .from("financial_entries")
+        .select("id, created_at, due_date, description, total_amount, status")
+        .eq("entity_name", customer.name) 
+        .eq("type", "receivable")
+        .neq("status", "paid")
+        .order("due_date", { ascending: true });
+
+      if (error) throw error;
+      setClientDebts(data || []);
+    } catch (err) {
+      console.error(err);
+      toast.error("Erro ao buscar débitos do cliente.");
+    } finally {
+      setLoadingDebts(false);
+    }
+  };
+
+  const handlePayDebt = async (debtId: string, amount: number) => {
+    try {
+      const { error } = await supabase
+        .from("financial_entries")
+        .update({
+          status: "paid",
+          paid_amount: amount, // Assume pagamento total
+          updated_at: new Date().toISOString()
+        })
+        .eq("id", debtId);
+
+      if (error) throw error;
+
+      toast.success("Pagamento recebido!");
+      // Atualiza lista local removendo o item pago
+      setClientDebts((prev) => prev.filter((d) => d.id !== debtId));
+    } catch (err) {
+      console.error(err);
+      toast.error("Erro ao registrar pagamento.");
+    }
+  };
+
+  // --- LÓGICA CRUD ---
   const openNewDialog = () => {
     setEditingCustomer(null);
     form.reset({
@@ -304,6 +375,7 @@ export default function Clientes() {
     }
   };
 
+  // --- LÓGICA FILTROS ---
   const filteredCustomers = useMemo(() => {
     const s = debouncedSearch;
 
@@ -335,7 +407,7 @@ export default function Clientes() {
   const active = customers.filter((c) => c.status === "ativo").length;
   const inactive = customers.filter((c) => c.status === "inativo").length;
 
-  // --- MODELO CSV ---
+  // --- IMPORTAÇÃO ---
   const downloadModeloClientesCSV = () => {
     const csv =
       "nome,telefone,documento,endereco,cidade,status\n" +
@@ -344,16 +416,13 @@ export default function Clientes() {
 
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
-
     const a = document.createElement("a");
     a.href = url;
     a.download = "modelo_clientes.csv";
     a.click();
-
     URL.revokeObjectURL(url);
   };
 
-  // --- IMPORTAÇÃO ---
   const handleFileImport = async (file: File) => {
     try {
       const ext = (file.name.split(".").pop() || "").toLowerCase();
@@ -371,7 +440,6 @@ export default function Clientes() {
         }
 
         const header = lines[0].split(",").map((h) => h.trim().toLowerCase());
-
         const idx = (name: string) => header.indexOf(name);
 
         const rows: ImportRow[] = lines
@@ -385,7 +453,6 @@ export default function Clientes() {
             const address = cols[idx("endereco")] || cols[idx("endereço")] || cols[idx("address")] || "";
             const city = cols[idx("cidade")] || cols[idx("city")] || "";
             const statusRaw = (cols[idx("status")] || "ativo").toLowerCase();
-
             const status: "ativo" | "inativo" = statusRaw.includes("in") ? "inativo" : "ativo";
 
             return {
@@ -422,7 +489,6 @@ export default function Clientes() {
           const address = getVal(r, ["endereco", "endereço", "address"]);
           const city = getVal(r, ["cidade", "city"]);
           const statusRaw = getVal(r, ["status"]).toLowerCase();
-
           const status: "ativo" | "inativo" = statusRaw.includes("in") ? "inativo" : "ativo";
 
           return {
@@ -496,7 +562,7 @@ export default function Clientes() {
           </div>
           <div>
             <h1 className="text-xl sm:text-2xl font-semibold text-foreground">Clientes</h1>
-            <p className="text-sm text-muted-foreground">Gerencie sua base de clientes</p>
+            <p className="text-sm text-muted-foreground">Gerencie sua base de clientes e cobranças</p>
           </div>
         </div>
 
@@ -854,6 +920,17 @@ export default function Clientes() {
                         </div>
 
                         <div className="flex gap-1 shrink-0">
+                          {/* BOTÃO CARTEIRA (MOBILE) */}
+                          <Button 
+                            size="icon" 
+                            variant="outline" 
+                            className="h-10 w-10 text-amber-600 border-amber-200 hover:bg-amber-50" 
+                            onClick={() => openFinancialModal(c)} 
+                            title="Carteira / Fiado"
+                          >
+                            <Wallet className="h-4 w-4" />
+                          </Button>
+
                           <Button size="icon" variant="outline" className="h-10 w-10" onClick={() => openEditDialog(c)} title="Editar">
                             <Edit className="h-4 w-4" />
                           </Button>
@@ -1023,6 +1100,17 @@ export default function Clientes() {
 
                         <TableCell className="text-right">
                           <div className="flex justify-end gap-1">
+                            {/* BOTÃO CARTEIRA (DESKTOP) */}
+                            <Button 
+                              size="icon" 
+                              variant="ghost" 
+                              className="text-amber-600 hover:text-amber-700 hover:bg-amber-100"
+                              onClick={() => openFinancialModal(customer)} 
+                              title="Ver Débitos (Fiado)"
+                            >
+                              <Wallet className="h-4 w-4" />
+                            </Button>
+
                             <Button size="icon" variant="ghost" onClick={() => openEditDialog(customer)} title="Editar">
                               <Edit className="h-4 w-4 text-muted-foreground" />
                             </Button>
@@ -1048,7 +1136,7 @@ export default function Clientes() {
         </CardContent>
       </Card>
 
-      {/* DELETE */}
+      {/* DELETE DIALOG */}
       <AlertDialog open={!!deleteCustomer} onOpenChange={() => setDeleteCustomer(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -1070,6 +1158,94 @@ export default function Clientes() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* MODAL DE COBRANÇA (FINANCEIRO) */}
+      <Dialog open={financialModalOpen} onOpenChange={setFinancialModalOpen}>
+        <DialogContent className="max-w-3xl max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-xl">
+              <Wallet className="h-6 w-6 text-amber-600" />
+              Carteira de Cobrança: <span className="text-primary">{targetClient?.name}</span>
+            </DialogTitle>
+            <DialogDescription>
+              Gerencie as compras "a prazo" e débitos pendentes deste cliente.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 py-2">
+            {loadingDebts ? (
+              <div className="flex justify-center py-12">
+                <Loader2 className="h-8 w-8 animate-spin text-primary" />
+              </div>
+            ) : clientDebts.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-12 bg-muted/20 rounded-lg border border-dashed">
+                <CheckCircle2 className="h-12 w-12 text-emerald-500 mb-3" />
+                <p className="text-lg font-medium text-foreground">Tudo pago!</p>
+                <p className="text-sm text-muted-foreground">Este cliente não possui débitos em aberto.</p>
+              </div>
+            ) : (
+              <>
+                <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 flex justify-between items-center">
+                  <span className="text-amber-800 font-medium">Total Devido:</span>
+                  <span className="text-xl font-bold text-amber-900">
+                    {formatCurrency(clientDebts.reduce((acc, curr) => acc + Number(curr.total_amount), 0))}
+                  </span>
+                </div>
+
+                <div className="rounded-md border overflow-hidden">
+                  <Table>
+                    <TableHeader className="bg-muted/50">
+                      <TableRow>
+                        <TableHead>Data Compra</TableHead>
+                        <TableHead>Vencimento</TableHead>
+                        <TableHead>Descrição</TableHead>
+                        <TableHead className="text-right">Valor</TableHead>
+                        <TableHead className="text-right w-[100px]"></TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {clientDebts.map((debt) => (
+                        <TableRow key={debt.id}>
+                          <TableCell>
+                            {new Date(debt.created_at).toLocaleDateString('pt-BR')}
+                          </TableCell>
+                          <TableCell className="text-red-600 font-medium">
+                            <div className="flex items-center gap-1">
+                              <Calendar className="h-3 w-3" />
+                              {debt.due_date ? new Date(debt.due_date).toLocaleDateString('pt-BR') : "Sem prazo"}
+                            </div>
+                          </TableCell>
+                          <TableCell className="text-sm text-muted-foreground max-w-[200px] truncate" title={debt.description}>
+                            {debt.description}
+                          </TableCell>
+                          <TableCell className="text-right font-bold">
+                            {formatCurrency(Number(debt.total_amount))}
+                          </TableCell>
+                          <TableCell className="text-right">
+                            <Button 
+                              size="sm" 
+                              className="bg-emerald-600 hover:bg-emerald-700 h-8"
+                              onClick={() => handlePayDebt(debt.id, Number(debt.total_amount))}
+                            >
+                              <CheckCheck className="h-3 w-3 mr-1" /> Receber
+                            </Button>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              </>
+            )}
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setFinancialModalOpen(false)}>
+              Fechar Carteira
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
