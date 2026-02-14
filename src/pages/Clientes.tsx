@@ -106,12 +106,11 @@ type PaymentMethod = "dinheiro" | "pix" | "cartao" | "transferencia" | "outros";
 type SaleItem = {
   id: string;
   sale_id: string;
-  product_name?: string | null;
-  name?: string | null;
-  product_id?: string | null;
+  product_id: string;
+  product_name: string;
   quantity: number;
-  unit_price?: number | null;
-  total_price?: number | null;
+  unit_price: number;
+  total_price: number;
 };
 
 // -----------------------------
@@ -257,6 +256,28 @@ const Dot = ({ kind }: { kind: DotKind }) => {
       aria-hidden="true"
     />
   );
+};
+
+// -----------------------------
+// HELPERS (ITENS DA VENDA)
+// -----------------------------
+const fetchProductNamesByIds = async (productIds: string[]) => {
+  const unique = Array.from(new Set(productIds)).filter(Boolean);
+  if (!unique.length) return new Map<string, string>();
+
+  const { data, error } = await supabase
+    .from("products")
+    .select("id,name")
+    .in("id", unique);
+
+  if (error) {
+    // se RLS bloquear, vai cair aqui
+    throw error;
+  }
+
+  const map = new Map<string, string>();
+  (data || []).forEach((p: any) => map.set(String(p.id), p.name || "Produto"));
+  return map;
 };
 
 export default function Clientes() {
@@ -458,10 +479,11 @@ export default function Clientes() {
     setLoadingItems({});
 
     try {
-      // ✅ NO SEU BANCO EXISTE "reference", NÃO EXISTE sale_id nem payment_method
       const { data, error } = await supabase
         .from("financial_entries")
-        .select("id, created_at, due_date, description, total_amount, status, reference")
+        .select(
+          "id, created_at, due_date, description, total_amount, status, reference"
+        )
         .eq("entity_name", customer.name)
         .eq("type", "receivable")
         .neq("status", "paid")
@@ -505,14 +527,12 @@ export default function Clientes() {
     try {
       const amount = Number(receiveDebt.total_amount) || 0;
 
-      // ✅ Seu financial_entries TEM: status, paid_amount, updated_at
       const { error } = await supabase
         .from("financial_entries")
         .update({
           status: "paid",
           paid_amount: amount,
           updated_at: new Date().toISOString(),
-          // (paymentMethod fica na tabela sales; aqui só damos baixa no título)
         })
         .eq("id", receiveDebt.id);
 
@@ -558,6 +578,7 @@ export default function Clientes() {
     }
   };
 
+  // ✅ FIX DEFINITIVO: SEM JOIN / SEM product_name na tabela
   const toggleItems = async (debt: DebtEntry) => {
     const debtId = debt.id;
     const already = expandedItems[debtId];
@@ -570,8 +591,6 @@ export default function Clientes() {
       return;
     }
 
-    // ✅ Como seu financial_entries NÃO tem sale_id, usamos o reference como fallback,
-    // mas SÓ se ele for UUID (muito comum você ter guardado o sale_id ali).
     const saleId = isUuid(debt.reference) ? debt.reference : null;
 
     if (!saleId) {
@@ -582,22 +601,47 @@ export default function Clientes() {
     }
 
     setLoadingItems((prev) => ({ ...prev, [debtId]: true }));
-    try {
-      const { data, error } = await supabase
-        .from("sale_items")
-        .select(
-          "id, sale_id, product_name, name, product_id, quantity, unit_price, total_price"
-        )
-        .eq("sale_id", saleId);
 
-      if (error) throw error;
+    try {
+      // 1) pega itens
+      const { data: itemsData, error: itemsErr } = await supabase
+        .from("sale_items")
+        .select("id, sale_id, product_id, quantity, unit_price, total_price")
+        .eq("sale_id", saleId)
+        .order("id", { ascending: true });
+
+      if (itemsErr) throw itemsErr;
+
+      const rawItems = (itemsData || []) as Array<{
+        id: string;
+        sale_id: string;
+        product_id: string;
+        quantity: any;
+        unit_price: any;
+        total_price: any;
+      }>;
+
+      // 2) pega nomes de produtos em lote (sem join)
+      const productIds = rawItems.map((i) => String(i.product_id)).filter(Boolean);
+      const productMap = await fetchProductNamesByIds(productIds);
+
+      const mapped: SaleItem[] = rawItems.map((i) => ({
+        id: String(i.id),
+        sale_id: String(i.sale_id),
+        product_id: String(i.product_id),
+        product_name: productMap.get(String(i.product_id)) || "Produto",
+        quantity: Number(i.quantity || 0),
+        unit_price: Number(i.unit_price || 0),
+        total_price: Number(i.total_price || 0),
+      }));
+
       setExpandedItems((prev) => ({
         ...prev,
-        [debtId]: (data as SaleItem[]) || [],
+        [debtId]: mapped,
       }));
-    } catch (e) {
+    } catch (e: any) {
       console.error(e);
-      toast.error("Erro ao buscar itens da compra.");
+      toast.error(e?.message || "Erro ao buscar itens da compra.");
     } finally {
       setLoadingItems((prev) => ({ ...prev, [debtId]: false }));
     }
@@ -877,7 +921,9 @@ export default function Clientes() {
       const { error } = await supabase.from("customers").insert(payload);
       if (error) throw error;
 
-      toast.success(`Importação concluída: ${payload.length} clientes cadastrados!`);
+      toast.success(
+        `Importação concluída: ${payload.length} clientes cadastrados!`
+      );
       setImportRows([]);
       setImportOpen(false);
       await fetchCustomers();
@@ -1071,9 +1117,7 @@ export default function Clientes() {
                 <DialogTitle>
                   {editingCustomer ? "Editar Cliente" : "Novo Cliente"}
                 </DialogTitle>
-                <DialogDescription>
-                  Apenas o nome é obrigatório.
-                </DialogDescription>
+                <DialogDescription>Apenas o nome é obrigatório.</DialogDescription>
               </DialogHeader>
 
               <Form {...form}>
@@ -1218,9 +1262,7 @@ export default function Clientes() {
                       Cancelar
                     </Button>
                     <Button type="submit" className="w-full sm:w-auto">
-                      {editingCustomer
-                        ? "Salvar Alterações"
-                        : "Cadastrar Cliente"}
+                      {editingCustomer ? "Salvar Alterações" : "Cadastrar Cliente"}
                     </Button>
                   </DialogFooter>
                 </form>
@@ -1266,7 +1308,9 @@ export default function Clientes() {
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <p className="text-2xl font-bold text-muted-foreground">{inactive}</p>
+            <p className="text-2xl font-bold text-muted-foreground">
+              {inactive}
+            </p>
           </CardContent>
         </Card>
       </div>
@@ -1348,14 +1392,8 @@ export default function Clientes() {
 
                             <div className="mt-1 flex flex-wrap items-center gap-2">
                               <Badge
-                                variant={
-                                  c.status === "ativo" ? "default" : "secondary"
-                                }
-                                className={
-                                  c.status === "ativo"
-                                    ? "bg-emerald-600 hover:bg-emerald-700"
-                                    : ""
-                                }
+                                variant={c.status === "ativo" ? "default" : "secondary"}
+                                className={c.status === "ativo" ? "bg-emerald-600 hover:bg-emerald-700" : ""}
                               >
                                 {c.status === "ativo" ? "Ativo" : "Inativo"}
                               </Badge>
@@ -1518,9 +1556,7 @@ export default function Clientes() {
                                   size="icon"
                                   variant="ghost"
                                   className="h-7 w-7"
-                                  onClick={() =>
-                                    copyToClipboard(customer.document!)
-                                  }
+                                  onClick={() => copyToClipboard(customer.document!)}
                                   title="Copiar documento"
                                 >
                                   <Copy className="h-4 w-4" />
@@ -1543,9 +1579,7 @@ export default function Clientes() {
                                   size="icon"
                                   variant="ghost"
                                   className="h-7 w-7"
-                                  onClick={() =>
-                                    copyToClipboard(customer.phone!)
-                                  }
+                                  onClick={() => copyToClipboard(customer.phone!)}
                                   title="Copiar telefone"
                                 >
                                   <Copy className="h-4 w-4" />
@@ -1555,18 +1589,14 @@ export default function Clientes() {
                                   size="icon"
                                   variant="ghost"
                                   className="h-7 w-7 text-emerald-700"
-                                  onClick={() =>
-                                    openWhatsApp(customer.phone!, customer.name)
-                                  }
+                                  onClick={() => openWhatsApp(customer.phone!, customer.name)}
                                   title="Abrir WhatsApp"
                                 >
                                   <MessageCircle className="h-4 w-4" />
                                 </Button>
                               </div>
                             ) : (
-                              <span className="text-muted-foreground text-xs">
-                                -
-                              </span>
+                              <span className="text-muted-foreground text-xs">-</span>
                             )}
                           </TableCell>
 
@@ -1577,24 +1607,14 @@ export default function Clientes() {
                                 {customer.city}
                               </span>
                             ) : (
-                              <span className="text-muted-foreground text-xs">
-                                -
-                              </span>
+                              <span className="text-muted-foreground text-xs">-</span>
                             )}
                           </TableCell>
 
                           <TableCell>
                             <Badge
-                              variant={
-                                customer.status === "ativo"
-                                  ? "default"
-                                  : "secondary"
-                              }
-                              className={
-                                customer.status === "ativo"
-                                  ? "bg-emerald-600 hover:bg-emerald-700"
-                                  : ""
-                              }
+                              variant={customer.status === "ativo" ? "default" : "secondary"}
+                              className={customer.status === "ativo" ? "bg-emerald-600 hover:bg-emerald-700" : ""}
                             >
                               {customer.status === "ativo" ? "Ativo" : "Inativo"}
                             </Badge>
@@ -1644,17 +1664,13 @@ export default function Clientes() {
       </Card>
 
       {/* DELETE DIALOG */}
-      <AlertDialog
-        open={!!deleteCustomer}
-        onOpenChange={() => setDeleteCustomer(null)}
-      >
+      <AlertDialog open={!!deleteCustomer} onOpenChange={() => setDeleteCustomer(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Tem certeza?</AlertDialogTitle>
             <AlertDialogDescription>
               Você está prestes a excluir o cliente{" "}
-              <strong>{deleteCustomer?.name}</strong>. Esta ação não pode ser
-              desfeita.
+              <strong>{deleteCustomer?.name}</strong>. Esta ação não pode ser desfeita.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -1701,9 +1717,7 @@ export default function Clientes() {
             ) : (
               <>
                 <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 flex justify-between items-center">
-                  <span className="text-amber-800 font-medium">
-                    Total Devido:
-                  </span>
+                  <span className="text-amber-800 font-medium">Total Devido:</span>
                   <span className="text-xl font-bold text-amber-900">
                     {formatCurrency(
                       clientDebts.reduce(
@@ -1727,34 +1741,24 @@ export default function Clientes() {
                         <CardContent className="p-4 space-y-3">
                           <div className="flex items-start justify-between gap-2">
                             <div className="min-w-0">
-                              <p className="text-sm text-muted-foreground">
-                                Compra
-                              </p>
+                              <p className="text-sm text-muted-foreground">Compra</p>
                               <p className="font-medium">
-                                {new Date(debt.created_at).toLocaleDateString(
-                                  "pt-BR"
-                                )}
+                                {new Date(debt.created_at).toLocaleDateString("pt-BR")}
                               </p>
 
                               <div className="mt-2">
-                                <p className="text-sm text-muted-foreground">
-                                  Vencimento
-                                </p>
+                                <p className="text-sm text-muted-foreground">Vencimento</p>
                                 <p className="text-sm font-medium text-red-600 flex items-center gap-2">
                                   <Calendar className="h-4 w-4" />
                                   {debt.due_date
-                                    ? new Date(debt.due_date).toLocaleDateString(
-                                        "pt-BR"
-                                      )
+                                    ? new Date(debt.due_date).toLocaleDateString("pt-BR")
                                     : "Sem prazo"}
                                 </p>
                               </div>
                             </div>
 
                             <div className="text-right">
-                              <p className="text-sm text-muted-foreground">
-                                Valor
-                              </p>
+                              <p className="text-sm text-muted-foreground">Valor</p>
                               <p className="text-lg font-bold">
                                 {formatCurrency(Number(debt.total_amount))}
                               </p>
@@ -1762,9 +1766,7 @@ export default function Clientes() {
                           </div>
 
                           <div className="text-sm text-muted-foreground">
-                            <p className="font-medium text-foreground mb-1">
-                              Descrição
-                            </p>
+                            <p className="font-medium text-foreground mb-1">Descrição</p>
                             <p className="break-words">{debt.description || "-"}</p>
                           </div>
 
@@ -1774,11 +1776,7 @@ export default function Clientes() {
                               className="h-12"
                               onClick={() => toggleItems(debt)}
                               disabled={!hasSaleId || isLoading}
-                              title={
-                                !hasSaleId
-                                  ? "Sem sale_id (reference não é UUID)"
-                                  : "Ver itens"
-                              }
+                              title={!hasSaleId ? "Sem sale_id (reference não é UUID)" : "Ver itens"}
                             >
                               {isLoading ? (
                                 <Loader2 className="h-4 w-4 mr-2 animate-spin" />
@@ -1820,10 +1818,7 @@ export default function Clientes() {
                                     >
                                       <div className="min-w-0">
                                         <p className="text-sm font-medium truncate">
-                                          {it.product_name ||
-                                            it.name ||
-                                            it.product_id ||
-                                            "Item"}
+                                          {it.product_name || it.product_id || "Item"}
                                         </p>
                                         <p className="text-xs text-muted-foreground">
                                           Qtd:{" "}
@@ -1832,11 +1827,9 @@ export default function Clientes() {
                                           </span>
                                         </p>
                                       </div>
-                                      {typeof it.total_price === "number" ? (
-                                        <span className="text-sm font-semibold">
-                                          {formatCurrency(Number(it.total_price))}
-                                        </span>
-                                      ) : null}
+                                      <span className="text-sm font-semibold">
+                                        {formatCurrency(Number(it.total_price))}
+                                      </span>
                                     </div>
                                   ))}
                                 </div>
@@ -1873,18 +1866,14 @@ export default function Clientes() {
                           <React.Fragment key={debt.id}>
                             <TableRow>
                               <TableCell>
-                                {new Date(debt.created_at).toLocaleDateString(
-                                  "pt-BR"
-                                )}
+                                {new Date(debt.created_at).toLocaleDateString("pt-BR")}
                               </TableCell>
 
                               <TableCell className="text-red-600 font-medium">
                                 <div className="flex items-center gap-1">
                                   <Calendar className="h-3 w-3" />
                                   {debt.due_date
-                                    ? new Date(debt.due_date).toLocaleDateString(
-                                        "pt-BR"
-                                      )
+                                    ? new Date(debt.due_date).toLocaleDateString("pt-BR")
                                     : "Sem prazo"}
                                 </div>
                               </TableCell>
@@ -1908,11 +1897,7 @@ export default function Clientes() {
                                     className="h-9"
                                     onClick={() => toggleItems(debt)}
                                     disabled={!hasSaleId || isLoading}
-                                    title={
-                                      !hasSaleId
-                                        ? "Sem sale_id (reference não é UUID)"
-                                        : "Ver itens"
-                                    }
+                                    title={!hasSaleId ? "Sem sale_id (reference não é UUID)" : "Ver itens"}
                                   >
                                     {isLoading ? (
                                       <Loader2 className="h-4 w-4 mr-2 animate-spin" />
@@ -1932,8 +1917,7 @@ export default function Clientes() {
                                     className="bg-emerald-600 hover:bg-emerald-700 h-9"
                                     onClick={() => startReceive(debt)}
                                   >
-                                    <CheckCheck className="h-4 w-4 mr-2" />{" "}
-                                    Receber
+                                    <CheckCheck className="h-4 w-4 mr-2" /> Receber
                                   </Button>
                                 </div>
                               </TableCell>
@@ -1959,10 +1943,7 @@ export default function Clientes() {
                                           >
                                             <div className="min-w-0">
                                               <p className="text-sm font-medium truncate">
-                                                {it.product_name ||
-                                                  it.name ||
-                                                  it.product_id ||
-                                                  "Item"}
+                                                {it.product_name || it.product_id || "Item"}
                                               </p>
                                               <p className="text-xs text-muted-foreground">
                                                 Quantidade:{" "}
@@ -1971,13 +1952,9 @@ export default function Clientes() {
                                                 </span>
                                               </p>
                                             </div>
-                                            {typeof it.total_price === "number" ? (
-                                              <span className="text-sm font-semibold">
-                                                {formatCurrency(
-                                                  Number(it.total_price)
-                                                )}
-                                              </span>
-                                            ) : null}
+                                            <span className="text-sm font-semibold">
+                                              {formatCurrency(Number(it.total_price))}
+                                            </span>
                                           </div>
                                         ))}
                                       </div>
@@ -2033,10 +2010,7 @@ export default function Clientes() {
 
             <div className="space-y-2">
               <p className="text-sm font-medium">Forma de pagamento</p>
-              <Select
-                value={paymentMethod}
-                onValueChange={(v) => setPaymentMethod(v as any)}
-              >
+              <Select value={paymentMethod} onValueChange={(v) => setPaymentMethod(v as any)}>
                 <SelectTrigger className="h-12">
                   <SelectValue placeholder="Selecione..." />
                 </SelectTrigger>
@@ -2050,8 +2024,8 @@ export default function Clientes() {
               </Select>
 
               <p className="text-xs text-muted-foreground">
-                *Aqui a forma de pagamento é só para você registrar no fluxo. A
-                baixa é feita em <code>financial_entries</code>.
+                *Aqui a forma de pagamento é só para você registrar no fluxo. A baixa é feita em{" "}
+                <code>financial_entries</code>.
               </p>
             </div>
           </div>

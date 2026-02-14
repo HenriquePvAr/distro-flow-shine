@@ -23,6 +23,7 @@ import {
   RefreshCcw,
   ChevronDown,
   DollarSign,
+  Package,
 } from "lucide-react";
 
 import { supabase } from "@/integrations/supabase/client";
@@ -55,16 +56,30 @@ import {
 // TIPOS
 // -----------------------------
 interface Sale {
-  id: string;
+  id: string; // financial_entries.id (uuid)
   total_amount: number;
   entity_name: string;
   description: string;
   created_at: string;
+
   seller_name: string;
-  seller_key: string; // ✅ cache p/ filtros e ranking
+  seller_key: string;
+
   commission_value: number;
-  reference?: string | null;
+  reference?: string | null; // pode ser sale_id (uuid) OU "PDV-xxxx"
+  month_key: string; // YYYY-MM (cache p/ filtro rápido)
 }
+
+type SaleItem = {
+  id: string;
+  sale_id: string;
+  product_name?: string | null;
+  name?: string | null;
+  product_id?: string | null;
+  quantity: number;
+  unit_price?: number | null;
+  total_price?: number | null;
+};
 
 interface SellerStat {
   name: string;
@@ -142,6 +157,31 @@ const isIgnoredCustomer = (name: string) => {
 const clsx = (...classes: Array<string | false | null | undefined>) =>
   classes.filter(Boolean).join(" ");
 
+const isUuid = (v: string | null | undefined) =>
+  !!v &&
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+    v
+  );
+
+const monthKeyFromIso = (iso: string) => {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  return `${y}-${m}`;
+};
+
+const monthBounds = (monthKey: string) => {
+  // monthKey = "YYYY-MM"
+  const [yStr, mStr] = monthKey.split("-");
+  const y = Number(yStr);
+  const m = Number(mStr);
+  if (!y || !m) return { from: null as string | null, to: null as string | null };
+  const from = new Date(y, m - 1, 1, 0, 0, 0, 0);
+  const to = new Date(y, m, 1, 0, 0, 0, 0); // início do mês seguinte
+  return { from: from.toISOString(), to: to.toISOString() };
+};
+
 function KpiCard({
   title,
   value,
@@ -162,7 +202,9 @@ function KpiCard({
       </CardHeader>
       <CardContent className="pb-4">
         <div className="text-2xl font-bold tracking-tight">{value}</div>
-        {sub ? <div className="mt-1 text-xs text-muted-foreground">{sub}</div> : null}
+        {sub ? (
+          <div className="mt-1 text-xs text-muted-foreground">{sub}</div>
+        ) : null}
       </CardContent>
     </Card>
   );
@@ -203,6 +245,14 @@ export default function Performance() {
   const [sellerFilter, setSellerFilter] = useState<string>("all");
   const [customerSearch, setCustomerSearch] = useState("");
 
+  // ✅ filtro por mês (YYYY-MM) para buscar/mostrar histórico
+  const [monthFilter, setMonthFilter] = useState<string>(() => {
+    const now = new Date();
+    const y = now.getFullYear();
+    const m = String(now.getMonth() + 1).padStart(2, "0");
+    return `${y}-${m}`;
+  });
+
   // evita travar com listas grandes
   const deferredCustomerSearch = useDeferredValue(customerSearch);
 
@@ -219,6 +269,11 @@ export default function Performance() {
   // controle de “request mais recente” (evita setState fora de ordem)
   const requestIdRef = useRef(0);
 
+  // ✅ cache de itens (sale_items)
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const [itemsCache, setItemsCache] = useState<Record<string, SaleItem[]>>({});
+  const [itemsLoading, setItemsLoading] = useState<Record<string, boolean>>({});
+
   const resetPaging = useCallback(() => {
     setCustomerLimit(15);
     setSellerLimit(12);
@@ -229,7 +284,14 @@ export default function Performance() {
 
     const now = new Date();
     if (rk === "today") {
-      const start = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0);
+      const start = new Date(
+        now.getFullYear(),
+        now.getMonth(),
+        now.getDate(),
+        0,
+        0,
+        0
+      );
       return start.toISOString();
     }
 
@@ -256,7 +318,10 @@ export default function Performance() {
   // ✅ buscar vendedores do cadastro (profiles)
   const fetchSellers = useCallback(async () => {
     try {
-      const { data, error } = await supabase.from("profiles").select("id,name").order("name");
+      const { data, error } = await supabase
+        .from("profiles")
+        .select("id,name")
+        .order("name");
       if (error) throw error;
 
       const mapped: Person[] = (data || [])
@@ -272,8 +337,9 @@ export default function Performance() {
 
   /**
    * ✅ Perf fix:
+   * - suporte a monthFilter (YYYY-MM) -> gte/lt no created_at
    * - suporte a limitOverride (evita “stale state” do fetchLimit)
-   * - mapeia seller_key pra não normalizar em loop várias vezes
+   * - mapeia seller_key + month_key (cache p/ filtros)
    */
   const fetchSales = useCallback(
     async (opts?: { keepLimit?: boolean; limitOverride?: number }) => {
@@ -293,7 +359,19 @@ export default function Performance() {
           setFetchLimit(DEFAULT_FETCH_LIMIT);
         }
 
-        const fromIso = buildFromDateIso(range);
+        // ✅ se range === month, usamos monthFilter (permite escolher qualquer mês)
+        // senão, usa range padrão
+        let fromIso: string | null = null;
+        let toIso: string | null = null;
+
+        if (range === "month" && monthFilter) {
+          const b = monthBounds(monthFilter);
+          fromIso = b.from;
+          toIso = b.to;
+        } else {
+          fromIso = buildFromDateIso(range);
+          toIso = null;
+        }
 
         let q = supabase
           .from("financial_entries")
@@ -307,6 +385,7 @@ export default function Performance() {
           .limit(limitToUse);
 
         if (fromIso) q = q.gte("created_at", fromIso);
+        if (toIso) q = q.lt("created_at", toIso);
 
         const { data, error } = await q;
         if (error) throw error;
@@ -318,24 +397,36 @@ export default function Performance() {
           const description = String(s.description || "");
 
           // pega do banco OU extrai da descrição (antigas)
-          let finalSellerName = s.seller_name ? normalizeSellerName(s.seller_name) : "";
-          if (!finalSellerName) finalSellerName = normalizeSellerName(extractSellerName(description));
+          let finalSellerName = s.seller_name
+            ? normalizeSellerName(s.seller_name)
+            : "";
+          if (!finalSellerName)
+            finalSellerName = normalizeSellerName(
+              extractSellerName(description)
+            );
 
+          const createdAt = String(s.created_at || "");
           return {
             id: String(s.id),
             total_amount: toNumber(s.total_amount),
             entity_name: String(s.entity_name || ""),
             description,
-            created_at: String(s.created_at || ""),
+            created_at: createdAt,
             seller_name: finalSellerName,
             seller_key: normalizeSellerKey(finalSellerName),
             commission_value: toNumber(s.commission_value),
             reference: s.reference ?? null,
+            month_key: monthKeyFromIso(createdAt),
           };
         });
 
         setSales(mapped);
         resetPaging();
+
+        // ✅ reseta expansão/itens quando refaz consulta (evita mistura de cache)
+        setExpanded({});
+        setItemsLoading({});
+        setItemsCache({});
       } catch (err) {
         console.error(err);
         toast.error("Erro ao carregar dados de performance");
@@ -343,7 +434,7 @@ export default function Performance() {
         if (currentRequest === requestIdRef.current) setLoading(false);
       }
     },
-    [range, fetchLimit, buildFromDateIso, resetPaging]
+    [range, monthFilter, fetchLimit, buildFromDateIso, resetPaging]
   );
 
   useEffect(() => {
@@ -369,7 +460,8 @@ export default function Performance() {
     const set = new Set<string>();
 
     for (const s of allSellers) set.add(normalizeSellerName(s.name));
-    for (let i = 0; i < sales.length; i++) set.add(normalizeSellerName(sales[i].seller_name));
+    for (let i = 0; i < sales.length; i++)
+      set.add(normalizeSellerName(sales[i].seller_name));
 
     return ["all", ...Array.from(set).sort((a, b) => a.localeCompare(b))];
   }, [allSellers, sales]);
@@ -380,16 +472,25 @@ export default function Performance() {
     return sales.filter((s) => s.seller_key === sellerFilterKey);
   }, [sales, sellerFilterKey]);
 
+  // ✅ Vendas do vendedor no mês selecionado (para listar embaixo)
+  const sellerMonthSales = useMemo(() => {
+    if (sellerFilterKey === "all") return [];
+    if (!monthFilter) return salesFilteredBySeller;
+    return salesFilteredBySeller.filter((s) => s.month_key === monthFilter);
+  }, [salesFilteredBySeller, sellerFilterKey, monthFilter]);
+
   // Totais Gerais (loops rápidos)
   const totalRevenue = useMemo(() => {
     let sum = 0;
-    for (let i = 0; i < salesFilteredBySeller.length; i++) sum += salesFilteredBySeller[i].total_amount;
+    for (let i = 0; i < salesFilteredBySeller.length; i++)
+      sum += salesFilteredBySeller[i].total_amount;
     return sum;
   }, [salesFilteredBySeller]);
 
   const totalCommissions = useMemo(() => {
     let sum = 0;
-    for (let i = 0; i < salesFilteredBySeller.length; i++) sum += salesFilteredBySeller[i].commission_value;
+    for (let i = 0; i < salesFilteredBySeller.length; i++)
+      sum += salesFilteredBySeller[i].commission_value;
     return sum;
   }, [salesFilteredBySeller]);
 
@@ -398,9 +499,23 @@ export default function Performance() {
     return totalRevenue / count;
   }, [totalRevenue, salesFilteredBySeller.length]);
 
+  // ✅ Totais do vendedor no mês (painel de vendas)
+  const sellerMonthTotals = useMemo(() => {
+    let revenue = 0;
+    let comm = 0;
+    for (let i = 0; i < sellerMonthSales.length; i++) {
+      revenue += sellerMonthSales[i].total_amount;
+      comm += sellerMonthSales[i].commission_value;
+    }
+    return { revenue, comm, count: sellerMonthSales.length };
+  }, [sellerMonthSales]);
+
   // --- RANKING VENDEDORES ---
   const sellerStats = useMemo(() => {
-    const map = new Map<string, { totalRevenue: number; totalCommission: number; salesCount: number }>();
+    const map = new Map<
+      string,
+      { totalRevenue: number; totalCommission: number; salesCount: number }
+    >();
 
     for (let i = 0; i < salesFilteredBySeller.length; i++) {
       const sale = salesFilteredBySeller[i];
@@ -438,7 +553,8 @@ export default function Performance() {
   const maxRevenue = useMemo(() => {
     if (!sellerStats.length) return 1;
     let max = 1;
-    for (let i = 0; i < sellerStats.length; i++) if (sellerStats[i].totalRevenue > max) max = sellerStats[i].totalRevenue;
+    for (let i = 0; i < sellerStats.length; i++)
+      if (sellerStats[i].totalRevenue > max) max = sellerStats[i].totalRevenue;
     return max || 1;
   }, [sellerStats]);
 
@@ -469,7 +585,9 @@ export default function Performance() {
       }
     }
 
-    const customers = Array.from(customerMap.values()).sort((a, b) => b.totalSpent - a.totalSpent);
+    const customers = Array.from(customerMap.values()).sort(
+      (a, b) => b.totalSpent - a.totalSpent
+    );
 
     let total = 0;
     for (let i = 0; i < customers.length; i++) total += customers[i].totalSpent;
@@ -496,7 +614,9 @@ export default function Performance() {
   }, [salesFilteredBySeller]);
 
   const classificationCounts = useMemo(() => {
-    let A = 0, B = 0, C = 0;
+    let A = 0,
+      B = 0,
+      C = 0;
     for (let i = 0; i < customerStats.length; i++) {
       const cls = customerStats[i].classification;
       if (cls === "A") A++;
@@ -547,7 +667,56 @@ export default function Performance() {
     return "bg-slate-500/10 text-slate-600 border-slate-500/20";
   };
 
-  const showReset = range !== "month" || sellerFilter !== "all";
+  const showReset =
+    range !== "month" || sellerFilter !== "all" || monthFilter !== monthKeyFromIso(new Date().toISOString());
+
+  // -----------------------------
+  // ITENS DA VENDA (EXPAND)
+  // -----------------------------
+  const toggleSaleItems = useCallback(
+    async (sale: Sale) => {
+      // precisamos de sale_id (uuid) -> vem no reference quando é uuid
+      const saleId = isUuid(sale.reference) ? (sale.reference as string) : null;
+
+      if (!saleId) {
+        toast.error("Esta venda não tem sale_id (reference não é UUID).");
+        return;
+      }
+
+      const opened = !!expanded[sale.id];
+      if (opened) {
+        setExpanded((prev) => ({ ...prev, [sale.id]: false }));
+        return;
+      }
+
+      setExpanded((prev) => ({ ...prev, [sale.id]: true }));
+
+      if (itemsCache[saleId]) return; // já em cache
+
+      setItemsLoading((prev) => ({ ...prev, [saleId]: true }));
+      try {
+        const { data, error } = await supabase
+          .from("sale_items")
+          .select(
+            "id, sale_id, product_name, name, product_id, quantity, unit_price, total_price"
+          )
+          .eq("sale_id", saleId);
+
+        if (error) throw error;
+
+        setItemsCache((prev) => ({
+          ...prev,
+          [saleId]: (data as SaleItem[]) || [],
+        }));
+      } catch (e) {
+        console.error(e);
+        toast.error("Erro ao buscar itens da venda.");
+      } finally {
+        setItemsLoading((prev) => ({ ...prev, [saleId]: false }));
+      }
+    },
+    [expanded, itemsCache]
+  );
 
   if (loading) {
     return (
@@ -589,8 +758,8 @@ export default function Performance() {
         </div>
 
         {/* FILTROS */}
-        <Card className="sm:min-w-[520px]">
-          <CardContent className="p-3 sm:p-4">
+        <Card className="sm:min-w-[560px]">
+          <CardContent className="p-3 sm:p-4 space-y-2">
             <div className="grid grid-cols-1 sm:grid-cols-12 gap-2">
               <div className="sm:col-span-4">
                 <Select
@@ -607,7 +776,7 @@ export default function Performance() {
                   <SelectContent>
                     <SelectItem value="today">Hoje</SelectItem>
                     <SelectItem value="week">Esta semana</SelectItem>
-                    <SelectItem value="month">Este mês</SelectItem>
+                    <SelectItem value="month">Por mês (seletor)</SelectItem>
                     <SelectItem value="7">Últimos 7 dias</SelectItem>
                     <SelectItem value="30">Últimos 30 dias</SelectItem>
                     <SelectItem value="90">Últimos 90 dias</SelectItem>
@@ -652,7 +821,12 @@ export default function Performance() {
                   className={clsx("w-full", !showReset && "opacity-50")}
                   disabled={!showReset}
                   onClick={() => {
+                    const now = new Date();
+                    const y = now.getFullYear();
+                    const m = String(now.getMonth() + 1).padStart(2, "0");
+
                     setRange("month");
+                    setMonthFilter(`${y}-${m}`);
                     setSellerFilter("all");
                     setCustomerSearch("");
                     setFetchLimit(DEFAULT_FETCH_LIMIT);
@@ -664,8 +838,35 @@ export default function Performance() {
               </div>
             </div>
 
+            {/* ✅ seletor de mês (só aparece quando range=month) */}
+            {range === "month" && (
+              <div className="grid grid-cols-1 sm:grid-cols-12 gap-2">
+                <div className="sm:col-span-7">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-muted-foreground whitespace-nowrap">
+                      Mês:
+                    </span>
+                    <Input
+                      type="month"
+                      value={monthFilter}
+                      onChange={(e) => {
+                        setMonthFilter(e.target.value);
+                        setFetchLimit(DEFAULT_FETCH_LIMIT);
+                      }}
+                      className="h-10"
+                    />
+                  </div>
+                </div>
+                <div className="sm:col-span-5 flex items-center">
+                  <span className="text-xs text-muted-foreground">
+                    *Ao trocar o mês, clique em atualizar (⟳) se quiser.
+                  </span>
+                </div>
+              </div>
+            )}
+
             {sellerFilter !== "all" && (
-              <div className="mt-2 text-xs text-muted-foreground">
+              <div className="text-xs text-muted-foreground">
                 Exibindo apenas vendas de <b>{sellerFilter}</b>
               </div>
             )}
@@ -680,7 +881,10 @@ export default function Performance() {
           value={`${salesFilteredBySeller.length}`}
           sub={
             <>
-              Fat: <span className="font-semibold">{formatCurrency(totalRevenue)}</span>
+              Fat:{" "}
+              <span className="font-semibold">
+                {formatCurrency(totalRevenue)}
+              </span>
             </>
           }
         />
@@ -712,9 +916,7 @@ export default function Performance() {
               <TrendingUp className="h-5 w-5 text-primary" />
               <CardTitle>Ranking de Vendedores</CardTitle>
             </div>
-            <p className="text-sm text-muted-foreground">
-              Por faturamento e comissão
-            </p>
+            <p className="text-sm text-muted-foreground">Por faturamento e comissão</p>
           </CardHeader>
 
           <CardContent className="space-y-3">
@@ -747,9 +949,7 @@ export default function Performance() {
                             </div>
 
                             <div className="text-right shrink-0">
-                              <div className="text-sm text-muted-foreground">
-                                Total Vendido
-                              </div>
+                              <div className="text-sm text-muted-foreground">Total Vendido</div>
                               <div className="font-bold whitespace-nowrap">
                                 {formatCurrency(stat.totalRevenue)}
                               </div>
@@ -899,6 +1099,187 @@ export default function Performance() {
         </Card>
       </div>
 
+      {/* ✅ VENDAS DO VENDEDOR (MÊS) + ITENS + COMISSÃO POR VENDA */}
+      {sellerFilterKey !== "all" && (
+        <Card className="overflow-hidden">
+          <CardHeader className="pb-3">
+            <div className="flex items-center gap-2">
+              <Package className="h-5 w-5 text-primary" />
+              <CardTitle>Vendas do vendedor no mês</CardTitle>
+            </div>
+            <p className="text-sm text-muted-foreground">
+              {sellerFilter} • {monthFilter}
+            </p>
+          </CardHeader>
+
+          <CardContent className="space-y-3">
+            <div className="grid gap-3 sm:grid-cols-3">
+              <KpiCard
+                title="Vendas no mês"
+                value={`${sellerMonthTotals.count}`}
+                sub="Quantidade de vendas filtradas"
+              />
+              <KpiCard
+                title="Total vendido"
+                value={formatCurrency(sellerMonthTotals.revenue)}
+                accentClass="border-slate-500/20"
+              />
+              <KpiCard
+                title="Comissão total"
+                value={formatCurrency(sellerMonthTotals.comm)}
+                accentClass="border-green-500/30 bg-green-500/5"
+              />
+            </div>
+
+            {sellerMonthSales.length === 0 ? (
+              <div className="text-center py-10 text-muted-foreground">
+                Nenhuma venda encontrada para esse mês.
+              </div>
+            ) : (
+              <div className="rounded-md border overflow-hidden">
+                <Table>
+                  <TableHeader className="bg-muted/50">
+                    <TableRow>
+                      <TableHead>Data</TableHead>
+                      <TableHead>Cliente</TableHead>
+                      <TableHead className="text-right">Total</TableHead>
+                      <TableHead className="text-right">Comissão</TableHead>
+                      <TableHead className="text-right w-[180px]">Itens</TableHead>
+                    </TableRow>
+                  </TableHeader>
+
+                  <TableBody>
+                    {sellerMonthSales.map((s) => {
+                      const saleId = isUuid(s.reference) ? (s.reference as string) : null;
+                      const open = !!expanded[s.id];
+                      const loadingIt = saleId ? !!itemsLoading[saleId] : false;
+                      const items = saleId ? itemsCache[saleId] || [] : [];
+
+                      return (
+                        <React.Fragment key={s.id}>
+                          <TableRow>
+                            <TableCell className="whitespace-nowrap">
+                              {formatDate(s.created_at)}
+                            </TableCell>
+
+                            <TableCell className="max-w-[320px] truncate" title={s.entity_name}>
+                              {s.entity_name || "—"}
+                            </TableCell>
+
+                            <TableCell className="text-right font-mono font-semibold">
+                              {formatCurrency(s.total_amount)}
+                            </TableCell>
+
+                            <TableCell className="text-right font-mono font-semibold text-emerald-700">
+                              {formatCurrency(s.commission_value)}
+                            </TableCell>
+
+                            <TableCell className="text-right">
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="h-9"
+                                disabled={!saleId || loadingIt}
+                                title={!saleId ? "Sem sale_id (reference não é UUID)" : "Ver itens"}
+                                onClick={() => toggleSaleItems(s)}
+                              >
+                                {loadingIt ? (
+                                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                                ) : (
+                                  <Package className="h-4 w-4 mr-2" />
+                                )}
+                                {open ? "Ocultar" : "Ver"}
+                                <ChevronDown
+                                  className={clsx(
+                                    "h-4 w-4 ml-2 transition-transform",
+                                    open && "rotate-180"
+                                  )}
+                                />
+                              </Button>
+                            </TableCell>
+                          </TableRow>
+
+                          {open && (
+                            <TableRow>
+                              <TableCell colSpan={5} className="bg-muted/20">
+                                <div className="p-3 rounded-lg border bg-background space-y-2">
+                                  <div className="flex items-center justify-between">
+                                    <p className="text-sm font-medium">Itens da venda</p>
+                                    {!saleId ? (
+                                      <span className="text-xs text-muted-foreground">
+                                        Sem vínculo com sale_items (reference não é UUID)
+                                      </span>
+                                    ) : null}
+                                  </div>
+
+                                  {!saleId ? (
+                                    <p className="text-sm text-muted-foreground">
+                                      Não foi possível buscar itens dessa venda.
+                                    </p>
+                                  ) : loadingIt ? (
+                                    <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                                      <Loader2 className="h-4 w-4 animate-spin" />
+                                      Carregando itens...
+                                    </div>
+                                  ) : items.length === 0 ? (
+                                    <p className="text-sm text-muted-foreground">
+                                      Nenhum item encontrado.
+                                    </p>
+                                  ) : (
+                                    <div className="grid gap-2 sm:grid-cols-2">
+                                      {items.map((it) => (
+                                        <div
+                                          key={it.id}
+                                          className="flex items-center justify-between gap-3 rounded-md border p-3"
+                                        >
+                                          <div className="min-w-0">
+                                            <p className="text-sm font-medium truncate">
+                                              {it.product_name ||
+                                                it.name ||
+                                                it.product_id ||
+                                                "Item"}
+                                            </p>
+                                            <p className="text-xs text-muted-foreground">
+                                              Qtd:{" "}
+                                              <span className="font-semibold text-foreground">
+                                                {Number(it.quantity) || 0}
+                                              </span>
+                                              {typeof it.unit_price === "number" ? (
+                                                <>
+                                                  {" "}
+                                                  • Un:{" "}
+                                                  <span className="font-semibold text-foreground">
+                                                    {formatCurrency(Number(it.unit_price))}
+                                                  </span>
+                                                </>
+                                              ) : null}
+                                            </p>
+                                          </div>
+
+                                          {typeof it.total_price === "number" ? (
+                                            <span className="text-sm font-semibold whitespace-nowrap">
+                                              {formatCurrency(Number(it.total_price))}
+                                            </span>
+                                          ) : null}
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
+                              </TableCell>
+                            </TableRow>
+                          )}
+                        </React.Fragment>
+                      );
+                    })}
+                  </TableBody>
+                </Table>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
       {/* LEGENDA ABC */}
       <Card className="overflow-hidden">
         <CardHeader className="pb-3">
@@ -909,13 +1290,17 @@ export default function Performance() {
             <div className="flex items-center gap-3 p-3 rounded-xl bg-emerald-500/5 border border-emerald-500/20">
               <Badge className="bg-emerald-500 text-white">A</Badge>
               <div className="text-sm">
-                <span className="font-bold text-emerald-700">VIPs (80% da receita)</span>
+                <span className="font-bold text-emerald-700">
+                  VIPs (80% da receita)
+                </span>
               </div>
             </div>
             <div className="flex items-center gap-3 p-3 rounded-xl bg-amber-500/5 border border-amber-500/20">
               <Badge className="bg-amber-500 text-white">B</Badge>
               <div className="text-sm">
-                <span className="font-bold text-amber-700">Regulares (15% da receita)</span>
+                <span className="font-bold text-amber-700">
+                  Regulares (15% da receita)
+                </span>
               </div>
             </div>
             <div className="flex items-center gap-3 p-3 rounded-xl bg-slate-500/5 border border-slate-500/20">
@@ -934,7 +1319,11 @@ export default function Performance() {
           {fetchLimit < MAX_FETCH_LIMIT && " Se necessário, carregue mais abaixo."}
         </div>
         {fetchLimit < MAX_FETCH_LIMIT && (
-          <Button variant="outline" className="w-full sm:w-auto" onClick={loadMoreFromDb}>
+          <Button
+            variant="outline"
+            className="w-full sm:w-auto"
+            onClick={loadMoreFromDb}
+          >
             Carregar mais histórico <ChevronDown className="h-4 w-4 ml-2" />
           </Button>
         )}
