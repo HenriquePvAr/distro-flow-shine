@@ -22,10 +22,11 @@ import {
   X,
   CheckCircle2,
   Download,
-  Wallet,     // Novo ícone
-  CheckCheck, // Novo ícone
-  Calendar,   // Novo ícone
-  DollarSign  // Novo ícone
+  Wallet,
+  CheckCheck,
+  Calendar,
+  ChevronDown,
+  Package,
 } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
@@ -76,7 +77,9 @@ import {
 } from "@/components/ui/select";
 import { toast } from "sonner";
 
-// --- TIPAGEM ---
+// -----------------------------
+// TIPOS
+// -----------------------------
 interface Customer {
   id: string;
   name: string;
@@ -95,9 +98,27 @@ interface DebtEntry {
   description: string;
   total_amount: number;
   status: string;
+  // opcional: se existir no seu schema
+  sale_id?: string | null;
+  payment_method?: string | null;
 }
 
-// --- UTILS ---
+type PaymentMethod = "dinheiro" | "pix" | "cartao" | "transferencia" | "outros";
+
+type SaleItem = {
+  id: string;
+  sale_id: string;
+  product_name?: string | null;
+  name?: string | null;
+  product_id?: string | null;
+  quantity: number;
+  unit_price?: number | null;
+  total_price?: number | null;
+};
+
+// -----------------------------
+// UTILS
+// -----------------------------
 const onlyDigits = (v: string) => (v || "").replace(/\D/g, "");
 const normalizeNullable = (v: string | undefined | null) => {
   const t = (v ?? "").trim();
@@ -126,8 +147,8 @@ const formatDocument = (value: string) => {
     .trim();
 };
 
-const formatCurrency = (val: number) => 
-  val.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+const formatCurrency = (val: number) =>
+  (Number(val) || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 
 const copyToClipboard = async (text: string) => {
   try {
@@ -145,7 +166,14 @@ const openWhatsApp = (phone: string, name?: string) => {
   window.open(`https://wa.me/55${clean}?text=${msg}`, "_blank");
 };
 
-// --- SCHEMA ---
+const daysBetween = (a: Date, b: Date) => {
+  const ms = Math.abs(a.getTime() - b.getTime());
+  return Math.floor(ms / (1000 * 60 * 60 * 24));
+};
+
+// -----------------------------
+// SCHEMA
+// -----------------------------
 const customerSchema = z.object({
   name: z.string().min(2, "Nome é obrigatório (min 2 letras)").max(100),
 
@@ -174,7 +202,9 @@ const customerSchema = z.object({
 
 type CustomerFormData = z.infer<typeof customerSchema>;
 
-// --- IMPORT ---
+// -----------------------------
+// IMPORT
+// -----------------------------
 type ImportRow = {
   name: string;
   document?: string;
@@ -196,28 +226,70 @@ const getVal = (obj: any, keys: string[]) => {
   return "";
 };
 
+// -----------------------------
+// STATUS DOTS
+// -----------------------------
+type DotKind = "red" | "green" | "gray";
+
+type CustomerSignal = {
+  dot: DotKind;
+  openAmount: number;
+  lastPurchaseAt: string | null;
+};
+
+const Dot = ({ kind }: { kind: DotKind }) => {
+  const cls =
+    kind === "red"
+      ? "bg-red-500"
+      : kind === "green"
+      ? "bg-emerald-500"
+      : "bg-muted-foreground/40";
+  return (
+    <span
+      className={`inline-block h-2.5 w-2.5 rounded-full ${cls}`}
+      aria-hidden="true"
+    />
+  );
+};
+
 export default function Clientes() {
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
-  // Estados de CRUD
+  // CRUD
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [editingCustomer, setEditingCustomer] = useState<Customer | null>(null);
   const [deleteCustomer, setDeleteCustomer] = useState<Customer | null>(null);
 
-  // Estados Financeiros (Carteira)
+  // Carteira
   const [financialModalOpen, setFinancialModalOpen] = useState(false);
   const [targetClient, setTargetClient] = useState<Customer | null>(null);
   const [clientDebts, setClientDebts] = useState<DebtEntry[]>([]);
   const [loadingDebts, setLoadingDebts] = useState(false);
 
-  // Estados de Filtro e Importação
+  // Modal recebimento
+  const [receiveOpen, setReceiveOpen] = useState(false);
+  const [receiveDebt, setReceiveDebt] = useState<DebtEntry | null>(null);
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod | "">("");
+  const [receiving, setReceiving] = useState(false);
+
+  // Itens da venda (expand)
+  const [expandedItems, setExpandedItems] = useState<Record<string, SaleItem[]>>({});
+  const [loadingItems, setLoadingItems] = useState<Record<string, boolean>>({});
+
+  // Filtros
   const [searchTerm, setSearchTerm] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | "ativo" | "inativo">("all");
+
+  // Import
   const [importOpen, setImportOpen] = useState(false);
   const [importRows, setImportRows] = useState<ImportRow[]>([]);
   const [importing, setImporting] = useState(false);
+
+  // Sinais (bolinhas)
+  const [signals, setSignals] = useState<Record<string, CustomerSignal>>({});
+  const [loadingSignals, setLoadingSignals] = useState(false);
 
   const form = useForm<CustomerFormData>({
     resolver: zodResolver(customerSchema),
@@ -238,7 +310,17 @@ export default function Clientes() {
 
   useEffect(() => {
     fetchCustomers();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (customers.length) {
+      loadCustomerSignals(customers);
+    } else {
+      setSignals({});
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [customers]);
 
   const fetchCustomers = async () => {
     setIsLoading(true);
@@ -254,24 +336,124 @@ export default function Clientes() {
     }
   };
 
-  // --- LÓGICA FINANCEIRA (CARTEIRA) ---
+  // -----------------------------
+  // SINAIS (1x por lista, sem olhar cliente por cliente)
+  // -----------------------------
+  const loadCustomerSignals = async (list: Customer[]) => {
+    setLoadingSignals(true);
+    try {
+      const now = new Date();
+
+      // 1) tenta pegar compras recentes via tabela sales (se existir)
+      const customerIds = list.map((c) => c.id);
+      const lastPurchaseById: Record<string, string> = {};
+      let salesOk = false;
+
+      try {
+        const { data: salesData, error: salesErr } = await supabase
+          .from("sales")
+          .select("id, customer_id, created_at")
+          .in("customer_id", customerIds)
+          .order("created_at", { ascending: false });
+
+        if (salesErr) throw salesErr;
+
+        // pega o mais recente por customer_id
+        (salesData || []).forEach((s: any) => {
+          const cid = s.customer_id as string | null;
+          if (!cid) return;
+          if (!lastPurchaseById[cid]) lastPurchaseById[cid] = s.created_at;
+        });
+
+        salesOk = true;
+      } catch {
+        salesOk = false;
+      }
+
+      // 2) dívidas e fallback de "compra recente" via financial_entries
+      // (assume que cada venda gera um receivable; se não gerar, sales acima resolve)
+      const names = list.map((c) => c.name).filter(Boolean);
+      const openAmountByName: Record<string, number> = {};
+      const lastByName: Record<string, string> = {};
+
+      if (names.length) {
+        const { data: finData, error: finErr } = await supabase
+          .from("financial_entries")
+          .select("entity_name, status, total_amount, created_at, type")
+          .in("entity_name", names)
+          .eq("type", "receivable")
+          .order("created_at", { ascending: false });
+
+        if (finErr) throw finErr;
+
+        (finData || []).forEach((r: any) => {
+          const name = String(r.entity_name || "");
+          if (!name) return;
+
+          // último movimento (pra recência)
+          if (!lastByName[name]) lastByName[name] = r.created_at;
+
+          // soma abertos
+          if (String(r.status || "").toLowerCase() !== "paid") {
+            openAmountByName[name] = (openAmountByName[name] || 0) + Number(r.total_amount || 0);
+          }
+        });
+      }
+
+      const next: Record<string, CustomerSignal> = {};
+      list.forEach((c) => {
+        const open = openAmountByName[c.name] || 0;
+        const last = salesOk ? lastPurchaseById[c.id] || null : lastByName[c.name] || null;
+
+        let dot: DotKind = "gray";
+        if (open > 0.00001) {
+          dot = "red";
+        } else if (last) {
+          const d = new Date(last);
+          const diff = daysBetween(now, d);
+          dot = diff <= 30 ? "green" : "gray";
+        } else {
+          dot = "gray";
+        }
+
+        next[c.id] = {
+          dot,
+          openAmount: open,
+          lastPurchaseAt: last,
+        };
+      });
+
+      setSignals(next);
+    } catch (e) {
+      console.error(e);
+      // não trava a tela por isso
+      setSignals({});
+    } finally {
+      setLoadingSignals(false);
+    }
+  };
+
+  // -----------------------------
+  // CARTEIRA
+  // -----------------------------
   const openFinancialModal = async (customer: Customer) => {
     setTargetClient(customer);
     setFinancialModalOpen(true);
     setLoadingDebts(true);
+    setClientDebts([]);
+    setExpandedItems({});
+    setLoadingItems({});
     try {
-      // Busca débitos (vendas a prazo não pagas)
-      // Tenta bater pelo nome do cliente (entity_name)
       const { data, error } = await supabase
         .from("financial_entries")
-        .select("id, created_at, due_date, description, total_amount, status")
-        .eq("entity_name", customer.name) 
+        .select("id, created_at, due_date, description, total_amount, status, sale_id, payment_method")
+        .eq("entity_name", customer.name)
         .eq("type", "receivable")
         .neq("status", "paid")
         .order("due_date", { ascending: true });
 
       if (error) throw error;
-      setClientDebts(data || []);
+      setClientDebts((data as DebtEntry[]) || []);
     } catch (err) {
       console.error(err);
       toast.error("Erro ao buscar débitos do cliente.");
@@ -280,29 +462,118 @@ export default function Clientes() {
     }
   };
 
-  const handlePayDebt = async (debtId: string, amount: number) => {
+  const startReceive = (debt: DebtEntry) => {
+    setReceiveDebt(debt);
+    setPaymentMethod("");
+    setReceiveOpen(true);
+  };
+
+  const confirmReceive = async () => {
+    if (!receiveDebt) return;
+    if (!paymentMethod) {
+      toast.error("Selecione a forma de pagamento.");
+      return;
+    }
+
+    setReceiving(true);
     try {
-      const { error } = await supabase
+      const amount = Number(receiveDebt.total_amount) || 0;
+
+      // 1) tenta salvar com payment_method (se existir no schema)
+      const payloadWithMethod: any = {
+        status: "paid",
+        paid_amount: amount,
+        payment_method: paymentMethod,
+        updated_at: new Date().toISOString(),
+      };
+
+      const { error: err1 } = await supabase
         .from("financial_entries")
-        .update({
+        .update(payloadWithMethod)
+        .eq("id", receiveDebt.id);
+
+      if (err1) {
+        // 2) fallback: salva sem coluna de método (se o banco não tiver)
+        const payloadFallback: any = {
           status: "paid",
-          paid_amount: amount, // Assume pagamento total
-          updated_at: new Date().toISOString()
-        })
-        .eq("id", debtId);
+          paid_amount: amount,
+          updated_at: new Date().toISOString(),
+        };
 
-      if (error) throw error;
+        const { error: err2 } = await supabase
+          .from("financial_entries")
+          .update(payloadFallback)
+          .eq("id", receiveDebt.id);
 
-      toast.success("Pagamento recebido!");
-      // Atualiza lista local removendo o item pago
-      setClientDebts((prev) => prev.filter((d) => d.id !== debtId));
-    } catch (err) {
-      console.error(err);
+        if (err2) throw err2;
+
+        toast.success("Pagamento recebido! (sem registrar a forma no banco)");
+      } else {
+        toast.success("Pagamento recebido!");
+      }
+
+      // remove da lista aberta
+      setClientDebts((prev) => prev.filter((d) => d.id !== receiveDebt.id));
+      setReceiveOpen(false);
+      setReceiveDebt(null);
+
+      // atualiza bolinha do cliente (sem refetch pesado)
+      if (targetClient) {
+        setSignals((prev) => {
+          const curr = prev[targetClient.id];
+          if (!curr) return prev;
+          const nextOpen = Math.max(0, (curr.openAmount || 0) - (Number(receiveDebt.total_amount) || 0));
+          const dot: DotKind =
+            nextOpen > 0.00001 ? "red" : curr.lastPurchaseAt ? (daysBetween(new Date(), new Date(curr.lastPurchaseAt)) <= 30 ? "green" : "gray") : "gray";
+          return { ...prev, [targetClient.id]: { ...curr, openAmount: nextOpen, dot } };
+        });
+      }
+    } catch (e) {
+      console.error(e);
       toast.error("Erro ao registrar pagamento.");
+    } finally {
+      setReceiving(false);
     }
   };
 
-  // --- LÓGICA CRUD ---
+  const toggleItems = async (debt: DebtEntry) => {
+    const debtId = debt.id;
+    const already = expandedItems[debtId];
+    if (already) {
+      setExpandedItems((prev) => {
+        const cp = { ...prev };
+        delete cp[debtId];
+        return cp;
+      });
+      return;
+    }
+
+    const saleId = (debt as any).sale_id as string | null | undefined;
+    if (!saleId) {
+      toast.error("Esta cobrança não está vinculada a uma venda (sale_id).");
+      return;
+    }
+
+    setLoadingItems((prev) => ({ ...prev, [debtId]: true }));
+    try {
+      const { data, error } = await supabase
+        .from("sale_items")
+        .select("id, sale_id, product_name, name, product_id, quantity, unit_price, total_price")
+        .eq("sale_id", saleId);
+
+      if (error) throw error;
+      setExpandedItems((prev) => ({ ...prev, [debtId]: (data as SaleItem[]) || [] }));
+    } catch (e) {
+      console.error(e);
+      toast.error("Erro ao buscar itens da compra.");
+    } finally {
+      setLoadingItems((prev) => ({ ...prev, [debtId]: false }));
+    }
+  };
+
+  // -----------------------------
+  // CRUD
+  // -----------------------------
   const openNewDialog = () => {
     setEditingCustomer(null);
     form.reset({
@@ -375,14 +646,14 @@ export default function Clientes() {
     }
   };
 
-  // --- LÓGICA FILTROS ---
+  // -----------------------------
+  // FILTROS
+  // -----------------------------
   const filteredCustomers = useMemo(() => {
     const s = debouncedSearch;
 
     const base =
-      statusFilter === "all"
-        ? customers
-        : customers.filter((c) => c.status === statusFilter);
+      statusFilter === "all" ? customers : customers.filter((c) => c.status === statusFilter);
 
     if (!s) return base;
 
@@ -407,7 +678,9 @@ export default function Clientes() {
   const active = customers.filter((c) => c.status === "ativo").length;
   const inactive = customers.filter((c) => c.status === "inativo").length;
 
-  // --- IMPORTAÇÃO ---
+  // -----------------------------
+  // IMPORTAÇÃO
+  // -----------------------------
   const downloadModeloClientesCSV = () => {
     const csv =
       "nome,telefone,documento,endereco,cidade,status\n" +
@@ -552,6 +825,29 @@ export default function Clientes() {
     }
   };
 
+  const legend = (
+    <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex flex-wrap items-center gap-4 text-xs text-muted-foreground">
+        <div className="flex items-center gap-2">
+          <Dot kind="red" /> <span>Tem dívida (fiado em aberto)</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <Dot kind="green" /> <span>Comprou recentemente (últimos 30 dias)</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <Dot kind="gray" /> <span>Sem compras recentes / inativo</span>
+        </div>
+      </div>
+
+      {loadingSignals ? (
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          Atualizando indicadores...
+        </div>
+      ) : null}
+    </div>
+  );
+
   return (
     <div className="space-y-6 animate-in fade-in duration-500">
       {/* HEADER */}
@@ -580,8 +876,8 @@ export default function Clientes() {
               <DialogHeader>
                 <DialogTitle>Importar Clientes (CSV/XLSX)</DialogTitle>
                 <DialogDescription>
-                  Colunas aceitas: <strong>nome</strong>, telefone/whatsapp, documento/cpf/cnpj,
-                  endereco, cidade, status.
+                  Colunas aceitas: <strong>nome</strong>, telefone/whatsapp, documento/cpf/cnpj, endereco,
+                  cidade, status.
                 </DialogDescription>
               </DialogHeader>
 
@@ -803,7 +1099,12 @@ export default function Clientes() {
                   </div>
 
                   <DialogFooter className="flex flex-col sm:flex-row gap-2 sm:justify-end">
-                    <Button type="button" variant="outline" onClick={() => setIsDialogOpen(false)} className="w-full sm:w-auto">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => setIsDialogOpen(false)}
+                      className="w-full sm:w-auto"
+                    >
                       Cancelar
                     </Button>
                     <Button type="submit" className="w-full sm:w-auto">
@@ -816,6 +1117,11 @@ export default function Clientes() {
           </Dialog>
         </div>
       </div>
+
+      {/* LEGENDA */}
+      <Card>
+        <CardContent className="p-4">{legend}</CardContent>
+      </Card>
 
       {/* SUMMARY */}
       <div className="grid gap-4 md:grid-cols-3">
@@ -896,113 +1202,128 @@ export default function Clientes() {
             <>
               {/* MOBILE: CARDS */}
               <div className="grid gap-3 sm:hidden">
-                {filteredCustomers.map((c) => (
-                  <Card key={c.id} className="border shadow-sm">
-                    <CardContent className="p-4 space-y-3">
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="min-w-0">
-                          <p className="font-semibold text-base leading-snug truncate">{c.name}</p>
-                          <div className="mt-1 flex flex-wrap items-center gap-2">
-                            <Badge
-                              variant={c.status === "ativo" ? "default" : "secondary"}
-                              className={c.status === "ativo" ? "bg-emerald-600 hover:bg-emerald-700" : ""}
-                            >
-                              {c.status === "ativo" ? "Ativo" : "Inativo"}
-                            </Badge>
+                {filteredCustomers.map((c) => {
+                  const sig = signals[c.id];
+                  const dot = sig?.dot || "gray";
+                  const openAmount = sig?.openAmount || 0;
 
-                            {c.city && (
-                              <span className="text-xs text-muted-foreground flex items-center gap-1">
-                                <MapPin className="h-3 w-3" />
-                                {c.city}
-                              </span>
-                            )}
-                          </div>
-                        </div>
-
-                        <div className="flex gap-1 shrink-0">
-                          {/* BOTÃO CARTEIRA (MOBILE) */}
-                          <Button 
-                            size="icon" 
-                            variant="outline" 
-                            className="h-10 w-10 text-amber-600 border-amber-200 hover:bg-amber-50" 
-                            onClick={() => openFinancialModal(c)} 
-                            title="Carteira / Fiado"
-                          >
-                            <Wallet className="h-4 w-4" />
-                          </Button>
-
-                          <Button size="icon" variant="outline" className="h-10 w-10" onClick={() => openEditDialog(c)} title="Editar">
-                            <Edit className="h-4 w-4" />
-                          </Button>
-                          <Button
-                            size="icon"
-                            variant="outline"
-                            className="h-10 w-10 text-destructive"
-                            onClick={() => setDeleteCustomer(c)}
-                            title="Excluir"
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </Button>
-                        </div>
-                      </div>
-
-                      {c.phone ? (
-                        <div className="flex items-center justify-between gap-2 bg-muted/30 rounded-lg p-3">
+                  return (
+                    <Card key={c.id} className="border shadow-sm">
+                      <CardContent className="p-4 space-y-3">
+                        <div className="flex items-start justify-between gap-2">
                           <div className="min-w-0">
-                            <p className="text-xs text-muted-foreground">WhatsApp</p>
-                            <p className="font-medium flex items-center gap-2 truncate">
-                              <Phone className="h-4 w-4 text-emerald-600" />
-                              {c.phone}
-                            </p>
+                            <div className="flex items-center gap-2">
+                              <Dot kind={dot} />
+                              <p className="font-semibold text-base leading-snug truncate">{c.name}</p>
+                            </div>
+
+                            <div className="mt-1 flex flex-wrap items-center gap-2">
+                              <Badge
+                                variant={c.status === "ativo" ? "default" : "secondary"}
+                                className={c.status === "ativo" ? "bg-emerald-600 hover:bg-emerald-700" : ""}
+                              >
+                                {c.status === "ativo" ? "Ativo" : "Inativo"}
+                              </Badge>
+
+                              {dot === "red" ? (
+                                <span className="text-xs font-medium text-red-600">
+                                  Em aberto: {formatCurrency(openAmount)}
+                                </span>
+                              ) : null}
+
+                              {c.city && (
+                                <span className="text-xs text-muted-foreground flex items-center gap-1">
+                                  <MapPin className="h-3 w-3" />
+                                  {c.city}
+                                </span>
+                              )}
+                            </div>
                           </div>
 
-                          <div className="flex gap-2 shrink-0">
+                          <div className="flex gap-1 shrink-0">
                             <Button
                               size="icon"
                               variant="outline"
-                              className="h-10 w-10"
-                              onClick={() => copyToClipboard(c.phone!)}
-                              title="Copiar"
+                              className="h-10 w-10 text-amber-600 border-amber-200 hover:bg-amber-50"
+                              onClick={() => openFinancialModal(c)}
+                              title="Carteira / Fiado"
                             >
-                              <Copy className="h-4 w-4" />
+                              <Wallet className="h-4 w-4" />
+                            </Button>
+
+                            <Button size="icon" variant="outline" className="h-10 w-10" onClick={() => openEditDialog(c)} title="Editar">
+                              <Edit className="h-4 w-4" />
                             </Button>
                             <Button
                               size="icon"
-                              className="h-10 w-10 bg-emerald-600 hover:bg-emerald-700"
-                              onClick={() => openWhatsApp(c.phone!, c.name)}
-                              title="WhatsApp"
+                              variant="outline"
+                              className="h-10 w-10 text-destructive"
+                              onClick={() => setDeleteCustomer(c)}
+                              title="Excluir"
                             >
-                              <MessageCircle className="h-4 w-4" />
+                              <Trash2 className="h-4 w-4" />
                             </Button>
                           </div>
                         </div>
-                      ) : (
-                        <div className="text-sm text-muted-foreground">Sem telefone</div>
-                      )}
 
-                      {c.document ? (
-                        <div className="flex items-center justify-between gap-2">
-                          <div className="min-w-0">
-                            <p className="text-xs text-muted-foreground">Documento</p>
-                            <p className="text-sm font-mono truncate flex items-center gap-2">
-                              <FileText className="h-4 w-4 text-muted-foreground" />
-                              {c.document}
-                            </p>
+                        {c.phone ? (
+                          <div className="flex items-center justify-between gap-2 bg-muted/30 rounded-lg p-3">
+                            <div className="min-w-0">
+                              <p className="text-xs text-muted-foreground">WhatsApp</p>
+                              <p className="font-medium flex items-center gap-2 truncate">
+                                <Phone className="h-4 w-4 text-emerald-600" />
+                                {c.phone}
+                              </p>
+                            </div>
+
+                            <div className="flex gap-2 shrink-0">
+                              <Button
+                                size="icon"
+                                variant="outline"
+                                className="h-10 w-10"
+                                onClick={() => copyToClipboard(c.phone!)}
+                                title="Copiar"
+                              >
+                                <Copy className="h-4 w-4" />
+                              </Button>
+                              <Button
+                                size="icon"
+                                className="h-10 w-10 bg-emerald-600 hover:bg-emerald-700"
+                                onClick={() => openWhatsApp(c.phone!, c.name)}
+                                title="WhatsApp"
+                              >
+                                <MessageCircle className="h-4 w-4" />
+                              </Button>
+                            </div>
                           </div>
-                          <Button
-                            size="icon"
-                            variant="outline"
-                            className="h-10 w-10 shrink-0"
-                            onClick={() => copyToClipboard(c.document!)}
-                            title="Copiar documento"
-                          >
-                            <Copy className="h-4 w-4" />
-                          </Button>
-                        </div>
-                      ) : null}
-                    </CardContent>
-                  </Card>
-                ))}
+                        ) : (
+                          <div className="text-sm text-muted-foreground">Sem telefone</div>
+                        )}
+
+                        {c.document ? (
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="min-w-0">
+                              <p className="text-xs text-muted-foreground">Documento</p>
+                              <p className="text-sm font-mono truncate flex items-center gap-2">
+                                <FileText className="h-4 w-4 text-muted-foreground" />
+                                {c.document}
+                              </p>
+                            </div>
+                            <Button
+                              size="icon"
+                              variant="outline"
+                              className="h-10 w-10 shrink-0"
+                              onClick={() => copyToClipboard(c.document!)}
+                              title="Copiar documento"
+                            >
+                              <Copy className="h-4 w-4" />
+                            </Button>
+                          </div>
+                        ) : null}
+                      </CardContent>
+                    </Card>
+                  );
+                })}
               </div>
 
               {/* DESKTOP/TABLET: TABELA */}
@@ -1020,114 +1341,129 @@ export default function Clientes() {
                   </TableHeader>
 
                   <TableBody>
-                    {filteredCustomers.map((customer) => (
-                      <TableRow key={customer.id}>
-                        <TableCell className="font-medium">{customer.name}</TableCell>
+                    {filteredCustomers.map((customer) => {
+                      const sig = signals[customer.id];
+                      const dot = sig?.dot || "gray";
+                      const openAmount = sig?.openAmount || 0;
 
-                        <TableCell>
-                          {customer.document ? (
+                      return (
+                        <TableRow key={customer.id}>
+                          <TableCell className="font-medium">
                             <div className="flex items-center gap-2">
-                              <span className="flex items-center gap-1 text-sm text-muted-foreground">
-                                <FileText className="h-3 w-3" /> {customer.document}
-                              </span>
-                              <Button
-                                size="icon"
-                                variant="ghost"
-                                className="h-7 w-7"
-                                onClick={() => copyToClipboard(customer.document!)}
-                                title="Copiar documento"
-                              >
-                                <Copy className="h-4 w-4" />
-                              </Button>
+                              <Dot kind={dot} />
+                              <span>{customer.name}</span>
+                              {dot === "red" ? (
+                                <span className="ml-2 text-xs font-medium text-red-600">
+                                  ({formatCurrency(openAmount)} em aberto)
+                                </span>
+                              ) : null}
                             </div>
-                          ) : (
-                            "-"
-                          )}
-                        </TableCell>
+                          </TableCell>
 
-                        <TableCell>
-                          {customer.phone ? (
-                            <div className="flex items-center gap-2">
+                          <TableCell>
+                            {customer.document ? (
+                              <div className="flex items-center gap-2">
+                                <span className="flex items-center gap-1 text-sm text-muted-foreground">
+                                  <FileText className="h-3 w-3" /> {customer.document}
+                                </span>
+                                <Button
+                                  size="icon"
+                                  variant="ghost"
+                                  className="h-7 w-7"
+                                  onClick={() => copyToClipboard(customer.document!)}
+                                  title="Copiar documento"
+                                >
+                                  <Copy className="h-4 w-4" />
+                                </Button>
+                              </div>
+                            ) : (
+                              "-"
+                            )}
+                          </TableCell>
+
+                          <TableCell>
+                            {customer.phone ? (
+                              <div className="flex items-center gap-2">
+                                <span className="flex items-center gap-1 text-sm">
+                                  <Phone className="h-3 w-3 text-emerald-600" />
+                                  {customer.phone}
+                                </span>
+
+                                <Button
+                                  size="icon"
+                                  variant="ghost"
+                                  className="h-7 w-7"
+                                  onClick={() => copyToClipboard(customer.phone!)}
+                                  title="Copiar telefone"
+                                >
+                                  <Copy className="h-4 w-4" />
+                                </Button>
+
+                                <Button
+                                  size="icon"
+                                  variant="ghost"
+                                  className="h-7 w-7 text-emerald-700"
+                                  onClick={() => openWhatsApp(customer.phone!, customer.name)}
+                                  title="Abrir WhatsApp"
+                                >
+                                  <MessageCircle className="h-4 w-4" />
+                                </Button>
+                              </div>
+                            ) : (
+                              <span className="text-muted-foreground text-xs">-</span>
+                            )}
+                          </TableCell>
+
+                          <TableCell>
+                            {customer.city ? (
                               <span className="flex items-center gap-1 text-sm">
-                                <Phone className="h-3 w-3 text-emerald-600" />
-                                {customer.phone}
+                                <MapPin className="h-3 w-3 text-blue-500" />
+                                {customer.city}
                               </span>
+                            ) : (
+                              <span className="text-muted-foreground text-xs">-</span>
+                            )}
+                          </TableCell>
 
+                          <TableCell>
+                            <Badge
+                              variant={customer.status === "ativo" ? "default" : "secondary"}
+                              className={customer.status === "ativo" ? "bg-emerald-600 hover:bg-emerald-700" : ""}
+                            >
+                              {customer.status === "ativo" ? "Ativo" : "Inativo"}
+                            </Badge>
+                          </TableCell>
+
+                          <TableCell className="text-right">
+                            <div className="flex justify-end gap-1">
                               <Button
                                 size="icon"
                                 variant="ghost"
-                                className="h-7 w-7"
-                                onClick={() => copyToClipboard(customer.phone!)}
-                                title="Copiar telefone"
+                                className="text-amber-600 hover:text-amber-700 hover:bg-amber-100"
+                                onClick={() => openFinancialModal(customer)}
+                                title="Ver Débitos (Fiado)"
                               >
-                                <Copy className="h-4 w-4" />
+                                <Wallet className="h-4 w-4" />
+                              </Button>
+
+                              <Button size="icon" variant="ghost" onClick={() => openEditDialog(customer)} title="Editar">
+                                <Edit className="h-4 w-4 text-muted-foreground" />
                               </Button>
 
                               <Button
                                 size="icon"
                                 variant="ghost"
-                                className="h-7 w-7 text-emerald-700"
-                                onClick={() => openWhatsApp(customer.phone!, customer.name)}
-                                title="Abrir WhatsApp"
+                                className="text-destructive hover:text-destructive hover:bg-destructive/10"
+                                onClick={() => setDeleteCustomer(customer)}
+                                title="Excluir"
                               >
-                                <MessageCircle className="h-4 w-4" />
+                                <Trash2 className="h-4 w-4" />
                               </Button>
                             </div>
-                          ) : (
-                            <span className="text-muted-foreground text-xs">-</span>
-                          )}
-                        </TableCell>
-
-                        <TableCell>
-                          {customer.city ? (
-                            <span className="flex items-center gap-1 text-sm">
-                              <MapPin className="h-3 w-3 text-blue-500" />
-                              {customer.city}
-                            </span>
-                          ) : (
-                            <span className="text-muted-foreground text-xs">-</span>
-                          )}
-                        </TableCell>
-
-                        <TableCell>
-                          <Badge
-                            variant={customer.status === "ativo" ? "default" : "secondary"}
-                            className={customer.status === "ativo" ? "bg-emerald-600 hover:bg-emerald-700" : ""}
-                          >
-                            {customer.status === "ativo" ? "Ativo" : "Inativo"}
-                          </Badge>
-                        </TableCell>
-
-                        <TableCell className="text-right">
-                          <div className="flex justify-end gap-1">
-                            {/* BOTÃO CARTEIRA (DESKTOP) */}
-                            <Button 
-                              size="icon" 
-                              variant="ghost" 
-                              className="text-amber-600 hover:text-amber-700 hover:bg-amber-100"
-                              onClick={() => openFinancialModal(customer)} 
-                              title="Ver Débitos (Fiado)"
-                            >
-                              <Wallet className="h-4 w-4" />
-                            </Button>
-
-                            <Button size="icon" variant="ghost" onClick={() => openEditDialog(customer)} title="Editar">
-                              <Edit className="h-4 w-4 text-muted-foreground" />
-                            </Button>
-
-                            <Button
-                              size="icon"
-                              variant="ghost"
-                              className="text-destructive hover:text-destructive hover:bg-destructive/10"
-                              onClick={() => setDeleteCustomer(customer)}
-                              title="Excluir"
-                            >
-                              <Trash2 className="h-4 w-4" />
-                            </Button>
-                          </div>
-                        </TableCell>
-                      </TableRow>
-                    ))}
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
                   </TableBody>
                 </Table>
               </div>
@@ -1159,20 +1495,18 @@ export default function Clientes() {
         </AlertDialogContent>
       </AlertDialog>
 
-      {/* MODAL DE COBRANÇA (FINANCEIRO) */}
+      {/* MODAL CARTEIRA (RESPONSIVO) */}
       <Dialog open={financialModalOpen} onOpenChange={setFinancialModalOpen}>
-        <DialogContent className="max-w-3xl max-h-[85vh] overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2 text-xl">
-              <Wallet className="h-6 w-6 text-amber-600" />
-              Carteira de Cobrança: <span className="text-primary">{targetClient?.name}</span>
-            </DialogTitle>
-            <DialogDescription>
-              Gerencie as compras "a prazo" e débitos pendentes deste cliente.
-            </DialogDescription>
-          </DialogHeader>
+        <DialogContent className="w-[calc(100vw-24px)] sm:max-w-3xl max-h-[85vh] overflow-y-auto p-0">
+          <div className="p-4 sm:p-6 space-y-4">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2 text-xl">
+                <Wallet className="h-6 w-6 text-amber-600" />
+                Carteira de Cobrança: <span className="text-primary">{targetClient?.name}</span>
+              </DialogTitle>
+              <DialogDescription>Gerencie as compras "a prazo" e débitos pendentes deste cliente.</DialogDescription>
+            </DialogHeader>
 
-          <div className="space-y-4 py-2">
             {loadingDebts ? (
               <div className="flex justify-center py-12">
                 <Loader2 className="h-8 w-8 animate-spin text-primary" />
@@ -1192,7 +1526,108 @@ export default function Clientes() {
                   </span>
                 </div>
 
-                <div className="rounded-md border overflow-hidden">
+                {/* MOBILE: Cards */}
+                <div className="grid gap-3 sm:hidden">
+                  {clientDebts.map((debt) => {
+                    const itemsOpen = !!expandedItems[debt.id];
+                    const items = expandedItems[debt.id] || [];
+                    const isLoading = !!loadingItems[debt.id];
+                    const hasSaleId = !!(debt as any).sale_id;
+
+                    return (
+                      <Card key={debt.id} className="border shadow-sm">
+                        <CardContent className="p-4 space-y-3">
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0">
+                              <p className="text-sm text-muted-foreground">Compra</p>
+                              <p className="font-medium">
+                                {new Date(debt.created_at).toLocaleDateString("pt-BR")}
+                              </p>
+
+                              <div className="mt-2">
+                                <p className="text-sm text-muted-foreground">Vencimento</p>
+                                <p className="text-sm font-medium text-red-600 flex items-center gap-2">
+                                  <Calendar className="h-4 w-4" />
+                                  {debt.due_date
+                                    ? new Date(debt.due_date).toLocaleDateString("pt-BR")
+                                    : "Sem prazo"}
+                                </p>
+                              </div>
+                            </div>
+
+                            <div className="text-right">
+                              <p className="text-sm text-muted-foreground">Valor</p>
+                              <p className="text-lg font-bold">{formatCurrency(Number(debt.total_amount))}</p>
+                            </div>
+                          </div>
+
+                          <div className="text-sm text-muted-foreground">
+                            <p className="font-medium text-foreground mb-1">Descrição</p>
+                            <p className="break-words">{debt.description || "-"}</p>
+                          </div>
+
+                          <div className="grid grid-cols-2 gap-2">
+                            <Button
+                              variant="outline"
+                              className="h-12"
+                              onClick={() => toggleItems(debt)}
+                              disabled={!hasSaleId || isLoading}
+                              title={!hasSaleId ? "Sem sale_id vinculado" : "Ver itens"}
+                            >
+                              {isLoading ? (
+                                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                              ) : (
+                                <Package className="h-4 w-4 mr-2" />
+                              )}
+                              {itemsOpen ? "Ocultar Itens" : "Ver Itens"}
+                              <ChevronDown
+                                className={`h-4 w-4 ml-2 transition-transform ${itemsOpen ? "rotate-180" : ""}`}
+                              />
+                            </Button>
+
+                            <Button
+                              className="h-12 bg-emerald-600 hover:bg-emerald-700"
+                              onClick={() => startReceive(debt)}
+                            >
+                              <CheckCheck className="h-4 w-4 mr-2" />
+                              Receber
+                            </Button>
+                          </div>
+
+                          {itemsOpen ? (
+                            <div className="rounded-lg border bg-muted/20 p-3 space-y-2">
+                              <p className="text-sm font-medium text-foreground">Itens da compra</p>
+                              {items.length === 0 ? (
+                                <p className="text-sm text-muted-foreground">Nenhum item encontrado.</p>
+                              ) : (
+                                <div className="space-y-2">
+                                  {items.map((it) => (
+                                    <div key={it.id} className="flex items-center justify-between gap-2">
+                                      <div className="min-w-0">
+                                        <p className="text-sm font-medium truncate">
+                                          {it.product_name || it.name || it.product_id || "Item"}
+                                        </p>
+                                        <p className="text-xs text-muted-foreground">
+                                          Qtd: <span className="font-medium text-foreground">{Number(it.quantity) || 0}</span>
+                                        </p>
+                                      </div>
+                                      {typeof it.total_price === "number" ? (
+                                        <span className="text-sm font-semibold">{formatCurrency(Number(it.total_price))}</span>
+                                      ) : null}
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          ) : null}
+                        </CardContent>
+                      </Card>
+                    );
+                  })}
+                </div>
+
+                {/* DESKTOP: Tabela + expansão */}
+                <div className="hidden sm:block rounded-md border overflow-hidden">
                   <Table>
                     <TableHeader className="bg-muted/50">
                       <TableRow>
@@ -1200,48 +1635,181 @@ export default function Clientes() {
                         <TableHead>Vencimento</TableHead>
                         <TableHead>Descrição</TableHead>
                         <TableHead className="text-right">Valor</TableHead>
-                        <TableHead className="text-right w-[100px]"></TableHead>
+                        <TableHead className="text-right w-[220px]"></TableHead>
                       </TableRow>
                     </TableHeader>
+
                     <TableBody>
-                      {clientDebts.map((debt) => (
-                        <TableRow key={debt.id}>
-                          <TableCell>
-                            {new Date(debt.created_at).toLocaleDateString('pt-BR')}
-                          </TableCell>
-                          <TableCell className="text-red-600 font-medium">
-                            <div className="flex items-center gap-1">
-                              <Calendar className="h-3 w-3" />
-                              {debt.due_date ? new Date(debt.due_date).toLocaleDateString('pt-BR') : "Sem prazo"}
-                            </div>
-                          </TableCell>
-                          <TableCell className="text-sm text-muted-foreground max-w-[200px] truncate" title={debt.description}>
-                            {debt.description}
-                          </TableCell>
-                          <TableCell className="text-right font-bold">
-                            {formatCurrency(Number(debt.total_amount))}
-                          </TableCell>
-                          <TableCell className="text-right">
-                            <Button 
-                              size="sm" 
-                              className="bg-emerald-600 hover:bg-emerald-700 h-8"
-                              onClick={() => handlePayDebt(debt.id, Number(debt.total_amount))}
-                            >
-                              <CheckCheck className="h-3 w-3 mr-1" /> Receber
-                            </Button>
-                          </TableCell>
-                        </TableRow>
-                      ))}
+                      {clientDebts.map((debt) => {
+                        const itemsOpen = !!expandedItems[debt.id];
+                        const items = expandedItems[debt.id] || [];
+                        const isLoading = !!loadingItems[debt.id];
+                        const hasSaleId = !!(debt as any).sale_id;
+
+                        return (
+                          <>
+                            <TableRow key={debt.id}>
+                              <TableCell>{new Date(debt.created_at).toLocaleDateString("pt-BR")}</TableCell>
+
+                              <TableCell className="text-red-600 font-medium">
+                                <div className="flex items-center gap-1">
+                                  <Calendar className="h-3 w-3" />
+                                  {debt.due_date ? new Date(debt.due_date).toLocaleDateString("pt-BR") : "Sem prazo"}
+                                </div>
+                              </TableCell>
+
+                              <TableCell className="text-sm text-muted-foreground max-w-[280px] truncate" title={debt.description}>
+                                {debt.description}
+                              </TableCell>
+
+                              <TableCell className="text-right font-bold">{formatCurrency(Number(debt.total_amount))}</TableCell>
+
+                              <TableCell className="text-right">
+                                <div className="flex justify-end gap-2">
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    className="h-9"
+                                    onClick={() => toggleItems(debt)}
+                                    disabled={!hasSaleId || isLoading}
+                                    title={!hasSaleId ? "Sem sale_id vinculado" : "Ver itens"}
+                                  >
+                                    {isLoading ? (
+                                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                                    ) : (
+                                      <Package className="h-4 w-4 mr-2" />
+                                    )}
+                                    {itemsOpen ? "Ocultar Itens" : "Ver Itens"}
+                                    <ChevronDown className={`h-4 w-4 ml-2 transition-transform ${itemsOpen ? "rotate-180" : ""}`} />
+                                  </Button>
+
+                                  <Button
+                                    size="sm"
+                                    className="bg-emerald-600 hover:bg-emerald-700 h-9"
+                                    onClick={() => startReceive(debt)}
+                                  >
+                                    <CheckCheck className="h-4 w-4 mr-2" /> Receber
+                                  </Button>
+                                </div>
+                              </TableCell>
+                            </TableRow>
+
+                            {itemsOpen ? (
+                              <TableRow key={`${debt.id}-items`}>
+                                <TableCell colSpan={5} className="bg-muted/20">
+                                  <div className="p-3 rounded-lg border bg-background">
+                                    <p className="text-sm font-medium mb-2">Itens da compra</p>
+                                    {items.length === 0 ? (
+                                      <p className="text-sm text-muted-foreground">Nenhum item encontrado.</p>
+                                    ) : (
+                                      <div className="grid gap-2 sm:grid-cols-2">
+                                        {items.map((it) => (
+                                          <div key={it.id} className="flex items-center justify-between gap-3 rounded-md border p-3">
+                                            <div className="min-w-0">
+                                              <p className="text-sm font-medium truncate">
+                                                {it.product_name || it.name || it.product_id || "Item"}
+                                              </p>
+                                              <p className="text-xs text-muted-foreground">
+                                                Quantidade: <span className="font-semibold text-foreground">{Number(it.quantity) || 0}</span>
+                                              </p>
+                                            </div>
+                                            {typeof it.total_price === "number" ? (
+                                              <span className="text-sm font-semibold">{formatCurrency(Number(it.total_price))}</span>
+                                            ) : null}
+                                          </div>
+                                        ))}
+                                      </div>
+                                    )}
+                                  </div>
+                                </TableCell>
+                              </TableRow>
+                            ) : null}
+                          </>
+                        );
+                      })}
                     </TableBody>
                   </Table>
                 </div>
               </>
             )}
+
+            <DialogFooter className="pt-2">
+              <Button variant="outline" onClick={() => setFinancialModalOpen(false)} className="h-11 w-full sm:w-auto">
+                Fechar Carteira
+              </Button>
+            </DialogFooter>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* MODAL: FORMA DE PAGAMENTO */}
+      <Dialog open={receiveOpen} onOpenChange={setReceiveOpen}>
+        <DialogContent className="w-[calc(100vw-24px)] sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Receber pagamento</DialogTitle>
+            <DialogDescription>
+              Selecione a forma de pagamento para dar baixa nesta cobrança.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-3">
+            <div className="rounded-lg border bg-muted/20 p-3">
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-sm text-muted-foreground">Valor</span>
+                <span className="text-lg font-bold">
+                  {formatCurrency(Number(receiveDebt?.total_amount || 0))}
+                </span>
+              </div>
+              <div className="mt-2 text-xs text-muted-foreground">
+                {receiveDebt?.description}
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <p className="text-sm font-medium">Forma de pagamento</p>
+              <Select value={paymentMethod} onValueChange={(v) => setPaymentMethod(v as any)}>
+                <SelectTrigger className="h-12">
+                  <SelectValue placeholder="Selecione..." />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="dinheiro">Dinheiro</SelectItem>
+                  <SelectItem value="pix">Pix</SelectItem>
+                  <SelectItem value="cartao">Cartão</SelectItem>
+                  <SelectItem value="transferencia">Transferência</SelectItem>
+                  <SelectItem value="outros">Outros</SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                *Se a coluna <code>payment_method</code> não existir no seu banco, o sistema vai salvar o pagamento mesmo assim.
+              </p>
+            </div>
           </div>
 
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setFinancialModalOpen(false)}>
-              Fechar Carteira
+          <DialogFooter className="flex flex-col sm:flex-row gap-2">
+            <Button
+              variant="outline"
+              onClick={() => setReceiveOpen(false)}
+              className="h-12 w-full sm:w-auto"
+              disabled={receiving}
+            >
+              Cancelar
+            </Button>
+            <Button
+              onClick={confirmReceive}
+              className="h-12 w-full sm:w-auto bg-emerald-600 hover:bg-emerald-700"
+              disabled={receiving}
+            >
+              {receiving ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Confirmando...
+                </>
+              ) : (
+                <>
+                  <CheckCheck className="h-4 w-4 mr-2" />
+                  Confirmar recebimento
+                </>
+              )}
             </Button>
           </DialogFooter>
         </DialogContent>

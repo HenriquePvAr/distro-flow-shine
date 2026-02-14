@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import {
   ShoppingCart,
   Plus,
@@ -16,8 +16,8 @@ import {
   Banknote,
   CreditCard,
   QrCode,
-  Calendar, // Ícone novo
-  User,     // Ícone novo
+  Calendar,
+  User,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -49,7 +49,7 @@ import {
 } from "@/components/ui/sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { supabase } from "@/integrations/supabase/client";
-import { useAuth } from "@/hooks/useAuth"; // IMPORTANTE: Para pegar o usuário logado
+import { useAuth } from "@/hooks/useAuth";
 
 // --- TIPAGEM ---
 interface Product {
@@ -111,18 +111,18 @@ type OfflineQueueEntry =
       type: "create_sale";
       payload: {
         p_customer_id: string | null;
-        p_seller_name: string | null; // CORRIGIDO: Agora manda o nome
+        p_seller_name: string | null;
         p_items: Array<{
-          id: string;        // CORRIGIDO: Era product_id
+          id: string;
           quantity: number;
-          price: number;     // CORRIGIDO: Era unit_price
+          price: number;
           total_price: number;
           sale_mode: "unidade" | "caixa" | "kg";
         }>;
         p_payment_method: string;
         p_discount: number;
         p_surcharge: number;
-        p_created_by: string; // CORRIGIDO: Adicionado
+        p_created_by: string;
         p_sale_type: "vista" | "prazo";
         p_due_date: string | null;
         p_commission_rate: number;
@@ -131,7 +131,7 @@ type OfflineQueueEntry =
   | any;
 
 export default function PDV() {
-  const { user } = useAuth(); // Pega usuário logado
+  const { user } = useAuth();
 
   // --- ESTADOS DE DADOS ---
   const [products, setProducts] = useState<Product[]>([]);
@@ -143,16 +143,13 @@ export default function PDV() {
   const [selectedCustomerId, setSelectedCustomerId] = useState<string>("padrao");
   const [selectedSellerId, setSelectedSellerId] = useState<string>("padrao");
 
-  // Venda à vista / a prazo + comissão
   const [saleType, setSaleType] = useState<"vista" | "prazo">("vista");
-  const [dueDate, setDueDate] = useState<string>(""); 
-  const [commissionRate, setCommissionRate] = useState<number>(0); 
+  const [dueDate, setDueDate] = useState<string>("");
+  const [commissionRate, setCommissionRate] = useState<number>(0);
 
-  // Valores Extras
   const [globalDiscount, setGlobalDiscount] = useState<string>("");
   const [globalSurcharge, setGlobalSurcharge] = useState<string>("");
 
-  // Pagamentos
   const [payments, setPayments] = useState<PaymentEntry[]>([]);
   const [currentPayMethod, setCurrentPayMethod] = useState("Dinheiro");
   const [currentPayAmount, setCurrentPayAmount] = useState("");
@@ -172,6 +169,9 @@ export default function PDV() {
   const [offlineSalesCount, setOfflineSalesCount] = useState(0);
 
   const searchInputRef = useRef<HTMLInputElement>(null);
+
+  // trava anti “loading eterno”
+  const loadIdRef = useRef(0);
 
   // --------------------------
   // CÁLCULOS
@@ -216,7 +216,7 @@ export default function PDV() {
   const canFinish = useMemo(() => {
     if (cart.length === 0) return false;
     if (saleType === "vista") return isPaid;
-    return !!dueDate; // A prazo exige data
+    return !!dueDate;
   }, [cart.length, saleType, isPaid, dueDate]);
 
   // --------------------------
@@ -236,54 +236,57 @@ export default function PDV() {
     setOfflineSalesCount(q.length);
   };
 
-  const checkOfflineQueue = () => {
+  const checkOfflineQueue = useCallback(() => {
     const q = readQueue();
     setOfflineSalesCount(q.length);
-  };
-
-  // --------------------------
-  // INIT
-  // --------------------------
-  useEffect(() => {
-    loadData();
-    checkOfflineQueue();
-
-    const handleStatus = () => setIsOnline(navigator.onLine);
-    window.addEventListener("online", handleStatus);
-    window.addEventListener("offline", handleStatus);
-    return () => {
-      window.removeEventListener("online", handleStatus);
-      window.removeEventListener("offline", handleStatus);
-    };
   }, []);
 
-  const loadFromCache = () => {
+  // --------------------------
+  // LOAD DATA (com timeout e anti-trava)
+  // --------------------------
+  const loadFromCache = useCallback(() => {
     const p = localStorage.getItem("pdv_products_cache");
     const c = localStorage.getItem("pdv_customers_cache");
     const s = localStorage.getItem("pdv_sellers_cache");
     if (p) setProducts(JSON.parse(p));
     if (c) setCustomers(JSON.parse(c));
     if (s) setSellers(JSON.parse(s));
-    toast.info("Modo Offline ativado.");
-  };
+  }, []);
 
-  const loadData = async () => {
+  const loadData = useCallback(async () => {
+    const myLoadId = ++loadIdRef.current;
     setLoading(true);
 
-    if (!navigator.onLine) {
+    // se voltar do background e o navegador mentir online/offline, isso evita ficar travado
+    const onlineNow = typeof navigator !== "undefined" ? navigator.onLine : true;
+    setIsOnline(onlineNow);
+
+    if (!onlineNow) {
       loadFromCache();
       setLoading(false);
+      toast.info("Modo Offline ativado.");
       return;
     }
 
+    // timeout: se travar, sai do loading
+    const timeoutMs = 12000;
+    const timeout = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error("timeout")), timeoutMs)
+    );
+
     try {
-      const [pRes, cRes, sRes] = await Promise.all([
+      const task = Promise.all([
         supabase.from("products").select("*").order("name"),
         supabase.from("customers").select("*").order("name"),
-        supabase.from("profiles").select("id, name").order("name"), // Busca vendedores de 'profiles' ou 'sellers'
+        supabase.from("profiles").select("id, name").order("name"),
       ]);
 
-      if (pRes.data) {
+      const [pRes, cRes, sRes] = await Promise.race([task, timeout]);
+
+      // se chegou uma chamada antiga (ex: voltou do background e chamou loadData 2x), ignora
+      if (myLoadId !== loadIdRef.current) return;
+
+      if (pRes?.data) {
         const mapped: Product[] = pRes.data.map((p: any) => ({
           id: p.id,
           name: p.name,
@@ -298,24 +301,65 @@ export default function PDV() {
         localStorage.setItem("pdv_products_cache", JSON.stringify(mapped));
       }
 
-      if (cRes.data) {
+      if (cRes?.data) {
         setCustomers(cRes.data);
         localStorage.setItem("pdv_customers_cache", JSON.stringify(cRes.data));
       }
 
-      if (sRes.data) {
-        // Mapeia para garantir estrutura {id, name}
-        const mappedSellers = sRes.data.map((s:any) => ({ id: s.id, name: s.name || "Sem Nome"}));
+      if (sRes?.data) {
+        const mappedSellers = sRes.data.map((s: any) => ({
+          id: s.id,
+          name: s.name || "Sem Nome",
+        }));
         setSellers(mappedSellers);
         localStorage.setItem("pdv_sellers_cache", JSON.stringify(mappedSellers));
       }
-    } catch (e) {
+    } catch (e: any) {
       console.error(e);
+
+      // se travou/time-out: cai pro cache e destrava
       loadFromCache();
+      toast.error(
+        e?.message === "timeout"
+          ? "Servidor demorou. Carregando dados do cache."
+          : "Falha ao carregar. Usando cache."
+      );
     } finally {
-      setLoading(false);
+      if (myLoadId === loadIdRef.current) setLoading(false);
     }
-  };
+  }, [loadFromCache]);
+
+  // --------------------------
+  // INIT + voltar do background
+  // --------------------------
+  useEffect(() => {
+    loadData();
+    checkOfflineQueue();
+
+    const handleStatus = () => {
+      setIsOnline(navigator.onLine);
+      // quando reconectar, recarrega
+      if (navigator.onLine) loadData();
+    };
+
+    const onVisible = () => {
+      if (document.visibilityState === "visible") {
+        setIsOnline(navigator.onLine);
+        checkOfflineQueue();
+        loadData();
+      }
+    };
+
+    window.addEventListener("online", handleStatus);
+    window.addEventListener("offline", handleStatus);
+    document.addEventListener("visibilitychange", onVisible);
+
+    return () => {
+      window.removeEventListener("online", handleStatus);
+      window.removeEventListener("offline", handleStatus);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [loadData, checkOfflineQueue]);
 
   // --------------------------
   // CARRINHO
@@ -324,7 +368,9 @@ export default function PDV() {
     if (product.stock <= 0) return toast.error("Sem estoque!");
 
     setCart((prev) => {
-      const defaultMode: CartItem["saleMode"] = product.sellsByKg ? "kg" : "unidade";
+      const defaultMode: CartItem["saleMode"] = product.sellsByKg
+        ? "kg"
+        : "unidade";
       const existing = prev.find(
         (i) => i.id === product.id && i.saleMode === defaultMode
       );
@@ -414,20 +460,22 @@ export default function PDV() {
   // PREPARAR PAYLOAD (RPC)
   // --------------------------
   const buildRpcPayload = () => {
-    const customerId = selectedCustomerId === "padrao" ? null : selectedCustomerId;
-    
-    // CORREÇÃO: Busca o nome do vendedor para mandar p_seller_name
-    const sellerObj = sellers.find(s => s.id === selectedSellerId);
+    const customerId =
+      selectedCustomerId === "padrao" ? null : selectedCustomerId;
+
+    const sellerObj = sellers.find((s) => s.id === selectedSellerId);
     const sellerName = sellerObj ? sellerObj.name : null;
 
     const items = cart.map((i) => {
       const unitPrice =
-        i.saleMode === "caixa" && i.qtyPerBox ? i.salePrice * i.qtyPerBox : i.salePrice;
+        i.saleMode === "caixa" && i.qtyPerBox
+          ? i.salePrice * i.qtyPerBox
+          : i.salePrice;
 
       return {
-        id: i.id, // CORRIGIDO: SQL espera 'id', não 'product_id'
+        id: i.id,
         quantity: i.quantity,
-        price: unitPrice, // CORRIGIDO: SQL espera 'price', não 'unit_price'
+        price: unitPrice,
         total_price: unitPrice * i.quantity,
         sale_mode: i.saleMode,
       };
@@ -450,7 +498,7 @@ export default function PDV() {
 
     return {
       p_customer_id: customerId,
-      p_seller_name: sellerName, // Agora manda o nome correto
+      p_seller_name: sellerName,
       p_items: items,
       p_payment_method: paymentMethod,
       p_discount: discount,
@@ -458,7 +506,7 @@ export default function PDV() {
       p_sale_type: saleType,
       p_due_date: dueISO,
       p_commission_rate: Number(commissionRate || 0),
-      p_created_by: user?.id // Manda o ID do usuário logado
+      p_created_by: user?.id,
     };
   };
 
@@ -513,7 +561,9 @@ export default function PDV() {
         const it = cart.find((c) => c.id === p.id);
         if (!it) return p;
         const deduction =
-          it.saleMode === "caixa" && it.qtyPerBox ? it.quantity * it.qtyPerBox : it.quantity;
+          it.saleMode === "caixa" && it.qtyPerBox
+            ? it.quantity * it.qtyPerBox
+            : it.quantity;
         return { ...p, stock: p.stock - deduction };
       })
     );
@@ -539,7 +589,10 @@ export default function PDV() {
       const payload = buildRpcPayload();
 
       if (isOnline) {
-        const { data: saleId, error } = await supabase.rpc("create_sale", payload);
+        const { data: saleId, error } = await supabase.rpc(
+          "create_sale",
+          payload
+        );
         if (error) throw error;
 
         toast.success("Venda registrada! ✅");
@@ -549,7 +602,15 @@ export default function PDV() {
       }
     } catch (err: any) {
       console.error(err);
-      toast.error("Erro ao salvar online. Salvando offline...");
+
+      // ✅ Se tá online, NÃO salva offline. Mostra erro real do banco.
+      if (navigator.onLine) {
+        toast.error(err?.message || "Erro ao salvar a venda no servidor.");
+        return;
+      }
+
+      // ✅ Só salva offline se for offline de verdade
+      toast.error("Sem internet: salvando venda offline...");
       const payload = buildRpcPayload();
       saveOffline({ type: "create_sale", payload });
     } finally {
@@ -913,9 +974,7 @@ export default function PDV() {
                       <Button
                         variant={saleType === "vista" ? "default" : "outline"}
                         className="flex-1"
-                        onClick={() => {
-                          setSaleType("vista");
-                        }}
+                        onClick={() => setSaleType("vista")}
                       >
                         À Vista
                       </Button>
@@ -1187,7 +1246,11 @@ export default function PDV() {
             {lastSaleData?.saleType === "prazo" && (
               <div className="flex justify-between text-sm text-amber-700 font-medium">
                 <span>Vencimento</span>
-                <span>{lastSaleData?.dueDate ? new Date(lastSaleData.dueDate).toLocaleDateString('pt-BR') : "-"}</span>
+                <span>
+                  {lastSaleData?.dueDate
+                    ? new Date(lastSaleData.dueDate).toLocaleDateString("pt-BR")
+                    : "-"}
+                </span>
               </div>
             )}
 
@@ -1204,9 +1267,9 @@ export default function PDV() {
               <Button
                 className="w-full bg-green-600 hover:bg-green-700"
                 onClick={() => {
-                  const text = `Olá ${
-                    lastSaleData.customer.name
-                  }, sua compra de ${formatCurrency(lastSaleData.total)} foi confirmada!`;
+                  const text = `Olá ${lastSaleData.customer.name}, sua compra de ${formatCurrency(
+                    lastSaleData.total
+                  )} foi confirmada!`;
                   window.open(
                     `https://wa.me/55${String(lastSaleData.customer.phone).replace(
                       /\D/g,
