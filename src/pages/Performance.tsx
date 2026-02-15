@@ -73,12 +73,17 @@ interface Sale {
 type SaleItem = {
   id: string;
   sale_id: string;
-  product_name?: string | null;
-  name?: string | null;
-  product_id?: string | null;
   quantity: number;
   unit_price?: number | null;
   total_price?: number | null;
+
+  // join
+  products?: { name?: string | null } | null;
+
+  // fallback (caso exista no seu schema)
+  product_name?: string | null;
+  name?: string | null;
+  product_id?: string | null;
 };
 
 interface SellerStat {
@@ -269,7 +274,7 @@ export default function Performance() {
   // controle de “request mais recente” (evita setState fora de ordem)
   const requestIdRef = useRef(0);
 
-  // ✅ cache de itens (sale_items)
+  // ✅ cache de itens (sale_items) por sale_id (uuid)
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [itemsCache, setItemsCache] = useState<Record<string, SaleItem[]>>({});
   const [itemsLoading, setItemsLoading] = useState<Record<string, boolean>>({});
@@ -379,7 +384,6 @@ export default function Performance() {
             "id,total_amount,entity_name,description,created_at,seller_name,commission_value,reference"
           )
           .eq("type", "receivable")
-          // pega vendas antigas (PDV-...) e novas (reference não nula)
           .or("reference.ilike.PDV-%,reference.not.is.null")
           .order("created_at", { ascending: false })
           .limit(limitToUse);
@@ -629,7 +633,9 @@ export default function Performance() {
   const customerStatsFiltered = useMemo(() => {
     const s = deferredCustomerSearch.trim().toLowerCase();
     if (!s) return customerStats;
-    return customerStats.filter((c) => (c.name || "").toLowerCase().includes(s));
+    return customerStats.filter((c) =>
+      (c.name || "").toLowerCase().includes(s)
+    );
   }, [customerStats, deferredCustomerSearch]);
 
   // Paginação (render)
@@ -668,14 +674,16 @@ export default function Performance() {
   };
 
   const showReset =
-    range !== "month" || sellerFilter !== "all" || monthFilter !== monthKeyFromIso(new Date().toISOString());
+    range !== "month" ||
+    sellerFilter !== "all" ||
+    monthFilter !== monthKeyFromIso(new Date().toISOString());
 
   // -----------------------------
   // ITENS DA VENDA (EXPAND)
+  // ✅ CORREÇÃO: SELECT com JOIN products pra vir o nome SEM ERRO 400
   // -----------------------------
   const toggleSaleItems = useCallback(
     async (sale: Sale) => {
-      // precisamos de sale_id (uuid) -> vem no reference quando é uuid
       const saleId = isUuid(sale.reference) ? (sale.reference as string) : null;
 
       if (!saleId) {
@@ -695,12 +703,24 @@ export default function Performance() {
 
       setItemsLoading((prev) => ({ ...prev, [saleId]: true }));
       try {
+        // ✅ join: products:product_id ( name )
         const { data, error } = await supabase
           .from("sale_items")
           .select(
-            "id, sale_id, product_name, name, product_id, quantity, unit_price, total_price"
+            `
+            id,
+            sale_id,
+            quantity,
+            unit_price,
+            total_price,
+            product_id,
+            product_name,
+            name,
+            products:product_id ( name )
+          `
           )
-          .eq("sale_id", saleId);
+          .eq("sale_id", saleId)
+          .order("id", { ascending: true });
 
         if (error) throw error;
 
@@ -717,6 +737,9 @@ export default function Performance() {
     },
     [expanded, itemsCache]
   );
+
+  const getItemName = (it: SaleItem) =>
+    it?.products?.name || it.product_name || it.name || it.product_id || "Item";
 
   if (loading) {
     return (
@@ -916,7 +939,9 @@ export default function Performance() {
               <TrendingUp className="h-5 w-5 text-primary" />
               <CardTitle>Ranking de Vendedores</CardTitle>
             </div>
-            <p className="text-sm text-muted-foreground">Por faturamento e comissão</p>
+            <p className="text-sm text-muted-foreground">
+              Por faturamento e comissão
+            </p>
           </CardHeader>
 
           <CardContent className="space-y-3">
@@ -927,9 +952,15 @@ export default function Performance() {
             ) : (
               <>
                 {sellerVisible.map((stat, index) => {
-                  const pct = Math.min(100, (stat.totalRevenue / maxRevenue) * 100);
+                  const pct = Math.min(
+                    100,
+                    (stat.totalRevenue / maxRevenue) * 100
+                  );
                   return (
-                    <div key={stat.name} className="rounded-xl border bg-muted/20 p-3">
+                    <div
+                      key={stat.name}
+                      className="rounded-xl border bg-muted/20 p-3"
+                    >
                       <div className="flex items-start gap-3">
                         <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-background">
                           {getRankIcon(index)}
@@ -938,9 +969,13 @@ export default function Performance() {
                         <div className="min-w-0 flex-1">
                           <div className="flex items-start justify-between gap-3">
                             <div className="min-w-0">
-                              <div className="font-medium truncate">{stat.name}</div>
+                              <div className="font-medium truncate">
+                                {stat.name}
+                              </div>
                               <div className="mt-1 flex flex-wrap gap-2">
-                                <Pill className="bg-background">{stat.salesCount} vendas</Pill>
+                                <Pill className="bg-background">
+                                  {stat.salesCount} vendas
+                                </Pill>
                                 <Pill className="bg-emerald-50 text-emerald-700 border-emerald-200">
                                   <DollarSign className="w-3 h-3 mr-1" />
                                   {formatCurrency(stat.totalCommission)}
@@ -949,7 +984,9 @@ export default function Performance() {
                             </div>
 
                             <div className="text-right shrink-0">
-                              <div className="text-sm text-muted-foreground">Total Vendido</div>
+                              <div className="text-sm text-muted-foreground">
+                                Total Vendido
+                              </div>
                               <div className="font-bold whitespace-nowrap">
                                 {formatCurrency(stat.totalRevenue)}
                               </div>
@@ -1017,7 +1054,10 @@ export default function Performance() {
                 {/* Mobile View */}
                 <div className="space-y-2 sm:hidden">
                   {customerVisible.map((c) => (
-                    <div key={c.name} className="rounded-xl border bg-muted/20 p-3">
+                    <div
+                      key={c.name}
+                      className="rounded-xl border bg-muted/20 p-3"
+                    >
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0">
                           <div className="font-medium truncate">{c.name}</div>
@@ -1025,13 +1065,17 @@ export default function Performance() {
                             Última: {formatDate(c.lastPurchase)}
                           </div>
                           <div className="mt-2 flex flex-wrap gap-2">
-                            <Pill className="bg-background">{c.purchaseCount} compras</Pill>
+                            <Pill className="bg-background">
+                              {c.purchaseCount} compras
+                            </Pill>
                           </div>
                         </div>
                         <div className="text-right shrink-0">
                           <Badge
                             variant="outline"
-                            className={getClassificationBadge(c.classification || "C")}
+                            className={getClassificationBadge(
+                              c.classification || "C"
+                            )}
                           >
                             {c.classification}
                           </Badge>
@@ -1069,12 +1113,16 @@ export default function Performance() {
                           <TableCell className="text-center">
                             <Badge
                               variant="outline"
-                              className={getClassificationBadge(customer.classification || "C")}
+                              className={getClassificationBadge(
+                                customer.classification || "C"
+                              )}
                             >
                               {customer.classification}
                             </Badge>
                           </TableCell>
-                          <TableCell className="text-center">{customer.purchaseCount}</TableCell>
+                          <TableCell className="text-center">
+                            {customer.purchaseCount}
+                          </TableCell>
                           <TableCell className="text-right font-mono font-medium">
                             {formatCurrency(customer.totalSpent)}
                           </TableCell>
@@ -1144,13 +1192,17 @@ export default function Performance() {
                       <TableHead>Cliente</TableHead>
                       <TableHead className="text-right">Total</TableHead>
                       <TableHead className="text-right">Comissão</TableHead>
-                      <TableHead className="text-right w-[180px]">Itens</TableHead>
+                      <TableHead className="text-right w-[180px]">
+                        Itens
+                      </TableHead>
                     </TableRow>
                   </TableHeader>
 
                   <TableBody>
                     {sellerMonthSales.map((s) => {
-                      const saleId = isUuid(s.reference) ? (s.reference as string) : null;
+                      const saleId = isUuid(s.reference)
+                        ? (s.reference as string)
+                        : null;
                       const open = !!expanded[s.id];
                       const loadingIt = saleId ? !!itemsLoading[saleId] : false;
                       const items = saleId ? itemsCache[saleId] || [] : [];
@@ -1162,7 +1214,10 @@ export default function Performance() {
                               {formatDate(s.created_at)}
                             </TableCell>
 
-                            <TableCell className="max-w-[320px] truncate" title={s.entity_name}>
+                            <TableCell
+                              className="max-w-[320px] truncate"
+                              title={s.entity_name}
+                            >
                               {s.entity_name || "—"}
                             </TableCell>
 
@@ -1180,7 +1235,11 @@ export default function Performance() {
                                 variant="outline"
                                 className="h-9"
                                 disabled={!saleId || loadingIt}
-                                title={!saleId ? "Sem sale_id (reference não é UUID)" : "Ver itens"}
+                                title={
+                                  !saleId
+                                    ? "Sem sale_id (reference não é UUID)"
+                                    : "Ver itens"
+                                }
                                 onClick={() => toggleSaleItems(s)}
                               >
                                 {loadingIt ? (
@@ -1204,7 +1263,9 @@ export default function Performance() {
                               <TableCell colSpan={5} className="bg-muted/20">
                                 <div className="p-3 rounded-lg border bg-background space-y-2">
                                   <div className="flex items-center justify-between">
-                                    <p className="text-sm font-medium">Itens da venda</p>
+                                    <p className="text-sm font-medium">
+                                      Itens da venda
+                                    </p>
                                     {!saleId ? (
                                       <span className="text-xs text-muted-foreground">
                                         Sem vínculo com sale_items (reference não é UUID)
@@ -1234,10 +1295,7 @@ export default function Performance() {
                                         >
                                           <div className="min-w-0">
                                             <p className="text-sm font-medium truncate">
-                                              {it.product_name ||
-                                                it.name ||
-                                                it.product_id ||
-                                                "Item"}
+                                              {getItemName(it)}
                                             </p>
                                             <p className="text-xs text-muted-foreground">
                                               Qtd:{" "}
