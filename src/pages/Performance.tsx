@@ -77,13 +77,14 @@ type SaleItem = {
   unit_price?: number | null;
   total_price?: number | null;
 
-  // join
+  product_id?: string | null;
+
+  // join (se FK existir)
   products?: { name?: string | null } | null;
 
-  // fallback (caso exista no seu schema)
+  // NÃO selecionamos no SQL, mas pode existir em alguns schemas e não quebra
   product_name?: string | null;
   name?: string | null;
-  product_id?: string | null;
 };
 
 interface SellerStat {
@@ -359,13 +360,11 @@ export default function Performance() {
             ? fetchLimit
             : DEFAULT_FETCH_LIMIT;
 
-        // quando troca período (e não pediu keepLimit), volta pro padrão
         if (!opts?.keepLimit && typeof opts?.limitOverride !== "number") {
           setFetchLimit(DEFAULT_FETCH_LIMIT);
         }
 
         // ✅ se range === month, usamos monthFilter (permite escolher qualquer mês)
-        // senão, usa range padrão
         let fromIso: string | null = null;
         let toIso: string | null = null;
 
@@ -394,13 +393,11 @@ export default function Performance() {
         const { data, error } = await q;
         if (error) throw error;
 
-        // se chegou outra request depois, ignora essa
         if (currentRequest !== requestIdRef.current) return;
 
         const mapped: Sale[] = (data || []).map((s: any) => {
           const description = String(s.description || "");
 
-          // pega do banco OU extrai da descrição (antigas)
           let finalSellerName = s.seller_name
             ? normalizeSellerName(s.seller_name)
             : "";
@@ -446,7 +443,6 @@ export default function Performance() {
     fetchSellers();
   }, [fetchSales, fetchSellers]);
 
-  // ✅ loadMore corrigido (sem race/stale state)
   const loadMoreFromDb = useCallback(() => {
     const nextLimit = Math.min(fetchLimit + STEP_FETCH, MAX_FETCH_LIMIT);
     setFetchLimit(nextLimit);
@@ -483,7 +479,7 @@ export default function Performance() {
     return salesFilteredBySeller.filter((s) => s.month_key === monthFilter);
   }, [salesFilteredBySeller, sellerFilterKey, monthFilter]);
 
-  // Totais Gerais (loops rápidos)
+  // Totais Gerais
   const totalRevenue = useMemo(() => {
     let sum = 0;
     for (let i = 0; i < salesFilteredBySeller.length; i++)
@@ -503,7 +499,7 @@ export default function Performance() {
     return totalRevenue / count;
   }, [totalRevenue, salesFilteredBySeller.length]);
 
-  // ✅ Totais do vendedor no mês (painel de vendas)
+  // ✅ Totais do vendedor no mês
   const sellerMonthTotals = useMemo(() => {
     let revenue = 0;
     let comm = 0;
@@ -638,7 +634,6 @@ export default function Performance() {
     );
   }, [customerStats, deferredCustomerSearch]);
 
-  // Paginação (render)
   const customerVisible = useMemo(
     () => customerStatsFiltered.slice(0, customerLimit),
     [customerStatsFiltered, customerLimit]
@@ -680,8 +675,52 @@ export default function Performance() {
 
   // -----------------------------
   // ITENS DA VENDA (EXPAND)
-  // ✅ CORREÇÃO: SELECT com JOIN products pra vir o nome SEM ERRO 400
+  // ✅ FIX REAL: select "safe" (sem colunas suspeitas) + fallback sem JOIN
   // -----------------------------
+  const fetchSaleItemsSafe = useCallback(async (saleId: string) => {
+    // 1) tenta com join (se FK existir)
+    const q1 = await supabase
+      .from("sale_items")
+      .select(
+        `
+        id,
+        sale_id,
+        quantity,
+        unit_price,
+        total_price,
+        product_id,
+        products:product_id ( name )
+      `
+      )
+      .eq("sale_id", saleId)
+      .order("id", { ascending: true });
+
+    if (!q1.error) return (q1.data as SaleItem[]) || [];
+
+    // 2) fallback: sem join (se não existir relacionamento/foreign key)
+    const q2 = await supabase
+      .from("sale_items")
+      .select(
+        `
+        id,
+        sale_id,
+        quantity,
+        unit_price,
+        total_price,
+        product_id
+      `
+      )
+      .eq("sale_id", saleId)
+      .order("id", { ascending: true });
+
+    if (q2.error) {
+      console.error("[sale_items] erro:", q1.error, q2.error);
+      throw q2.error;
+    }
+
+    return (q2.data as SaleItem[]) || [];
+  }, []);
+
   const toggleSaleItems = useCallback(
     async (sale: Sale) => {
       const saleId = isUuid(sale.reference) ? (sale.reference as string) : null;
@@ -703,30 +742,11 @@ export default function Performance() {
 
       setItemsLoading((prev) => ({ ...prev, [saleId]: true }));
       try {
-        // ✅ join: products:product_id ( name )
-        const { data, error } = await supabase
-          .from("sale_items")
-          .select(
-            `
-            id,
-            sale_id,
-            quantity,
-            unit_price,
-            total_price,
-            product_id,
-            product_name,
-            name,
-            products:product_id ( name )
-          `
-          )
-          .eq("sale_id", saleId)
-          .order("id", { ascending: true });
-
-        if (error) throw error;
+        const items = await fetchSaleItemsSafe(saleId);
 
         setItemsCache((prev) => ({
           ...prev,
-          [saleId]: (data as SaleItem[]) || [],
+          [saleId]: items,
         }));
       } catch (e) {
         console.error(e);
@@ -735,11 +755,15 @@ export default function Performance() {
         setItemsLoading((prev) => ({ ...prev, [saleId]: false }));
       }
     },
-    [expanded, itemsCache]
+    [expanded, itemsCache, fetchSaleItemsSafe]
   );
 
   const getItemName = (it: SaleItem) =>
-    it?.products?.name || it.product_name || it.name || it.product_id || "Item";
+    it?.products?.name ||
+    it.product_name ||
+    it.name ||
+    it.product_id ||
+    "Item";
 
   if (loading) {
     return (
@@ -952,10 +976,7 @@ export default function Performance() {
             ) : (
               <>
                 {sellerVisible.map((stat, index) => {
-                  const pct = Math.min(
-                    100,
-                    (stat.totalRevenue / maxRevenue) * 100
-                  );
+                  const pct = Math.min(100, (stat.totalRevenue / maxRevenue) * 100);
                   return (
                     <div
                       key={stat.name}
@@ -1184,155 +1205,286 @@ export default function Performance() {
                 Nenhuma venda encontrada para esse mês.
               </div>
             ) : (
-              <div className="rounded-md border overflow-hidden">
-                <Table>
-                  <TableHeader className="bg-muted/50">
-                    <TableRow>
-                      <TableHead>Data</TableHead>
-                      <TableHead>Cliente</TableHead>
-                      <TableHead className="text-right">Total</TableHead>
-                      <TableHead className="text-right">Comissão</TableHead>
-                      <TableHead className="text-right w-[180px]">
-                        Itens
-                      </TableHead>
-                    </TableRow>
-                  </TableHeader>
+              <>
+                {/* ✅ MOBILE (SEM SCROLL LATERAL): cards */}
+                <div className="space-y-2 sm:hidden">
+                  {sellerMonthSales.map((s) => {
+                    const saleId = isUuid(s.reference) ? (s.reference as string) : null;
+                    const open = !!expanded[s.id];
+                    const loadingIt = saleId ? !!itemsLoading[saleId] : false;
+                    const items = saleId ? itemsCache[saleId] || [] : [];
 
-                  <TableBody>
-                    {sellerMonthSales.map((s) => {
-                      const saleId = isUuid(s.reference)
-                        ? (s.reference as string)
-                        : null;
-                      const open = !!expanded[s.id];
-                      const loadingIt = saleId ? !!itemsLoading[saleId] : false;
-                      const items = saleId ? itemsCache[saleId] || [] : [];
-
-                      return (
-                        <React.Fragment key={s.id}>
-                          <TableRow>
-                            <TableCell className="whitespace-nowrap">
+                    return (
+                      <div key={s.id} className="rounded-xl border bg-muted/20 p-3">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="text-xs text-muted-foreground">
                               {formatDate(s.created_at)}
-                            </TableCell>
-
-                            <TableCell
-                              className="max-w-[320px] truncate"
-                              title={s.entity_name}
-                            >
+                            </div>
+                            <div className="mt-1 font-medium truncate">
                               {s.entity_name || "—"}
-                            </TableCell>
+                            </div>
 
-                            <TableCell className="text-right font-mono font-semibold">
-                              {formatCurrency(s.total_amount)}
-                            </TableCell>
+                            <div className="mt-2 flex flex-wrap gap-2">
+                              <Pill className="bg-background">
+                                Total:{" "}
+                                <span className="ml-1 font-semibold">
+                                  {formatCurrency(s.total_amount)}
+                                </span>
+                              </Pill>
+                              <Pill className="bg-emerald-50 text-emerald-700 border-emerald-200">
+                                Comissão:{" "}
+                                <span className="ml-1 font-semibold">
+                                  {formatCurrency(s.commission_value)}
+                                </span>
+                              </Pill>
+                            </div>
+                          </div>
 
-                            <TableCell className="text-right font-mono font-semibold text-emerald-700">
-                              {formatCurrency(s.commission_value)}
-                            </TableCell>
-
-                            <TableCell className="text-right">
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                className="h-9"
-                                disabled={!saleId || loadingIt}
-                                title={
-                                  !saleId
-                                    ? "Sem sale_id (reference não é UUID)"
-                                    : "Ver itens"
-                                }
-                                onClick={() => toggleSaleItems(s)}
-                              >
-                                {loadingIt ? (
-                                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                                ) : (
-                                  <Package className="h-4 w-4 mr-2" />
+                          <div className="shrink-0">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="h-9"
+                              disabled={!saleId || loadingIt}
+                              title={
+                                !saleId
+                                  ? "Sem sale_id (reference não é UUID)"
+                                  : "Ver itens"
+                              }
+                              onClick={() => toggleSaleItems(s)}
+                            >
+                              {loadingIt ? (
+                                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                              ) : (
+                                <Package className="h-4 w-4 mr-2" />
+                              )}
+                              {open ? "Ocultar" : "Ver"}
+                              <ChevronDown
+                                className={clsx(
+                                  "h-4 w-4 ml-2 transition-transform",
+                                  open && "rotate-180"
                                 )}
-                                {open ? "Ocultar" : "Ver"}
-                                <ChevronDown
-                                  className={clsx(
-                                    "h-4 w-4 ml-2 transition-transform",
-                                    open && "rotate-180"
-                                  )}
-                                />
-                              </Button>
-                            </TableCell>
-                          </TableRow>
+                              />
+                            </Button>
+                          </div>
+                        </div>
 
-                          {open && (
-                            <TableRow>
-                              <TableCell colSpan={5} className="bg-muted/20">
-                                <div className="p-3 rounded-lg border bg-background space-y-2">
-                                  <div className="flex items-center justify-between">
-                                    <p className="text-sm font-medium">
-                                      Itens da venda
-                                    </p>
-                                    {!saleId ? (
-                                      <span className="text-xs text-muted-foreground">
-                                        Sem vínculo com sale_items (reference não é UUID)
+                        {open && (
+                          <div className="mt-3 rounded-lg border bg-background p-3 space-y-2">
+                            <div className="flex items-center justify-between">
+                              <p className="text-sm font-medium">Itens da venda</p>
+                              {!saleId ? (
+                                <span className="text-xs text-muted-foreground">
+                                  Sem vínculo (reference não é UUID)
+                                </span>
+                              ) : null}
+                            </div>
+
+                            {!saleId ? (
+                              <p className="text-sm text-muted-foreground">
+                                Não foi possível buscar itens dessa venda.
+                              </p>
+                            ) : loadingIt ? (
+                              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                                Carregando itens...
+                              </div>
+                            ) : items.length === 0 ? (
+                              <p className="text-sm text-muted-foreground">
+                                Nenhum item encontrado.
+                              </p>
+                            ) : (
+                              <div className="grid gap-2">
+                                {items.map((it) => (
+                                  <div
+                                    key={it.id}
+                                    className="flex items-center justify-between gap-3 rounded-md border p-3"
+                                  >
+                                    <div className="min-w-0">
+                                      <p className="text-sm font-medium truncate">
+                                        {getItemName(it)}
+                                      </p>
+                                      <p className="text-xs text-muted-foreground">
+                                        Qtd:{" "}
+                                        <span className="font-semibold text-foreground">
+                                          {Number(it.quantity) || 0}
+                                        </span>
+                                        {typeof it.unit_price === "number" ? (
+                                          <>
+                                            {" "}
+                                            • Un:{" "}
+                                            <span className="font-semibold text-foreground">
+                                              {formatCurrency(Number(it.unit_price))}
+                                            </span>
+                                          </>
+                                        ) : null}
+                                      </p>
+                                    </div>
+
+                                    {typeof it.total_price === "number" ? (
+                                      <span className="text-sm font-semibold whitespace-nowrap">
+                                        {formatCurrency(Number(it.total_price))}
                                       </span>
                                     ) : null}
                                   </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
 
-                                  {!saleId ? (
-                                    <p className="text-sm text-muted-foreground">
-                                      Não foi possível buscar itens dessa venda.
-                                    </p>
-                                  ) : loadingIt ? (
-                                    <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                                      <Loader2 className="h-4 w-4 animate-spin" />
-                                      Carregando itens...
-                                    </div>
-                                  ) : items.length === 0 ? (
-                                    <p className="text-sm text-muted-foreground">
-                                      Nenhum item encontrado.
-                                    </p>
+                {/* ✅ DESKTOP: tabela normal */}
+                <div className="hidden sm:block rounded-md border overflow-x-auto">
+                  <Table>
+                    <TableHeader className="bg-muted/50">
+                      <TableRow>
+                        <TableHead>Data</TableHead>
+                        <TableHead>Cliente</TableHead>
+                        <TableHead className="text-right">Total</TableHead>
+                        <TableHead className="text-right">Comissão</TableHead>
+                        <TableHead className="text-right w-[180px]">Itens</TableHead>
+                      </TableRow>
+                    </TableHeader>
+
+                    <TableBody>
+                      {sellerMonthSales.map((s) => {
+                        const saleId = isUuid(s.reference) ? (s.reference as string) : null;
+                        const open = !!expanded[s.id];
+                        const loadingIt = saleId ? !!itemsLoading[saleId] : false;
+                        const items = saleId ? itemsCache[saleId] || [] : [];
+
+                        return (
+                          <React.Fragment key={s.id}>
+                            <TableRow>
+                              <TableCell className="whitespace-nowrap">
+                                {formatDate(s.created_at)}
+                              </TableCell>
+
+                              <TableCell
+                                className="max-w-[320px] truncate"
+                                title={s.entity_name}
+                              >
+                                {s.entity_name || "—"}
+                              </TableCell>
+
+                              <TableCell className="text-right font-mono font-semibold">
+                                {formatCurrency(s.total_amount)}
+                              </TableCell>
+
+                              <TableCell className="text-right font-mono font-semibold text-emerald-700">
+                                {formatCurrency(s.commission_value)}
+                              </TableCell>
+
+                              <TableCell className="text-right">
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className="h-9"
+                                  disabled={!saleId || loadingIt}
+                                  title={
+                                    !saleId
+                                      ? "Sem sale_id (reference não é UUID)"
+                                      : "Ver itens"
+                                  }
+                                  onClick={() => toggleSaleItems(s)}
+                                >
+                                  {loadingIt ? (
+                                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
                                   ) : (
-                                    <div className="grid gap-2 sm:grid-cols-2">
-                                      {items.map((it) => (
-                                        <div
-                                          key={it.id}
-                                          className="flex items-center justify-between gap-3 rounded-md border p-3"
-                                        >
-                                          <div className="min-w-0">
-                                            <p className="text-sm font-medium truncate">
-                                              {getItemName(it)}
-                                            </p>
-                                            <p className="text-xs text-muted-foreground">
-                                              Qtd:{" "}
-                                              <span className="font-semibold text-foreground">
-                                                {Number(it.quantity) || 0}
-                                              </span>
-                                              {typeof it.unit_price === "number" ? (
-                                                <>
-                                                  {" "}
-                                                  • Un:{" "}
-                                                  <span className="font-semibold text-foreground">
-                                                    {formatCurrency(Number(it.unit_price))}
-                                                  </span>
-                                                </>
-                                              ) : null}
-                                            </p>
-                                          </div>
-
-                                          {typeof it.total_price === "number" ? (
-                                            <span className="text-sm font-semibold whitespace-nowrap">
-                                              {formatCurrency(Number(it.total_price))}
-                                            </span>
-                                          ) : null}
-                                        </div>
-                                      ))}
-                                    </div>
+                                    <Package className="h-4 w-4 mr-2" />
                                   )}
-                                </div>
+                                  {open ? "Ocultar" : "Ver"}
+                                  <ChevronDown
+                                    className={clsx(
+                                      "h-4 w-4 ml-2 transition-transform",
+                                      open && "rotate-180"
+                                    )}
+                                  />
+                                </Button>
                               </TableCell>
                             </TableRow>
-                          )}
-                        </React.Fragment>
-                      );
-                    })}
-                  </TableBody>
-                </Table>
-              </div>
+
+                            {open && (
+                              <TableRow>
+                                <TableCell colSpan={5} className="bg-muted/20">
+                                  <div className="p-3 rounded-lg border bg-background space-y-2">
+                                    <div className="flex items-center justify-between">
+                                      <p className="text-sm font-medium">
+                                        Itens da venda
+                                      </p>
+                                      {!saleId ? (
+                                        <span className="text-xs text-muted-foreground">
+                                          Sem vínculo com sale_items (reference não é UUID)
+                                        </span>
+                                      ) : null}
+                                    </div>
+
+                                    {!saleId ? (
+                                      <p className="text-sm text-muted-foreground">
+                                        Não foi possível buscar itens dessa venda.
+                                      </p>
+                                    ) : loadingIt ? (
+                                      <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                                        <Loader2 className="h-4 w-4 animate-spin" />
+                                        Carregando itens...
+                                      </div>
+                                    ) : items.length === 0 ? (
+                                      <p className="text-sm text-muted-foreground">
+                                        Nenhum item encontrado.
+                                      </p>
+                                    ) : (
+                                      <div className="grid gap-2 sm:grid-cols-2">
+                                        {items.map((it) => (
+                                          <div
+                                            key={it.id}
+                                            className="flex items-center justify-between gap-3 rounded-md border p-3"
+                                          >
+                                            <div className="min-w-0">
+                                              <p className="text-sm font-medium truncate">
+                                                {getItemName(it)}
+                                              </p>
+                                              <p className="text-xs text-muted-foreground">
+                                                Qtd:{" "}
+                                                <span className="font-semibold text-foreground">
+                                                  {Number(it.quantity) || 0}
+                                                </span>
+                                                {typeof it.unit_price === "number" ? (
+                                                  <>
+                                                    {" "}
+                                                    • Un:{" "}
+                                                    <span className="font-semibold text-foreground">
+                                                      {formatCurrency(Number(it.unit_price))}
+                                                    </span>
+                                                  </>
+                                                ) : null}
+                                              </p>
+                                            </div>
+
+                                            {typeof it.total_price === "number" ? (
+                                              <span className="text-sm font-semibold whitespace-nowrap">
+                                                {formatCurrency(Number(it.total_price))}
+                                              </span>
+                                            ) : null}
+                                          </div>
+                                        ))}
+                                      </div>
+                                    )}
+                                  </div>
+                                </TableCell>
+                              </TableRow>
+                            )}
+                          </React.Fragment>
+                        );
+                      })}
+                    </TableBody>
+                  </Table>
+                </div>
+              </>
             )}
           </CardContent>
         </Card>
