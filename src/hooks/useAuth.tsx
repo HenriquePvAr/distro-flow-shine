@@ -42,6 +42,7 @@ interface AuthContextType {
   userData: UserData | null;
   role: AppRole | null;
 
+  // loading global (apenas boot/login)
   loading: boolean;
 
   subscription: SubscriptionData | null;
@@ -62,7 +63,6 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-// ✅ seu email mestre
 const SUPER_ADMIN_EMAIL = "henriquepaiva2808@gmail.com";
 
 function calcCanUseApp(sub: SubscriptionData | null): boolean {
@@ -79,23 +79,28 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [userData, setUserData] = useState<UserData | null>(null);
 
-  // loading = “estou buscando perfil/assinatura agora”
+  // Bloqueio global: usar com cuidado
   const [loading, setLoading] = useState<boolean>(true);
 
-  // initialized = “terminei a primeira inicialização”
-  const [initialized, setInitialized] = useState<boolean>(false);
-
+  // Estado de assinatura (pode atualizar em background)
   const [subscription, setSubscription] = useState<SubscriptionData | null>(null);
   const [subscriptionLoading, setSubscriptionLoading] = useState<boolean>(true);
 
-  // ✅ evita init duplicado (muito comum em WebView / StrictMode / resume)
-  const initRunningRef = useRef(false);
+  // Apenas para mostrar overlay no boot inicial
+  const [initialized, setInitialized] = useState<boolean>(false);
 
-  // ✅ controla respostas “velhas” (corrida de requests)
+  // Refs de controle
+  const mountedRef = useRef(true);
+  const initRunningRef = useRef(false);
   const fetchIdRef = useRef(0);
 
-  // ✅ evita setState depois de desmontar
-  const mountedRef = useRef(true);
+  // ✅ A MÁGICA: não depende de state no listener
+  const initializedRef = useRef(false);
+  const userDataRef = useRef<UserData | null>(null);
+
+  useEffect(() => {
+    userDataRef.current = userData;
+  }, [userData]);
 
   const isSuperAdmin = useMemo(() => {
     const email = user?.email?.trim().toLowerCase();
@@ -107,8 +112,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return calcCanUseApp(subscription);
   }, [subscription, isSuperAdmin]);
 
-  const fetchSubscription = async (companyId: string, fetchId: number) => {
-    setSubscriptionLoading(true);
+  const fetchSubscription = async (
+    companyId: string,
+    fetchId: number,
+    silent = false
+  ) => {
+    if (!silent) setSubscriptionLoading(true);
+
     try {
       const { data, error } = await supabase
         .from("company_subscriptions")
@@ -116,7 +126,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         .eq("company_id", companyId)
         .maybeSingle();
 
-      // resposta velha? ignora
       if (fetchIdRef.current !== fetchId || !mountedRef.current) return;
 
       if (error) {
@@ -137,11 +146,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   };
 
-  const fetchUserData = async (userId: string, userEmail?: string) => {
+  const fetchUserData = async (
+    userId: string,
+    userEmail?: string,
+    silent = false
+  ) => {
     const fetchId = ++fetchIdRef.current;
 
-    setLoading(true);
-    setSubscriptionLoading(true);
+    if (!silent) {
+      setLoading(true);
+      setSubscriptionLoading(true);
+    }
 
     try {
       const { data, error } = await supabase
@@ -150,10 +165,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         .eq("id", userId)
         .maybeSingle();
 
-      // resposta velha / desmontou?
       if (fetchIdRef.current !== fetchId || !mountedRef.current) return;
 
-      // perfil não existe/erro -> limpa e desloga sem loop
       if (error || !data) {
         console.warn("[Auth] Perfil não encontrado/erro. Limpando sessão...");
 
@@ -161,9 +174,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setSubscription(null);
         setSubscriptionLoading(false);
 
-        // invalida fetches pendentes
         fetchIdRef.current++;
-
         await supabase.auth.signOut();
         if (!mountedRef.current) return;
 
@@ -184,9 +195,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       };
 
       setUserData(merged);
+      userDataRef.current = merged;
 
       if (merged.company_id) {
-        await fetchSubscription(merged.company_id, fetchId);
+        await fetchSubscription(merged.company_id, fetchId, silent);
       } else {
         setSubscription(null);
         setSubscriptionLoading(false);
@@ -196,12 +208,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (fetchIdRef.current !== fetchId || !mountedRef.current) return;
 
       setUserData(null);
+      userDataRef.current = null;
       setSubscription(null);
       setSubscriptionLoading(false);
     } finally {
       if (fetchIdRef.current === fetchId && mountedRef.current) {
-        setLoading(false);
-        setInitialized(true);
+        if (!silent) setLoading(false);
+
+        if (!initializedRef.current) {
+          initializedRef.current = true;
+          setInitialized(true);
+        }
+
+        // evita travar overlay por acidente
+        setSubscriptionLoading(false);
       }
     }
   };
@@ -211,7 +231,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     let subscriptionUnsub: any;
 
     const initAuth = async () => {
-      // ✅ trava init duplicado
       if (initRunningRef.current) return;
       initRunningRef.current = true;
 
@@ -228,15 +247,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setUser(sess?.user ?? null);
 
         if (sess?.user) {
-          await fetchUserData(sess.user.id, sess.user.email ?? undefined);
+          // Boot inicial: não-silencioso
+          await fetchUserData(sess.user.id, sess.user.email ?? undefined, false);
         } else {
-          // invalida fetches pendentes
           fetchIdRef.current++;
 
           setUserData(null);
+          userDataRef.current = null;
           setSubscription(null);
           setSubscriptionLoading(false);
           setLoading(false);
+
+          initializedRef.current = true;
           setInitialized(true);
         }
 
@@ -249,23 +271,30 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             setSession(sess2);
             setUser(sess2?.user ?? null);
 
-            // 🔥 IMPORTANTÍSSIMO:
-            // no mobile, não chama fetchUserData para TODO evento
-            // apenas quando realmente entrou / trocou sessão
             if ((event === "SIGNED_IN" || event === "TOKEN_REFRESHED") && sess2?.user) {
-              await fetchUserData(sess2.user.id, sess2.user.email ?? undefined);
+              // ✅ refresh/restauração: silencioso se já inicializou
+              const silent = initializedRef.current && !!userDataRef.current;
+              await fetchUserData(
+                sess2.user.id,
+                sess2.user.email ?? undefined,
+                silent
+              );
               return;
             }
 
             if (event === "SIGNED_OUT") {
-              // invalida fetches pendentes
               fetchIdRef.current++;
 
               setUserData(null);
+              userDataRef.current = null;
               setSubscription(null);
               setSubscriptionLoading(false);
               setLoading(false);
-              setInitialized(true);
+
+              if (!initializedRef.current) {
+                initializedRef.current = true;
+                setInitialized(true);
+              }
             }
           }
         );
@@ -277,7 +306,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
         setLoading(false);
         setSubscriptionLoading(false);
-        setInitialized(true);
+
+        if (!initializedRef.current) {
+          initializedRef.current = true;
+          setInitialized(true);
+        }
       }
     };
 
@@ -292,15 +325,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const signIn = async (email: string, password: string) => {
     try {
-      const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+      // ✅ deixa o listener cuidar do fetchUserData (evita duplicar)
+      const { error } = await supabase.auth.signInWithPassword({ email, password });
       if (error) throw error;
-
-      // ✅ pode deixar, porque temos anti-corrida.
-      // mas o onAuthStateChange também vai rodar.
-      if (data.user) {
-        await fetchUserData(data.user.id, data.user.email ?? undefined);
-      }
-
       return { error: null };
     } catch (error: any) {
       return { error };
@@ -332,9 +359,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const signOut = async () => {
-    // invalida qualquer fetch pendente antes de limpar estado
     fetchIdRef.current++;
-
     await supabase.auth.signOut();
 
     if (!mountedRef.current) return;
@@ -342,13 +367,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setSession(null);
     setUser(null);
     setUserData(null);
+    userDataRef.current = null;
+
     setSubscription(null);
     setSubscriptionLoading(false);
-    setLoading(false);
-    setInitialized(true);
 
-    // ❌ NÃO usa window.location.href no Capacitor
-    // faz redirect via Router (na sua tela)
+    setLoading(false);
+
+    if (!initializedRef.current) {
+      initializedRef.current = true;
+      setInitialized(true);
+    }
   };
 
   const value: AuthContextType = {
@@ -356,6 +385,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     user,
     userData,
     role: userData?.role ?? null,
+
     loading,
 
     subscription,
@@ -374,8 +404,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     <AuthContext.Provider value={value}>
       {children}
 
-      {/* ✅ Overlay apenas enquanto inicializa/carrega */}
-      {(!initialized || loading || subscriptionLoading) && (
+      {/* ✅ Overlay APENAS no boot inicial */}
+      {!initialized && (
         <div
           style={{
             position: "fixed",

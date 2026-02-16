@@ -5,20 +5,15 @@ const config: CapacitorConfig = {
   appName: "2G",
   webDir: "dist",
 
-  server: {
-    url: "https://distro-flow-shine.vercel.app",
-    androidScheme: "https",
-    cleartext: false,
-    allowNavigation: [
-      "distro-flow-shine.vercel.app",
-      "*.vercel.app",
-      "*.supabase.co"
-    ]
+  android: {
+    allowMixedContent: false,
   },
 
-  android: {
-    allowMixedContent: false
-  }
+  plugins: {
+    CapacitorHttp: {
+      enabled: true,
+    },
+  },
 };
 
 export default config;
